@@ -1,0 +1,12 @@
+# Ignore everything
+/*
+
+# Keep these directories and all their contents
+!/.devcontainer/
+!/.devcontainer/**
+!/docker/
+!/docker/**
+
+# Keep these root files
+!/.gitignore
+!/LICENSE
