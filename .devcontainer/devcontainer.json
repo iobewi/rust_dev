@@ -33,15 +33,20 @@
                 "rust-lang.rust-analyzer",
                 "tamasfe.even-better-toml"
             ],
+
             "settings": {
-                "rust-analyzer.check.command": "check"
+                "rust-analyzer.check.command": "check",
+
+                "git.autoRepositoryDetection": "subFolders",
+                "git.repositoryScanMaxDepth": 2,
+                "git.detectSubmodules": true
             }
         }
     },
 
     "postCreateCommand": "bash -lc '. /opt/esp/export-esp.sh && rustc --version && cargo --version && espup --version && espflash --version && esp-generate --version'",
 
-    "postStartCommand": "bash -lc 'pkill -f \"http-server /workspace/web\" || true; nohup http-server /workspace/web -p 8080 -c-1 > /tmp/http-server.log 2>&1 & disown'",
+    "postStartCommand": "bash -lc 'pkill -f \"[h]ttp-server /workspace/web\" || true; nohup http-server /workspace/web -p 8080 -c-1 > /tmp/http-server.log 2>&1 </dev/null &'",
 
     "remoteUser": "root"
 }
