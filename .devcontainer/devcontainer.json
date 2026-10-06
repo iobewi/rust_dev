@@ -9,7 +9,8 @@
     "workspaceFolder": "/workspace",
 
     "mounts": [
-        "source=${localWorkspaceFolder},target=/workspace,type=bind"
+        "source=${localWorkspaceFolder},target=/workspace,type=bind",
+        "source=.claude,target=/root/.claude,type=bind"
     ],
 
     "forwardPorts": [
@@ -46,7 +47,7 @@
 
     "postCreateCommand": "bash -lc '. /opt/esp/export-esp.sh && rustc --version && cargo --version && espup --version && espflash --version && esp-generate --version'",
 
-    "postStartCommand": "bash -lc 'pkill -f \"[h]ttp-server /workspace/web\" || true; nohup http-server /workspace/web -p 8080 -c-1 > /tmp/http-server.log 2>&1 </dev/null &'",
+    "postStartCommand": "bash -lc 'mkdir -p /workspace/web; [ -f /tmp/http-server.pid ] && kill $(cat /tmp/http-server.pid) 2>/dev/null; nohup setsid /usr/local/bin/http-server /workspace/web -p 8080 -c-1 > /tmp/http-server.log 2>&1 </dev/null & echo $! > /tmp/http-server.pid; exit 0'",
 
     "remoteUser": "root"
 }
