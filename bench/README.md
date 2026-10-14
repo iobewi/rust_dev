@@ -40,7 +40,8 @@ Après un rechargement de la page, le port déjà autorisé est retrouvé sans s
 - **Console** : chaque ligne part dans `logs/serial.log`, préfixée `[uart]`. La console offre :
   - le reset EN (impulsion RTS, DTR relâché) ;
   - les repères `MARK` ;
-  - l'exécution des commandes de `bench.sh` et `ready.sh` (reset, repère, reset déclenché sur une expression régulière).
+  - l'exécution des commandes de `bench.sh` et `ready.sh` (reset, repère, reset déclenché sur une expression régulière) ;
+  - un **reset automatique** sur une ligne donnée, actif par défaut sur `Wi-Fi: connection to .* failed` : un premier join Wi-Fi raté laisse la carte injoignable (#72). Il est tracé, et suspendu après 5 resets consécutifs sans `OTA ready`. On le règle dans la page ou avec `benchctl.py autoreset on|off [REGEX]`.
 - **Bascule console ↔ chargeur, sans resélectionner le port.** Toute opération flash (identifier, lire la table, relire, écrire, installer) ferme la console, connecte esptool-js en mode téléchargement, exécute l'opération, puis rouvre la console. Ce retour automatique peut être désactivé pour enchaîner plusieurs opérations ; on revient ensuite par « Retour console ».
   - Il n'y a pas de reset final : **le reset provoqué par la réouverture du port est le seul boot, capturé depuis la ROM**.
   - Les lignes d'esptool-js vont aussi dans la capture, préfixées `[esptool]`.
@@ -63,10 +64,10 @@ Ces commandes ne sont exécutées que si la page tient le port (mode console ou 
 
 | Niveau | Commandes à distance |
 | --- | --- |
-| **limité** (défaut) | `reset`, `mark`, `arm`/`disarm`, `console`, `identify`, `readpt`, `dump` : rien n'écrit la flash |
-| **complet** (bouton dans la page) | en plus : `write`, `install` et l'option `--erase` |
+| **limité** (défaut) | `reset`, `mark`, `arm`/`disarm`, `autoreset`, `console`, `identify`, `readpt`, `dump` : rien n'écrit la flash |
+| **complet** (bouton dans la page, durée limitée) | en plus : `write`, `install` et l'option `--erase` |
 
-L'accès complet ne s'accorde que **depuis la page**, après confirmation. Il expire au bout de 30 min et se révoque d'un clic. Chaque attribution, révocation, expiration ou refus est inscrit dans la capture.
+L'accès complet ne s'accorde que **depuis la page**, après confirmation, pour une durée choisie (30 min, 2 h ou 4 h). Il expire de lui-même et se révoque d'un clic. Chaque attribution, révocation, expiration ou refus est inscrit dans la capture.
 
 À distance, une écriture n'accepte que les binaires listés par le serveur, avec le SHA256 annoncé ; le navigateur le revérifie avant d'écrire.
 
@@ -113,3 +114,5 @@ Limites :
 - Un outil qui resette pendant une écriture invalide l'essai : `ready.sh` ne resette jamais sans boot observé.
 - Masquez les identifiants (SSID, etc.) avant de joindre une capture.
 - Chrome bride les minuteurs des onglets en arrière-plan, jusqu'à un réveil par minute. La page n'en dépend donc pas : elle envoie chaque ligne dès qu'elle arrive, et attend les commandes par une requête longue (`/api/cmd?wait=25`). La capture et les commandes restent ainsi immédiates, même quand l'onglet est caché.
+- Après un rechargement de la page, l'ancienne requête longue reste en attente sur le serveur. Pour qu'elle ne prenne pas, puis ne perde pas, une commande, le serveur vérifie que le client est toujours connecté avant de la lui remettre.
+- Un repère n'est utile que s'il est vraiment écrit avant la suite : `bench.sh mark` attend donc l'accusé de la page.

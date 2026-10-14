@@ -12,6 +12,7 @@ By default every flash operation returns to the console, so the next boot is cap
   benchctl.py write PATH@ADDR [PATH@ADDR ...] [--erase]      (full access)
   benchctl.py install MANIFEST [--erase]                     (full access)
   benchctl.py console | reset [ID] | mark TEXT
+  benchctl.py autoreset on|off [REGEX]                      page-side EN reset on a matching line
   benchctl.py images [FILTER]                                (server only, no page needed)
 
 PATH is a deliverable as listed by `images` (relative to BENCH_WEB, or dumps/...); its
@@ -81,6 +82,10 @@ def main():
         cmd["manifest"] = a.args[0]
     elif a.op == "reset":
         cmd["id"] = a.args[0] if a.args else "benchctl"
+    elif a.op == "autoreset":
+        cmd["enabled"] = (a.args[0] if a.args else "on") != "off"
+        if len(a.args) > 1:
+            cmd["pattern"] = " ".join(a.args[1:])
     elif a.op == "mark":
         cmd["text"] = " ".join(a.args)
 

@@ -18,7 +18,9 @@ capture() {
   echo "$log"
 }
 case "${1:-}" in
-  mark)  cmd "{\"op\":\"mark\",\"text\":\"$2\"}"; sleep 0.5 ;;
+  # Acknowledged by the page: a later "since <mark>" never races the mark itself.
+  mark)  python3 "$(dirname "$0")/benchctl.py" mark "$2" --timeout "${BENCH_MARK_TIMEOUT:-30}" >/dev/null \
+           || { echo "bench.sh: mark '$2' not acknowledged by the page" >&2; exit 1; } ;;
   since) LOG=$(capture); grep -qF "MARK $2" "$LOG" || { echo "bench.sh: mark '$2' not found in $LOG" >&2; exit 1; }
          awk -v m="MARK $2" 'index($0,m){p=1} p' "$LOG" | grep -av "load:0x\|Build:Mar\|SPIWP\|mode:DIO" || true ;;
   reset) cmd "{\"op\":\"reset\",\"id\":\"$2\"}" ;;

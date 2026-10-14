@@ -18,6 +18,8 @@ Stdlib only. No device access from the container: the browser owns the port.
 import hashlib
 import json
 import os
+import select
+import socket
 import sys
 import threading
 import time
@@ -105,6 +107,14 @@ class Handler(SimpleHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         super().end_headers()
 
+    def _client_alive(self):
+        # Readable with no data = the browser closed this connection.
+        try:
+            ready, _, _ = select.select([self.connection], [], [], 0)
+            return not ready or self.connection.recv(1, socket.MSG_PEEK) != b""
+        except OSError:
+            return False
+
     def _json(self, code, body):
         data = json.dumps(body).encode()
         self.send_response(code)
@@ -117,11 +127,18 @@ class Handler(SimpleHTTPRequestHandler):
         if self.path.startswith("/api/cmd"):
             # Long poll: the page waits on a pending request, not on timers that a
             # background tab would throttle to once a minute.
-            wait = float(self.path.split("wait=", 1)[1]) if "wait=" in self.path else 0
-            with queued:
-                queued.wait_for(lambda: commands, timeout=min(wait, 30))
-                cmd = commands.pop(0) if commands else {}
-            return self._json(200, cmd)
+            # A reloaded or closed page leaves its long poll here: never hand a command to a
+            # client that has gone (it would be lost), check the socket between short waits.
+            deadline = time.monotonic() + min(float(self.path.split("wait=", 1)[1]) if "wait=" in self.path else 0, 30)
+            while True:
+                if not self._client_alive():
+                    return
+                with queued:
+                    queued.wait_for(lambda: commands, timeout=max(0, min(0.5, deadline - time.monotonic())))
+                    if commands and self._client_alive():
+                        return self._json(200, commands.pop(0))
+                if time.monotonic() >= deadline:
+                    return self._json(200, {})
         if self.path.startswith("/api/result?req="):
             with lock:
                 return self._json(200, results.get(self.path.split("=", 1)[1], {}))

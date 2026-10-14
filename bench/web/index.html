@@ -54,9 +54,12 @@
   <label><input type="checkbox" id="autoback" checked> retour console après chaque opération</label>
   <label>débit chargeur <select id="baud"><option>115200</option><option selected>460800</option><option>921600</option></select></label>
   <span id="armed"></span>
+  <label title="Reset EN automatique quand une ligne correspond (premier join Wi-Fi qui échoue, #72)"><input type="checkbox" id="autoreset" checked> reset auto sur</label>
+  <input type="text" id="autore" value="Wi-Fi: connection to .* failed" size="26">
   <span class="mute">|</span>
   <span id="access" class="pill limited">banc : accès limité</span>
-  <button id="grant">Accès complet (30 min)</button>
+  <select id="grantfor" title="durée de l'accès complet"><option value="30">30 min</option><option value="120">2 h</option><option value="240">4 h</option></select>
+  <button id="grant">Accès complet</button>
 </header>
 
 <div class="grid">
@@ -284,17 +287,28 @@ navigator.serial.addEventListener("disconnect", (ev) => {
 
 // ---------------------------------------------------------------- bench commands (bench.sh / ready.sh)
 let armed = null;
+// Persistent rule, independent of any script: a failed first Wi-Fi join leaves the board
+// unreachable (#72), so the page itself pulses EN. Bounded: 5 in a row without "OTA ready".
+let autoCount = 0;
 function onLine(line) {
   record(line);
+  if (/OTA ready/.test(line)) autoCount = 0;
+  if ($("autoreset").checked && !line.startsWith("[")) {
+    let re = null;
+    try { re = new RegExp($("autore").value); } catch (e) {}
+    if (re && re.test(line)) {
+      if (autoCount >= 5) bench("auto reset skipped: 5 in a row without OTA ready, check the board");
+      else { autoCount++; bench(`auto reset ${autoCount}/5 on /${re.source}/`); setTimeout(() => pulseEn("auto " + autoCount), 500); }
+    }
+  }
   if (armed && armed.re.test(line)) {
     const a = armed; armed = null; $("armed").textContent = "";
     bench("trigger matched /" + a.pattern + "/ ; reset in " + a.delay + " ms");
     setTimeout(() => pulseEn("trigger " + a.id), a.delay);
   }
 }
-// Remote access: "limited" by default (no flash write); "full" only granted from this page, for 30 min.
-const FULL_MS = 30 * 60 * 1000;
-const LIMITED = new Set(["reset", "arm", "disarm", "mark", "console", "identify", "readpt", "dump"]);
+// Remote access: "limited" by default (no flash write); "full" only granted from this page, for a chosen time.
+const LIMITED = new Set(["reset", "arm", "disarm", "mark", "console", "identify", "readpt", "dump", "autoreset"]);
 const FULL = new Set(["write", "install"]);
 let fullUntil = 0;
 const fullAccess = () => Date.now() < fullUntil;
@@ -302,13 +316,17 @@ function showAccess() {
   const full = fullAccess();
   $("access").className = "pill " + (full ? "full" : "limited");
   $("access").textContent = full ? `banc : accès complet (${Math.ceil((fullUntil - Date.now()) / 60000)} min)` : "banc : accès limité";
-  $("grant").textContent = full ? "Révoquer l'accès complet" : "Accès complet (30 min)";
+  $("grant").textContent = full ? "Révoquer l'accès complet" : "Accès complet";
+  $("grantfor").hidden = full;
   $("grant").className = full ? "danger" : "";
 }
 $("grant").onclick = () => {
   if (fullAccess()) { fullUntil = 0; bench("ACCESS limited (revoked from page)"); }
-  else if (confirm("Donner au banc l'accès complet pendant 30 min ?\nÉcriture, installation et effacement complet pourront être lancés à distance.")) {
-    fullUntil = Date.now() + FULL_MS; bench("ACCESS full granted from page for 30 min");
+  else {
+    const minutes = parseInt($("grantfor").value);
+    if (confirm(`Donner au banc l'accès complet pendant ${minutes} min ?\nÉcriture, installation et effacement complet pourront être lancés à distance.`)) {
+      fullUntil = Date.now() + minutes * 60000; bench(`ACCESS full granted from page for ${minutes} min`);
+    }
   }
   showAccess();
 };
@@ -336,6 +354,10 @@ async function execute(cmd) {
       bench("armed " + (cmd.id || "") + " /" + cmd.pattern + "/ +" + armed.delay + " ms"); return { ok: true };
     case "disarm": armed = null; $("armed").textContent = ""; bench("disarmed"); return { ok: true };
     case "mark": bench("MARK " + cmd.text); return { ok: true };
+    case "autoreset":
+      if (cmd.pattern) $("autore").value = cmd.pattern;
+      $("autoreset").checked = cmd.enabled !== false; autoCount = 0;
+      bench(`auto reset ${$("autoreset").checked ? "on" : "off"} /${$("autore").value}/`); return { ok: true };
     case "console": await openConsole(); return { ok: true };
     case "identify": return identify(back);
     case "readpt": return readPt(cmd.addr ?? 0x8000, back);
