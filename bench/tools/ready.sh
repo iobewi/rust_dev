@@ -3,12 +3,14 @@
 # Ready = READY_RE seen after the last "rst:" AND https://$BENCH_OTA_HOST/health returns 200
 # (TLS verified with $BENCH_CA). Never trusts a stale ready line from an earlier boot.
 # With no boot since the mark it only waits (up to 200 s) and never resets. Otherwise,
-# when the last boot logs a Wi-Fi join failure (FAIL_RE), it EN-resets, at most 5 times.
+# when the last boot logs a Wi-Fi join failure (FAIL_RE), it EN-resets, at most READY_RESETS
+# times (default 5). READY_RESETS=0: wait only, never reset (firmware that retries by itself, #72).
 set -uo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd); B=$HERE/bench.sh; TAG=$1
 HOST=${BENCH_OTA_HOST:-iobewi-ota.test}
 : "${BENCH_CA:?set BENCH_CA to the test CA PEM}"
 READY_RE=${READY_RE:-OTA ready}
+RESETS=${READY_RESETS:-5}
 FAIL_RE=${FAIL_RE:-connection to .* failed\|STA join failed}
 health() { [ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 --cacert "$BENCH_CA" "https://$HOST/health")" = 200 ]; }
 # Abort on a missing capture or mark: resetting the board on unread logs would be blind.
@@ -21,7 +23,15 @@ if ! last_boot | grep -q "rst:0x"; then
   done
   last_boot | grep -q "rst:0x" || { echo "NO HEALTH, no reset done"; exit 1; }
 fi
-for attempt in 1 2 3 4 5; do
+if [ "$RESETS" = 0 ]; then
+  for _ in $(seq 1 "${READY_WAIT:-180}"); do
+    out=$(last_boot)
+    if grep -q "$READY_RE" <<<"$out" && health; then echo "ready+health (no reset)"; exit 0; fi
+    sleep 1
+  done
+  echo "NOT READY (no reset done)"; exit 1
+fi
+for attempt in $(seq 1 "$RESETS"); do
   for _ in $(seq 1 90); do
     out=$(last_boot)
     if grep -q "$READY_RE" <<<"$out" && health; then echo "ready+health (attempt $attempt)"; exit 0; fi

@@ -41,7 +41,7 @@ Après un rechargement de la page, le port déjà autorisé est retrouvé sans s
   - le reset EN (impulsion RTS, DTR relâché) ;
   - les repères `MARK` ;
   - l'exécution des commandes de `bench.sh` et `ready.sh` (reset, repère, reset déclenché sur une expression régulière) ;
-  - un **reset automatique** sur une ligne donnée, actif par défaut sur `Wi-Fi: connection to .* failed` : un premier join Wi-Fi raté laisse la carte injoignable (#72). Il est tracé, et suspendu après 5 resets consécutifs sans `OTA ready`. On le règle dans la page ou avec `benchctl.py autoreset on|off [REGEX]`.
+  - un **reset automatique** sur une ligne donnée, actif par défaut sur `Wi-Fi: connection to .* failed` : un premier join Wi-Fi raté laisse la carte injoignable (#72). Il est tracé, et suspendu après 5 resets consécutifs sans `OTA ready`. On le règle dans la page ou avec `benchctl.py autoreset on|off [REGEX]`. Le réglage survit à un rechargement de la page, et chaque chargement l'inscrit dans la capture (`page loaded: auto reset on|off`). Il faut le couper pour qualifier un firmware qui retente lui-même (#72).
 - **Bascule console ↔ chargeur, sans resélectionner le port.** Toute opération flash (identifier, lire la table, relire, écrire, installer) ferme la console, connecte esptool-js en mode téléchargement, exécute l'opération, puis rouvre la console. Ce retour automatique peut être désactivé pour enchaîner plusieurs opérations ; on revient ensuite par « Retour console ».
   - Il n'y a pas de reset final : **le reset provoqué par la réouverture du port est le seul boot, capturé depuis la ROM**.
   - Les lignes d'esptool-js vont aussi dans la capture, préfixées `[esptool]`.
@@ -87,7 +87,7 @@ bench/tools/benchctl.py install manifest-ota68-factory.json --erase # accès com
 - **`tools/ready.sh <repère>`** : attend que la carte serve de nouveau après le **dernier** boot qui suit le repère.
   - Prête signifie : `READY_RE` vu (défaut `OTA ready`) **et** `/health` qui répond 200, en TLS vérifié (`BENCH_CA`, `BENCH_OTA_HOST`).
   - Si aucun boot n'a eu lieu depuis le repère, le script attend sans jamais resetter.
-  - Si la connexion Wi-Fi échoue, il fait un reset EN, au plus 5 fois.
+  - Si la connexion Wi-Fi échoue, il fait un reset EN, au plus `READY_RESETS` fois (5 par défaut). Avec `READY_RESETS=0`, il attend sans jamais resetter.
 - **`tools/ota_inject.py`** : requêtes d'injection pour l'exemple OTA A (mauvais digest, transfert tronqué, image non amorçable, jeton absent ou faux, activation). Le jeton est lu dans `IOBEWI_OTA_TOKEN`, la CA est passée par `--ca` ou `BENCH_CA`.
 
 ## Sonde mémoire (`probe/qual_mem.rs`)

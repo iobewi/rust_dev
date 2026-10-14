@@ -290,6 +290,18 @@ let armed = null;
 // Persistent rule, independent of any script: a failed first Wi-Fi join leaves the board
 // unreachable (#72), so the page itself pulses EN. Bounded: 5 in a row without "OTA ready".
 let autoCount = 0;
+// The rule survives a page reload: a campaign that turned it off (#72 qualification) must not
+// find it silently back on after a reload. Browser storage may be unavailable: then default on.
+function saveAuto() {
+  try { localStorage.setItem("bench.autoreset", JSON.stringify({ on: $("autoreset").checked, re: $("autore").value })); } catch (e) {}
+}
+try {
+  const saved = JSON.parse(localStorage.getItem("bench.autoreset") || "null");
+  if (saved) { $("autoreset").checked = !!saved.on; if (saved.re) $("autore").value = saved.re; }
+} catch (e) {}
+$("autoreset").addEventListener("change", () => { saveAuto(); bench(`auto reset ${$("autoreset").checked ? "on" : "off"} (page)`); });
+$("autore").addEventListener("change", saveAuto);
+bench(`page loaded: auto reset ${$("autoreset").checked ? "on" : "off"} /${$("autore").value}/`);
 function onLine(line) {
   record(line);
   if (/OTA ready/.test(line)) autoCount = 0;
@@ -356,7 +368,7 @@ async function execute(cmd) {
     case "mark": bench("MARK " + cmd.text); return { ok: true };
     case "autoreset":
       if (cmd.pattern) $("autore").value = cmd.pattern;
-      $("autoreset").checked = cmd.enabled !== false; autoCount = 0;
+      $("autoreset").checked = cmd.enabled !== false; autoCount = 0; saveAuto();
       bench(`auto reset ${$("autoreset").checked ? "on" : "off"} /${$("autore").value}/`); return { ok: true };
     case "console": await openConsole(); return { ok: true };
     case "identify": return identify(back);
