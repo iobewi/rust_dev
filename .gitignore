@@ -6,6 +6,8 @@
 !/.devcontainer/**
 !/docker/
 !/docker/**
+!/bench/
+!/bench/**
 
 # Keep these root files
 !/.gitignore
