@@ -177,6 +177,7 @@ async function openConsole() {
   bench("console open (boot after port open is captured)");
   readDone = readLoop();
 }
+let rxHex = false;   // log raw received bytes as hex (Improv frames are binary)
 async function readLoop() {
   const decoder = new TextDecoder(); let partial = "";
   while (port && port.readable && mode === "console") {
@@ -185,6 +186,7 @@ async function readLoop() {
       for (;;) {
         const { value, done } = await reader.read();
         if (done) break;
+        if (rxHex) bench("rx " + Array.from(value, b => b.toString(16).padStart(2, "0")).join(""));
         partial += decoder.decode(value, { stream: true });
         const parts = partial.split(/\r?\n/); partial = parts.pop();
         parts.forEach(onLine);
@@ -321,7 +323,7 @@ function onLine(line) {
 }
 // Remote access: "limited" by default (no flash write); "full" only granted from this page, for a chosen time.
 const LIMITED = new Set(["reset", "arm", "disarm", "mark", "console", "identify", "readpt", "dump", "autoreset"]);
-const FULL = new Set(["write", "install"]);
+const FULL = new Set(["write", "install", "tx", "rxhex", "io0"]);
 let fullUntil = 0;
 const fullAccess = () => Date.now() < fullUntil;
 function showAccess() {
@@ -371,6 +373,22 @@ async function execute(cmd) {
       $("autoreset").checked = cmd.enabled !== false; autoCount = 0; saveAuto();
       bench(`auto reset ${$("autoreset").checked ? "on" : "off"} /${$("autore").value}/`); return { ok: true };
     case "console": await openConsole(); return { ok: true };
+    case "rxhex": rxHex = cmd.enabled !== false; bench("rx hex " + (rxHex ? "on" : "off")); return { ok: true };
+    case "tx": {   // bytes to the UART; content is never logged (it may carry credentials)
+      if (mode !== "console") return { ok: false, error: "tx seulement en mode console" };
+      const bytes = Uint8Array.from((cmd.hex.match(/../g) || []).map(h => parseInt(h, 16)));
+      const w = port.writable.getWriter();
+      try { await w.write(bytes); } finally { w.releaseLock(); }
+      bench(`tx ${bytes.length} bytes`); return { ok: true, bytes: bytes.length };
+    }
+    case "io0": {  // hold GPIO0 low (BOOT pressed) for ms while the app runs: DTR=1, RTS=0
+      if (mode !== "console") return { ok: false, error: "io0 seulement en mode console" };
+      await port.setSignals({ dataTerminalReady: true, requestToSend: false });
+      bench(`io0 low for ${cmd.ms} ms`);
+      await new Promise(r => setTimeout(r, cmd.ms));
+      await port.setSignals({ dataTerminalReady: false, requestToSend: false });
+      bench("io0 released"); return { ok: true };
+    }
     case "identify": return identify(back);
     case "readpt": return readPt(cmd.addr ?? 0x8000, back);
     case "dump": return dump(cmd.regions.map(r => ({ name: String(r.name).replace(/[^A-Za-z0-9_-]/g, "_"), addr: r.addr, size: r.size })), back);

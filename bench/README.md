@@ -65,7 +65,7 @@ Ces commandes ne sont exécutées que si la page tient le port (mode console ou 
 | Niveau | Commandes à distance |
 | --- | --- |
 | **limité** (défaut) | `reset`, `mark`, `arm`/`disarm`, `autoreset`, `console`, `identify`, `readpt`, `dump` : rien n'écrit la flash |
-| **complet** (bouton dans la page, durée limitée) | en plus : `write`, `install` et l'option `--erase` |
+| **complet** (bouton dans la page, durée limitée) | en plus : `write`, `install`, l'option `--erase`, et les commandes qui parlent à la carte : `tx`, `rxhex`, `io0` |
 
 L'accès complet ne s'accorde que **depuis la page**, après confirmation, pour une durée choisie (30 min, 2 h ou 4 h). Il expire de lui-même et se révoque d'un clic. Chaque attribution, révocation, expiration ou refus est inscrit dans la capture.
 
@@ -78,6 +78,9 @@ bench/tools/benchctl.py readpt
 bench/tools/benchctl.py dump config 0x9000 0x40000    # → dumps/config-0x9000.bin (+ archive)
 bench/tools/benchctl.py write c71/ota-mem/app.bin@0x20000          # accès complet
 bench/tools/benchctl.py install manifest-ota68-factory.json --erase # accès complet
+bench/tools/benchctl.py tx 494d50524f56...                          # accès complet : octets (hex) vers l'UART
+bench/tools/benchctl.py rxhex on|off                                # accès complet : octets reçus journalisés en hex
+bench/tools/benchctl.py io0 3600                                    # accès complet : GPIO0 (BOOT) tenu bas 3,6 s, carte en marche
 ```
 
 ## Outils
@@ -88,6 +91,7 @@ bench/tools/benchctl.py install manifest-ota68-factory.json --erase # accès com
   - Prête signifie : `READY_RE` vu (défaut `OTA ready`) **et** `/health` qui répond 200, en TLS vérifié (`BENCH_CA`, `BENCH_OTA_HOST`).
   - Si aucun boot n'a eu lieu depuis le repère, le script attend sans jamais resetter.
   - Si la connexion Wi-Fi échoue, il fait un reset EN, au plus `READY_RESETS` fois (5 par défaut). Avec `READY_RESETS=0`, il attend sans jamais resetter.
+- **`tools/improv.py`** : client Improv Serial (`state`, `info`, `scan`, `wifi SSID [MOT_DE_PASSE]`), accès complet requis. Il émet par `benchctl tx` et relit les trames dans la capture (`rxhex`). Les identifiants peuvent venir de `IMPROV_SSID` / `IMPROV_PASSWORD` ; la page ne journalise que le **nombre** d'octets émis, jamais leur contenu. Un fichier d'environnement local (`bench/.improv.env`) est ignoré par git ; **ne jamais versionner d'identifiants**. Les lignes de console d'un firmware antérieur peuvent contenir le SSID : masquez-le avant de joindre une capture.
 - **`tools/ota_inject.py`** : requêtes d'injection pour l'exemple OTA A (mauvais digest, transfert tronqué, image non amorçable, jeton absent ou faux, activation). Le jeton est lu dans `IOBEWI_OTA_TOKEN`, la CA est passée par `--ca` ou `BENCH_CA`.
 
 ## Sonde mémoire (`probe/qual_mem.rs`)
