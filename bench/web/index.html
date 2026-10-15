@@ -357,6 +357,7 @@ async function execute(cmd) {
   const back = cmd.stay ? false : true;
   if (cmd.expires && Date.now() > cmd.expires) { bench(`dropped expired remote ${cmd.op}`); return { ok: false, error: "commande expirée" }; }
   if (!LIMITED.has(cmd.op) && !FULL.has(cmd.op)) return { ok: false, error: "commande inconnue " + cmd.op };
+  if (tag === "[jtag] " && (cmd.op === "reset" || cmd.op === "arm" || cmd.op === "io0")) return { ok: false, error: cmd.op + " : port USB natif sans lignes EN / IO0" };
   if (FULL.has(cmd.op) && !fullAccess()) { bench(`refused remote ${cmd.op}: limited access`); return { ok: false, error: "accès limité : accès complet à accorder depuis la page" }; }
   if (cmd.erase && !fullAccess()) return { ok: false, error: "accès limité : effacement refusé" };
   switch (cmd.op) {
@@ -408,7 +409,9 @@ async function execute(cmd) {
 // Commands wait in the server queue while the port is not held (off) or an operation runs.
 // Long poll driven by fetch completions, not timers (background tabs throttle timers).
 let wake = null;
-const ready = () => port && tag === "[uart] " && !opRunning && (mode === "console" || mode === "loader");
+// The native USB-Serial-JTAG port (tag "[jtag] ") is served too: esptool-js resets it by itself (UsbJtagSerialReset),
+// but it has no EN / IO0 lines, so reset / arm / io0 stay refused for it (see execute).
+const ready = () => port && (tag === "[uart] " || tag === "[jtag] ") && !opRunning && (mode === "console" || mode === "loader");
 const stateChanged = () => new Promise(r => { wake = r; });
 (async function commandLoop() {
   for (;;) {
