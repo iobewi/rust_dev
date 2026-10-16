@@ -323,7 +323,7 @@ function onLine(line) {
 }
 // Remote access: "limited" by default (no flash write); "full" only granted from this page, for a chosen time.
 const LIMITED = new Set(["reset", "arm", "disarm", "mark", "console", "identify", "readpt", "dump", "autoreset"]);
-const FULL = new Set(["write", "install", "tx", "rxhex", "io0"]);
+const FULL = new Set(["write", "install", "tx", "rxhex", "io0", "http"]);
 let fullUntil = 0;
 const fullAccess = () => Date.now() < fullUntil;
 function showAccess() {
@@ -375,6 +375,21 @@ async function execute(cmd) {
       bench(`auto reset ${$("autoreset").checked ? "on" : "off"} /${$("autore").value}/`); return { ok: true };
     case "console": await openConsole(); return { ok: true };
     case "rxhex": rxHex = cmd.enabled !== false; bench("rx hex " + (rxHex ? "on" : "off")); return { ok: true };
+    case "http": {   // request to a device on the local network, sent from this browser (the container is not on that LAN)
+      let u; try { u = new URL(cmd.url); } catch (e) { return { ok: false, error: "URL invalide" }; }
+      const h = u.hostname;
+      const lan = u.protocol === "http:" && (/^(10|192\.168)\./.test(h) || /^172\.(1[6-9]|2\d|3[01])\./.test(h));
+      if (!lan) return { ok: false, error: "http : adresses privées (http://10.x, 172.16-31.x, 192.168.x) seulement" };
+      const method = cmd.method === "POST" ? "POST" : "GET";
+      const ctl = new AbortController(); const timer = setTimeout(() => ctl.abort(), cmd.timeout_ms || 15000);
+      const t0 = Date.now();
+      try {   // no-cors: the answer is opaque; the board's own log tells what it did
+        await fetch(u.href, { method, mode: "no-cors", cache: "no-store", referrerPolicy: "no-referrer", signal: ctl.signal,
+          ...(method === "POST" ? { headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: cmd.body || "" } : {}) });
+        bench(`http ${method} ${u.pathname} sent, answered in ${Date.now() - t0} ms`); return { ok: true, ms: Date.now() - t0 };
+      } catch (e) { bench(`http ${method} ${u.pathname} failed after ${Date.now() - t0} ms: ${e.name}`); return { ok: false, error: e.name }; }
+      finally { clearTimeout(timer); }
+    }
     case "tx": {   // bytes to the UART; content is never logged (it may carry credentials)
       if (mode !== "console") return { ok: false, error: "tx seulement en mode console" };
       const bytes = Uint8Array.from((cmd.hex.match(/../g) || []).map(h => parseInt(h, 16)));

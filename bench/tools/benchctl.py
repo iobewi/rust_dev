@@ -13,6 +13,7 @@ By default every flash operation returns to the console, so the next boot is cap
   benchctl.py install MANIFEST [--erase]                     (full access)
   benchctl.py console | reset [ID] | mark TEXT
   benchctl.py tx HEX | rxhex on|off | io0 [MS]                 (full access) UART bytes, raw rx log, hold BOOT
+  benchctl.py http GET|POST URL [BODY]                       (full access) request to a private-LAN device, sent by the browser
   benchctl.py autoreset on|off [REGEX]                      page-side EN reset on a matching line
   benchctl.py images [FILTER]                                (server only, no page needed)
 
@@ -93,6 +94,11 @@ def main():
         cmd["enabled"] = (a.args[0] if a.args else "on") != "off"
     elif a.op == "io0":
         cmd["ms"] = int(a.args[0]) if a.args else 3000   # hold GPIO0 low (BOOT) for ms, app running
+    elif a.op == "http":
+        cmd["method"] = a.args[0].upper()
+        cmd["url"] = a.args[1]
+        if len(a.args) > 2:
+            cmd["body"] = a.args[2]          # form body; sent, never logged
     elif a.op == "mark":
         cmd["text"] = " ".join(a.args)
 
