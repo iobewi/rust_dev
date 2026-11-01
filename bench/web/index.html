@@ -470,7 +470,7 @@ async function execute(cmd) {
     case "dump": return dump(cmd.regions.map(r => ({ name: String(r.name).replace(/[^A-Za-z0-9_-]/g, "_"), addr: r.addr, size: r.size })), back);
     case "write": {
       // Only deliverables listed by the server, with the SHA256 the caller expects.
-      const known = new Map((await (await fetch("/api/images?scope=all&archives=1", { cache: "no-store" })).json()).images.map(i => [i.path, i.sha256]));
+      const known = new Map((await (await fetch("/api/images?scope=all&archives=1&fresh=1", { cache: "no-store" })).json()).images.map(i => [i.path, i.sha256]));
       for (const it of cmd.items) if (known.get(it.path) !== it.sha) return { ok: false, error: "image inconnue ou empreinte différente : " + it.path };
       return writeImages(cmd.items.map(it => ({ ...it })), !!cmd.erase, "écriture (banc)", true, back, cmd.md5 !== false);
     }

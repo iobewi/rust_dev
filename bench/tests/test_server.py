@@ -70,6 +70,13 @@ class Protocol(unittest.TestCase):
         code, out = self.b.post("/api/ack", {"req": "w", "claim": cmd["claim"], "page": "P"})
         self.assertEqual((code, out["ok"]), (409, False))
 
+    def test_a_page_without_the_acknowledgement_protocol_is_given_nothing(self):
+        self.b.post("/api/cmd", {"op": "write", "req": "w"})
+        t0 = time.monotonic()
+        self.assertEqual(self.b.get("/api/cmd?wait=1")[1], {})          # old page: no `page` parameter
+        self.assertGreaterEqual(time.monotonic() - t0, 0.9)              # it waits like a long poll, no busy loop
+        self.assertEqual(self.b.get("/api/status?req=w")[1]["state"], "queued")
+
     def test_commands_log_has_states_and_no_payload(self):
         self.b.post("/api/cmd", {"op": "tx", "req": "t", "hex": "deadbeef", "body": "token=SECRET"})
         cmd = self.page_runs("P", None)

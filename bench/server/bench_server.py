@@ -109,6 +109,13 @@ class Handler(SimpleHTTPRequestHandler):
             while True:
                 if not self._client_alive():
                     return
+                if not page:
+                    # A page from before the acknowledgement protocol (tab left open across an upgrade) would run a
+                    # command without acknowledging it. It gets nothing; it must be reloaded.
+                    time.sleep(max(0.0, min(0.5, deadline - time.monotonic())))
+                    if time.monotonic() >= deadline:
+                        return self._json(200, {})
+                    continue
                 cmd = commands.claim(page, wait=max(0.0, min(0.5, deadline - time.monotonic())))
                 if cmd:
                     write_events()

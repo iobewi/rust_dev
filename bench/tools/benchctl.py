@@ -96,7 +96,7 @@ def main():
         cmd["regions"] = [{"name": "%s-0x%x" % (a.args[i], num(a.args[i + 1])), "addr": num(a.args[i + 1]),
                            "size": num(a.args[i + 2])} for i in range(0, len(a.args), 3)]
     elif a.op == "write":
-        shas = {i["path"]: i["sha256"] for i in call("/api/images?scope=all&archives=1")["images"]}
+        shas = {i["path"]: i["sha256"] for i in call("/api/images?scope=all&archives=1&fresh=1")["images"]}
         cmd["items"] = []
         for item in a.args:
             path, _, addr = item.rpartition("@")
