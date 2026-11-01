@@ -62,6 +62,18 @@ class Lifecycle(unittest.TestCase):
         clock.t += 6
         self.assertIsNone(c.claim("P"))
 
+    def test_result_for_an_unknown_request_keeps_the_page_verdict(self):
+        # Server restarted while the page was writing: the page's "indeterminate" must not become "failed".
+        c, _ = make()
+        for state, ok, want in (("indeterminate", False, "indeterminate"), ("failed", False, "failed"),
+                                ("completed", True, "completed"), (None, False, "failed"), (None, True, "completed")):
+            req = "u-%s-%s" % (state, ok)
+            c.finish({"req": req, "op": "write", "ok": ok, **({"state": state} if state else {})})
+            self.assertEqual(c.status(req)["state"], want, req)
+            self.assertEqual(c.result(req)["state"], want, req)
+        c.finish({"req": "u-lie", "op": "write", "ok": True, "state": "indeterminate"})   # inconsistent body: no success
+        self.assertFalse(c.result("u-lie")["ok"])
+
     def test_legacy_expires_deadline_still_honoured(self):
         c, clock = make()
         c.enqueue({"op": "write", "req": "a", "expires": (clock.t - 1) * 1000})

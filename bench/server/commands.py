@@ -154,10 +154,15 @@ class Commands:
         with self.cond:
             rec = self.recs.get(req)
             if rec is None:                                        # legacy poster: kept as is
-                self.recs[req] = rec = {"req": req, "cmd": {"op": body.get("op")}, "state": "completed" if body.get("ok") else "failed",
+                # A server restarted while the page was working has never heard of the request. The page's own verdict
+                # stands, and an "indeterminate" is never downgraded to "failed".
+                state = body.get("state") if body.get("state") in RESULT_STATES else ("completed" if body.get("ok") else "failed")
+                if state != "completed":
+                    body = dict(body, ok=False)
+                self.recs[req] = rec = {"req": req, "cmd": {"op": body.get("op")}, "state": state,
                                         "queued_at": self.wall(), "expires": 0, "claim": None, "page": None, "legacy": True}
                 self.order.append(req)
-                self._end(rec, rec["state"], dict(body, state=rec["state"]))
+                self._end(rec, state, dict(body, state=state))
                 return 200, {"ok": True}
             state = body.get("state") if body.get("state") in RESULT_STATES else ("completed" if body.get("ok") else "failed")
             ok = bool(body.get("ok")) and state == "completed"
