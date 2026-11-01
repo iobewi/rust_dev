@@ -18,6 +18,7 @@ class Bench:
         (root / "web").mkdir()
         (root / "logs").mkdir()
         self.web, self.logs = root / "web", root / "logs"
+        os.environ.pop("BENCH_INVENTORY_DIRS", None)
         os.environ.update({"BENCH_WEB": str(self.web), "BENCH_LOGS": str(self.logs), "BENCH_CMD_TTL": "120", "BENCH_ACK_TIMEOUT": "15"})
         os.environ.update({k: str(v) for k, v in env.items()})
         sys.path.insert(0, str(SERVER_DIR))

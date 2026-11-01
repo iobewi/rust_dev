@@ -54,6 +54,49 @@ Après un rechargement de la page, le port déjà autorisé est retrouvé sans s
   - **Écriture** : sans effacement global, sauf si la case est cochée, avec confirmation. Le navigateur revérifie le SHA256 de chaque image avant d'écrire.
 - **Manifestes** : tout manifeste ESP Web Tools trouvé sous `BENCH_WEB` s'installe en un clic. Les parties absentes sont signalées. L'effacement complet n'a lieu que si la case est cochée, avec confirmation : `new_install_prompt_erase` ne fait que proposer ce choix et n'est jamais pris pour un ordre d'effacement.
 
+## Fiabilité des opérations flash et des commandes
+
+Rien de ce qui suit ne dépend d'une carte ; les tests sont dans `bench/tests` (`npm test`, ou `node --test tests/` puis
+`python3 -m unittest discover -s tests -p "test_*.py"` depuis `bench/`).
+
+**Transport** (`web/bench-transport.js`). esptool-js 0.7.0 abandonne `Transport.read()` quand son réveil `sleep(1)` tombe après
+l'échéance, sans relire le tampon : dans un onglet bridé, une réponse arrivée à temps est déclarée absente, avec le message
+« Serial data stream stopped: Possible serial noise or corruption » (qui signifie « aucun octet reçu », pas « bruit »). Le transport
+du banc examine le tampon d'abord, se réveille à l'arrivée des octets, utilise une échéance monotone et distingue `no-response`,
+`partial-packet`, `invalid-packet` et `closed`. Il ne rejoue rien.
+
+**Résultat d'une écriture** (`web/flash-op.js`). Le chargeur efface avant d'acquitter `FLASH_DEFL_BEGIN` : dès que ce début (ou un
+effacement complet) est envoyé, une réponse manquante ne prouve rien sur la flash.
+
+| état | sens | `ok` |
+|---|---|---|
+| `completed` | transfert terminé, MD5 du chargeur égal (sauf `md5:false`) | oui |
+| `failed` | rien d'envoyé qui modifie la flash (`flash:"unchanged"`), ou contenu connu différent (`content-mismatch`) | non |
+| `indeterminate` | la flash a pu être effacée ou à moitié écrite, ou la vérification n'a pas répondu | non |
+
+Un résultat porte `verification: {transfer, md5, sha256_readback}` ; `sha256_readback` vaut toujours `not-run` : la relecture
+indépendante reste celle de la campagne. Après `indeterminate` : pas de retour console automatique (la réouverture du port réinitialise
+la carte), `reset`/`console`/`tx`/`io0` refusés, état affiché dans l'en-tête de la page et levé **par l'opérateur seulement**, après
+relecture. Les relectures et les écritures de restauration restent possibles. À chaque échec, les 60 derniers événements de la trace
+(horloge monotone, visibilité de l'onglet, commandes du chargeur, délais, fermeture du port ; jamais de données) vont dans la capture
+sous `[trace]`.
+
+**Commandes** (`server/commands.py`). `Queued → Claimed → Running → Completed / Failed / Indeterminate`, ou `Expired`.
+La page n'exécute qu'après l'accusé de réception accepté par le serveur ; une commande non commencée expire (ttl 120 s par défaut, `--ttl`)
+et n'est jamais exécutée tard ; une commande prise sans accusé n'a certainement pas été exécutée ; un identifiant ne sert qu'une fois ;
+une seule commande à la fois. Une commande `Running` n'est jamais interrompue ni expirée parce qu'un client HTTP est parti ; si une autre
+instance de la page prend le relais elle devient `Indeterminate` (« démarrée, issue inconnue ») et n'est pas rejouée. Les événements
+(op, état, raison) sont dans `logs/commands.jsonl`. Code de sortie de `benchctl.py` : 0 completed, 1 failed, 2 sans réponse (jamais exécutée),
+3 indeterminate, 4 expired.
+
+**Serveur.** L'inventaire ne tient aucun verrou partagé avec les commandes ni la capture. Un seul serveur par répertoire de capture
+(`logs/.bench_server.lock`) : les serveurs `:8080` et `:8081` (`BENCH_LOGS=logs/usb-native`) sont deux bancs, pas des doublons.
+
+**Inventaire.** Par défaut : les dossiers de `BENCH_INVENTORY_DIRS` (défaut `p91`) et les relectures courantes. `?scope=all` ajoute les
+autres dossiers, `?archives=1` les copies archivées. Catégories : `artifact`, `backup`, `capture`, `archive`. Fichiers et empreintes
+uniques sont comptés séparément ; deux fichiers de même SHA-256 restent deux entrées. Les JSON qui ne sont pas des manifestes ESP Web
+Tools sont listés avec leur raison. Rien n'est déplacé ni supprimé.
+
 ## Pilotage à distance et droits d'accès
 
 La page exécute les commandes que le serveur met en file d'attente. Il y en a deux sources :

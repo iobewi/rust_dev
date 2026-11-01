@@ -4,8 +4,10 @@
 - GET  /...             bench page (bench/web), else data files from BENCH_WEB (manifests, images)
 - GET  /dumps/...       flash read-backs saved by the page (BENCH_LOGS/dumps)
 - GET  /api/info        where this server writes: capture file, dumps, data directory
-- GET  /api/images[?fresh=1] deliverable binaries (*.bin under BENCH_WEB and dumps) with SHA256,
-                        and ESP Web Tools manifests found under BENCH_WEB
+- GET  /api/images[?scope=all][&archives=1][&fresh=1]  binaries with SHA256, category (artifact, backup, capture,
+                        archive), origin and counts. Default: the folders of BENCH_INVENTORY_DIRS (default p91) and the
+                        current read-backs; scope=all adds the other folders, archives=1 the archived copies. ESP Web
+                        Tools manifests, and the JSON files that are not (reason given)
 - POST /api/log         JSON {"lines": [{"t": <browser ms>, "s": "<line>"}]} appended to the capture
 - GET  /api/cmd[?wait=S&page=ID] claim the next queued command for the page, or {} (long poll up to S seconds)
 - POST /api/cmd         queue a command {op, req?, ttl?, ...}; 409 if req already exists (container only, see benchctl.py)
@@ -44,7 +46,7 @@ from inventory import Inventory  # noqa: E402
 capture_lock = threading.Lock()   # appends to the capture and the event log, nothing else (no disk walk under it)
 commands = Commands(ttl=float(os.environ.get("BENCH_CMD_TTL", "120")), ack_timeout=float(os.environ.get("BENCH_ACK_TIMEOUT", "15")))
 EVENTS = LOGS / "commands.jsonl"
-inventory = Inventory(WEB, DUMPS)
+inventory = Inventory(WEB, DUMPS, allow=[d for d in os.environ.get("BENCH_INVENTORY_DIRS", "p91").split(",") if d])
 
 
 def write_events():
@@ -130,7 +132,9 @@ class Handler(SimpleHTTPRequestHandler):
             return self._json(200, {"capture": str(CAPTURE), "dumps": str(DUMPS), "web": str(WEB), "pages": str(PAGES)})
         if self.path.startswith("/api/images"):
             # fresh=1: rebuild now (the caller has just put a file there); otherwise the snapshot is at most ~1 s old.
-            return self._json(200, inventory.get(fresh="fresh=1" in self.path))
+            q = parse_qs(urlparse(self.path).query)
+            return self._json(200, inventory.get(scope="all" if q.get("scope") == ["all"] else "default",
+                                                 archives=q.get("archives") == ["1"], fresh=q.get("fresh") == ["1"]))
         return super().do_GET()
 
     def do_POST(self):

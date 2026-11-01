@@ -15,7 +15,7 @@ By default every flash operation returns to the console, so the next boot is cap
   benchctl.py tx HEX | rxhex on|off | io0 [MS]                 (full access) UART bytes, raw rx log, hold BOOT
   benchctl.py http GET|POST URL [BODY]                       (full access) request to a private-LAN device, sent by the browser
   benchctl.py autoreset on|off [REGEX]                      page-side EN reset on a matching line
-  benchctl.py images [FILTER]                                (server only, no page needed)
+  benchctl.py images [FILTER] [--all] [--archives]           (server only, no page needed)
 
 PATH is a deliverable as listed by `images` (relative to BENCH_WEB, or dumps/...); its
 SHA256 is taken from the server listing and re-checked by the browser before writing.
@@ -61,17 +61,24 @@ def main():
     p.add_argument("args", nargs="*")
     p.add_argument("--erase", action="store_true", help="erase the whole flash first (full access)")
     p.add_argument("--stay", action="store_true", help="stay in the loader instead of reopening the console")
+    p.add_argument("--all", action="store_true", help="images: also the folders not declared in BENCH_INVENTORY_DIRS")
+    p.add_argument("--archives", action="store_true", help="images: also archived copies")
     p.add_argument("--timeout", type=float, default=300, help="how long to wait for the outcome")
     p.add_argument("--ttl", type=float, default=None, help="seconds a command may wait for the page before it expires unexecuted")
     a = p.parse_args()
 
     if a.op == "images":
-        inv = call("/api/images")
+        inv = call("/api/images?fresh=1" + ("&scope=all" if a.all else "") + ("&archives=1" if a.archives else ""))
         for i in sorted(inv["images"], key=lambda i: -i["mtime"]):
             if not a.args or a.args[0] in i["path"]:
-                print("%s  %9d  %s  %s" % (time.strftime("%m-%d %H:%M", time.localtime(i["mtime"])), i["size"], i["sha256"], i["path"]))
+                print("%s  %9d  %s  %-8s %s" % (time.strftime("%m-%d %H:%M", time.localtime(i["mtime"])), i["size"], i["sha256"], i["category"], i["path"]))
         for m in inv["manifests"]:
             print("manifest %s: %s" % (m["path"], m["name"]))
+        for j in inv.get("ignored_json", []):
+            print("ignored json %s: %s" % (j["path"], j["reason"]))
+        c, x = inv["counts"], inv["excluded"]
+        print("%d files, %d unique sha256 (%d contents listed more than once, none merged); hidden: %d archives, %d outside declared folders"
+              % (c["files"], c["unique_sha256"], c["duplicate_groups"], x["archives"], x["outside_allowed"]))
         return 0
 
     # The server drops a command that waits longer than its ttl (closed tab: no late flash write).

@@ -43,13 +43,14 @@ class InventoryContention(unittest.TestCase):
     def test_a_second_caller_during_a_build_gets_the_previous_snapshot(self):
         b = Bench()
         try:
-            (b.web / "a.bin").write_bytes(b"x")
+            (b.web / "p91").mkdir()
+            (b.web / "p91" / "a.bin").write_bytes(b"x")
             self.assertEqual(len(b.get("/api/images")[1]["images"]), 1)
-            (b.web / "b.bin").write_bytes(b"y")
+            (b.web / "p91" / "b.bin").write_bytes(b"y")
             real = b.mod.inventory.build
-            def slow():
+            def slow(*a):
                 time.sleep(1.0)
-                return real()
+                return real(*a)
             b.mod.inventory.build = slow
             b.mod.inventory.invalidate()
             t = threading.Thread(target=lambda: b.get("/api/images", timeout=30)); t.start()
@@ -67,7 +68,8 @@ class InventoryContention(unittest.TestCase):
         b = Bench()
         try:
             self.assertEqual(b.get("/api/images")[1]["images"], [])
-            (b.web / "new.bin").write_bytes(b"z")
+            (b.web / "p91").mkdir()
+            (b.web / "p91" / "new.bin").write_bytes(b"z")
             self.assertEqual(len(b.get("/api/images?fresh=1")[1]["images"]), 1)
         finally:
             b.close()

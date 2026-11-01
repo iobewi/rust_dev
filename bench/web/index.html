@@ -98,10 +98,12 @@
   <h2>Binaires disponibles <span class="mute" id="invstate"></span></h2>
   <div class="row">
     <input type="text" id="filter" placeholder="filtrer (chemin)" size="24">
-    <label><input type="checkbox" id="showdumps" checked> inclure les relectures</label>
+    <label><input type="checkbox" id="showdumps" checked> relectures</label>
+    <label title="Copies horodatées des relectures et dossiers archive/ : hors inventaire par défaut"><input type="checkbox" id="showarch"> archives</label>
+    <label title="Dossiers non déclarés dans BENCH_INVENTORY_DIRS (builds historiques)"><input type="checkbox" id="showall"> autres dossiers</label>
     <span class="mute">Actualisation automatique ; vert = modifié depuis moins de 10 min. Le SHA256 est revérifié par le navigateur avant d'écrire.</span>
   </div>
-  <div class="scroll" style="max-height:300px"><table id="imgs"><thead><tr><th></th><th>Fichier</th><th>Adresse</th><th>Taille</th><th>SHA256</th><th>Modifié</th></tr></thead><tbody></tbody></table></div>
+  <div class="scroll" style="max-height:300px"><table id="imgs"><thead><tr><th></th><th>Fichier</th><th>Catégorie</th><th>Adresse</th><th>Taille</th><th>SHA256</th><th>Modifié</th></tr></thead><tbody></tbody></table></div>
   <div class="row">
     <button id="write" class="primary" disabled>Écrire la sélection</button>
     <label><input type="checkbox" id="eraseall"> effacer toute la flash avant</label>
@@ -573,12 +575,12 @@ function guessAddr(path) {
 }
 function render() {
   const f = $("filter").value.trim().toLowerCase(), now = Date.now() / 1000;
-  const list = inv.images.filter(i => ($("showdumps").checked || i.source !== "dumps") && (!f || i.path.toLowerCase().includes(f)))
+  const list = inv.images.filter(i => ($("showdumps").checked || i.category !== "capture") && (!f || i.path.toLowerCase().includes(f)))
     .sort((a, b) => b.mtime - a.mtime);
   $("imgs").tBodies[0].innerHTML = list.map(i => {
     if (!addrs.has(i.path)) addrs.set(i.path, guessAddr(i.path));
     return `<tr class="${now - i.mtime < 600 ? "new" : ""}"><td><input type="checkbox" data-p="${esc(i.path)}" ${sel.get(i.path) ? "checked" : ""}></td>
-      <td class="mono">${esc(i.path)}</td><td><input type="text" class="addr" data-a="${esc(i.path)}" value="${esc(addrs.get(i.path))}"></td>
+      <td class="mono">${esc(i.path)}</td><td class="mute" title="origine : ${esc(i.origin)}${i.allowed ? "" : " (hors dossiers déclarés)"}">${esc(i.category)}</td><td><input type="text" class="addr" data-a="${esc(i.path)}" value="${esc(addrs.get(i.path))}"></td>
       <td>${i.size.toLocaleString("fr")}</td><td class="mono" title="${i.sha256}">${i.sha256.slice(0, 12)}…</td>
       <td>${new Date(i.mtime * 1000).toLocaleString("fr")}</td></tr>`;
   }).join("");
@@ -604,9 +606,17 @@ function updateWriteButton() {
 }
 async function refresh() {
   try {
-    const r = await (await fetch("/api/images", { cache: "no-store" })).json();
+    const q = new URLSearchParams();
+    if ($("showall").checked) q.set("scope", "all");
+    if ($("showarch").checked) q.set("archives", "1");
+    const r = await (await fetch("/api/images?" + q, { cache: "no-store" })).json();
     const key = JSON.stringify(r);
-    $("invstate").textContent = `— ${r.images.length} binaires, ${r.manifests.length} manifestes`;
+    const c = r.counts, x = r.excluded, ij = r.ignored_json || [];
+    $("invstate").textContent = `— ${c.files} fichiers, ${c.unique_sha256} empreintes uniques` +
+      (c.duplicate_groups ? ` (${c.duplicate_groups} contenus présents plusieurs fois, rôles distincts : rien n'est fusionné)` : "") +
+      `, ${r.manifests.length} manifestes` + (ij.length ? `, ${ij.length} JSON ignorés (pas au format ESP Web Tools)` : "") +
+      ` · masqués : ${x.archives} archives, ${x.outside_allowed} hors dossiers déclarés`;
+    $("invstate").title = ij.map(j => `${j.path} : ${j.reason}`).join("\n");
     if (key === invKey) return;
     invKey = key; inv = r;
     for (const p of [...sel.keys()]) if (!r.images.some(i => i.path === p)) sel.delete(p);
@@ -614,6 +624,7 @@ async function refresh() {
   } catch (e) { $("invstate").textContent = "— serveur injoignable"; }
 }
 $("filter").oninput = render; $("showdumps").onchange = render;
+$("showarch").onchange = $("showall").onchange = () => { invKey = ""; invPoll.trigger(); };
 // One inventory request at a time, 3 s after the previous one ended, none during a flash operation.
 const invPoll = makePoller(refresh, 3000);
 invPoll.hold(() => opRunning);
