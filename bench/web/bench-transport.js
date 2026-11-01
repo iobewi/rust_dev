@@ -41,10 +41,20 @@ export function makeBenchTransport(Transport, ESPError, env = {}) {
     _take() { const b = this._buf || EMPTY; this._buf = EMPTY; return b; }
     flushInput() { this._buf = EMPTY; }
 
+    // esptool-js changes the baud rate by closing and reopening the port (disconnect(), connect(), readLoop()): the
+    // reopened session starts open. Each session has a number; the end of a previous session's read loop (it finishes
+    // after the reopen has begun) must not close the new one.
+    async connect(...a) {
+      this._init();
+      this._gen = (this._gen || 0) + 1;
+      this._closed = null;
+      return super.connect(...a);
+    }
     async readLoop() {
       this._init();
+      const gen = this._gen || 0;
       try { await super.readLoop(); }
-      finally { this.abort("closed", "port series terminé (flux de lecture clos)"); }
+      finally { if ((this._gen || 0) === gen) this.abort("closed", "port series terminé (flux de lecture clos)"); }
     }
     // Ends every pending and future read() with a `closed` fault. Called on USB loss and on disconnect.
     abort(kind = "closed", message = "port fermé") {

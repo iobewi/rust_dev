@@ -107,3 +107,22 @@ test("   read statistics and events carry durations, not payloads", async () => 
   assert.deepEqual(seen.map((s) => s[0]), ["read-start", "first-byte", "read-end"]);
   assert.ok(!JSON.stringify(seen).includes("c0010"));
 });
+
+test("   a baud-rate change (disconnect, connect, new readLoop) leaves a working session, whatever order the old loop ends in", async () => {
+  // esptool-js: changeBaudrate() = disconnect(); connect(newBaud); readLoop(). Reads that must wait would otherwise
+  // fail as `closed` for the rest of the session (seen in Firefox with the real library, not with a stub).
+  const { BenchTransport } = makeBenchTransport(FakeTransport, ESPError);
+  let end1; const device = { pumpDone: new Promise((r) => { end1 = r; }) };
+  const t = new BenchTransport(device);
+  const loop1 = t.readLoop();
+  await t.disconnect();
+  await t.connect(460800);
+  let end2; device.pumpDone = new Promise((r) => { end2 = r; });
+  const loop2 = t.readLoop();
+  end1(); await loop1;                       // the old loop ends AFTER the reopen
+  setTimeout(() => feed(t, response(0x10)), 80);
+  const p = await t.read(1000);              // must wait for the data, not throw `closed`
+  assert.equal(p[1], 0x10);
+  end2(); await loop2;
+  await assert.rejects(() => t.read(50), (e) => e.kind === "closed");   // a real end of the new session still closes it
+});

@@ -11,6 +11,7 @@ export class FakeTransport {
   detectPanicHandler() {}
   trace() {}
   async readLoop() { await this.device.pumpDone; }          // ends when the fake port closes
+  async connect() {}
   async disconnect() {}
   // what the chip sends: a SLIP-framed response
   static frame(bytes) { const o = [0xc0]; for (const b of bytes) { if (b === 0xdb) o.push(0xdb, 0xdd); else if (b === 0xc0) o.push(0xdb, 0xdc); else o.push(b); } o.push(0xc0); return Uint8Array.from(o); }
