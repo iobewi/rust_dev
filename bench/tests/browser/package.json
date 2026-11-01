@@ -1,0 +1,8 @@
+{
+  "name": "bench-browser-qualification",
+  "private": true,
+  "type": "module",
+  "description": "Firefox qualification of the bench page: real page, real esptool-js 0.7.0, simulated ESP32-S3 behind a fake Web Serial port. No hardware.",
+  "scripts": { "qualify": "node run-all.mjs" },
+  "dependencies": { "playwright-core": "1.48.2" }
+}
