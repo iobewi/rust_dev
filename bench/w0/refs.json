@@ -1,0 +1,55 @@
+{
+ "note": "References of the board state before W0 (read-backs o_* of 2026-11-01 08:42, equal to the M1/M3 values of verified-boot-migration.md). Hashes only; no secret.",
+ "target": {
+  "name": "B'' IAP1 proof sector (ota_1 last sector)",
+  "addr": "0x37f000",
+  "size": 4096,
+  "artifact": "p91/m2-B2-proof.bin",
+  "sha256": "d1d5843caa241281ff82398041540cb2567e7a032a67525d468a0b604d35d7ad",
+  "image": "p91/m2-B2-app.bin",
+  "image_sha256": "1a36e280eabd4610677c0ae14fcfe01b1824c0655c0f887db08dc0d3c138a5f2",
+  "image_size": 1050112,
+  "pin": "4b452a4c558aec346bf2f481177e99d0c8c02543495ff4c33229793c60b607ae",
+  "product": "iobewi-ota-sys",
+  "mcu": "esp32s3",
+  "variant": 0,
+  "min_security": 0
+ },
+ "blank_sector_sha256": "f47a8ec3e9aff2318d896942282ad4fe37d6391c82914f54a5da8a37de1300c6",
+ "neighbours": {
+  "0x37e000": "blank",
+  "0x380000": "blank (first config sector)"
+ },
+ "s0_ranges": [
+  {
+   "name": "bootloader",
+   "addr": "0x0",
+   "size": "0xa000",
+   "sha256": "bd7c4e20d060af0d0183c6c62b6989f0addf4a4cac3369b428015aa57beca165"
+  },
+  {
+   "name": "otadata+ota_meta+table",
+   "addr": "0x10000",
+   "size": "0x5000",
+   "sha256": "da4bfb3de436ad2a8183c0408d306691522546165cc1eb43168dcc479fbc51f2"
+  },
+  {
+   "name": "ota_0 (A'')",
+   "addr": "0x20000",
+   "size": "0x1b0000",
+   "sha256": "9677f1c836c5a53e2dcc90b2f1c154303139a3271c38fa1b7c5ead3929a858dc"
+  },
+  {
+   "name": "ota_1 (B'')",
+   "addr": "0x1d0000",
+   "size": "0x1b0000",
+   "sha256": "8c93ea6e9c31ad04d47dc7910d3b0397494f36ccc765c5b490bbc89d006fb34c"
+  },
+  {
+   "name": "config",
+   "addr": "0x380000",
+   "size": "0x80000",
+   "sha256": "8b911b6784dd6d854cfc5fe1f2635f2bf3a8e033701c31bacdd4ca8e58debb5d"
+  }
+ ]
+}
