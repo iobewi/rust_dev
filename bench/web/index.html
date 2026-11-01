@@ -46,6 +46,8 @@
   <button id="connect" class="primary">Connecter le port</button>
   <button id="disconnect" disabled>Libérer le port</button>
   <span id="mode" class="pill">déconnecté</span>
+  <span id="indet" class="pill full" hidden></span>
+  <button id="indetclear" class="danger" hidden title="À n'utiliser qu'après relecture de la flash">Lever l'état indéterminé</button>
   <span id="chip" class="mono mute"></span>
   <span class="mute">|</span>
   <button id="enreset" disabled title="Impulsion EN (RTS) en mode console">Reset EN</button>
@@ -110,7 +112,10 @@
 </section>
 
 <script type="module">
-import { ESPLoader, Transport } from "https://unpkg.com/esptool-js@0.7.0/bundle.js";
+import { ESPLoader, Transport, ESPError } from "https://unpkg.com/esptool-js@0.7.0/bundle.js";
+import { makeBenchTransport } from "/bench-transport.js";
+import { Tracer, runWrite } from "/flash-op.js";
+const { BenchTransport } = makeBenchTransport(Transport, ESPError);
 const $ = (id) => document.getElementById(id);
 const hex = (b) => [...new Uint8Array(b)].map(x => x.toString(16).padStart(2, "0")).join("");
 const h = (n) => "0x" + n.toString(16);
@@ -145,6 +150,31 @@ async function flush() {
 }
 // esptool-js output goes to the capture too, marked as loader lines.
 const term = { clean() {}, writeLine: (s) => record("[esptool] " + s, "bench"), write: (s) => { if (s.trim()) record("[esptool] " + s.trim(), "bench"); } };
+
+// ---------------------------------------------------------------- trace (monotonic clock, never payloads)
+// Ring buffer of the last events (commands, loader commands, reads, timeouts, tab visibility, port events).
+// It is written to the capture when an operation fails or ends in an unknown state, not continuously.
+const tracer = new Tracer();
+document.addEventListener("visibilitychange", () => { tracer.ev("visibility"); bench("tab " + document.visibilityState); });
+function dumpTrace(reason, n = 60) {
+  const ev = tracer.snapshot().slice(-n);
+  bench(`trace (${reason}): ${ev.length} events, t in ms since page load, monotonic`);
+  for (const e of ev) record("[trace] " + tracer.line(e), "bench");
+}
+// After a flash command whose outcome is unknown the board must be checked (read-back) before anything boots it.
+// Only the operator lifts it, from this page: no remote command does, and no automatic console return happens.
+let indet = null;
+function showIndet() {
+  const el = $("indet");
+  el.hidden = !indet;
+  el.textContent = indet ? `état indéterminé : ${indet.label} (${indet.regions || "?"}) — relire avant tout démarrage` : "";
+  $("indetclear").hidden = !indet;
+}
+function setIndeterminate(label, r) {
+  indet = { label, req: r.req || "", at: new Date().toISOString(), regions: (r.regions || []).map(x => `${x.addr}+${x.size}`).join(" ") };
+  bench(`INDETERMINATE ${label}: ${r.error || ""} [${r.failed_at || "?"}] flash=${r.flash}; no automatic console return; verify by read-back before any boot`);
+  showIndet();
+}
 
 // ---------------------------------------------------------------- port ownership
 // One authorized port for the whole session. Modes: off | console | loader | busy.
@@ -206,7 +236,11 @@ async function openLoader() {
   if (loader) return loader;
   await closeConsole();
   setMode("busy", "connexion chargeur");
-  transport = new Transport(port, false);
+  transport = new BenchTransport(port, false);
+  transport.onEvent = (n, d) => {
+    tracer.ev("tp-" + n, d);
+    if (n === "timeout" || n === "port-closed") { bench(`serial ${n} ${JSON.stringify(d)}`); }
+  };
   loader = new ESPLoader({ transport, baudrate: parseInt($("baud").value), terminal: term });
   try {
     const chip = await loader.main();
@@ -222,20 +256,34 @@ async function openLoader() {
 // Run fn(loader) with the bootloader, then (by default) back to the console: that reopen is the captured boot.
 let opRunning = false;
 async function op(label, fn, back = $("autoback").checked) {
-  if (opRunning) return { ok: false, error: "opération déjà en cours" };
+  if (opRunning) return { ok: false, state: "failed", error: "opération déjà en cours" };
   opRunning = true;
+  const t0 = tracer.now();
+  tracer.ev("op-start", { label });
   try {
     const l = await openLoader();
     setMode("busy", label);
     const value = await fn(l);
     setMode("loader");
-    if (back) await openConsole();
+    tracer.ev("op-end", { label, ms: +(tracer.now() - t0).toFixed(3) });
+    // A structured failure (runWrite) is returned as is: nothing is claimed, nothing reopens the console.
+    if (value && value.ok === false && value.state) {
+      tracer.ev("op-" + value.state, { label });
+      dumpTrace(label + " " + value.state);
+      if (value.state === "indeterminate" || value.requires_check) setIndeterminate(label, value);
+      return value;
+    }
+    // A reopen of the console resets the board: never after an unknown outcome, even if the box is ticked.
+    if (back && !indet) await openConsole();
+    else if (back && indet) bench("console return skipped: indeterminate state pending");
     return { ok: true, value };
   } catch (e) {
     const error = (e && e.message) || String(e);
+    tracer.ev("op-error", { label, kind: e && e.kind, msg: error.slice(0, 160) });
     bench("ERREUR " + label + ": " + error);
+    dumpTrace(label + " error");
     if (mode === "busy") setMode(loader ? "loader" : "off");
-    return { ok: false, error };
+    return { ok: false, state: "failed", error, ...(e && e.kind ? { error_kind: e.kind } : {}) };
   } finally { opRunning = false; if (wake) { const w = wake; wake = null; w(); } }
 }
 
@@ -258,7 +306,14 @@ $("disconnect").onclick = async () => {
   if (loader) { try { await transport.disconnect(); } catch (e) {} loader = null; transport = null; }
   setMode("off"); bench("port released (authorization kept)");
 };
-$("toconsole").onclick = () => openConsole().catch(e => bench("ERREUR: " + e.message));
+$("toconsole").onclick = () => {
+  if (indet && !confirm("État indéterminé : la réouverture du port réinitialise la carte.\nLa flash a-t-elle été relue et vérifiée ?")) return;
+  openConsole().catch(e => bench("ERREUR: " + e.message));
+};
+$("indetclear").onclick = () => {
+  if (!indet || !confirm(`Lever l'état indéterminé (${indet.label}) ?\nÀ faire seulement après relecture de la flash.`)) return;
+  bench(`indeterminate state lifted by the operator (${indet.label})`); indet = null; showIndet();
+};
 $("enreset").onclick = () => pulseEn("manuel");
 $("clear").onclick = () => { logEl.textContent = ""; };
 $("mark").onclick = () => { const t = $("marktext").value.trim(); if (t) bench("MARK " + t); };
@@ -284,6 +339,8 @@ navigator.serial.addEventListener("connect", async (ev) => {
 });
 navigator.serial.addEventListener("disconnect", (ev) => {
   if (ev.target !== port) return;
+  if (transport) transport.abort("closed", "USB déconnecté");
+  tracer.ev("usb-disconnect");
   loader = null; transport = null; reader = null; setMode("off"); bench("port disconnected (USB)");
 });
 
@@ -412,7 +469,7 @@ async function execute(cmd) {
       // Only deliverables listed by the server, with the SHA256 the caller expects.
       const known = new Map(inv.images.map(i => [i.path, i.sha256]));
       for (const it of cmd.items) if (known.get(it.path) !== it.sha) return { ok: false, error: "image inconnue ou empreinte différente : " + it.path };
-      return writeImages(cmd.items.map(it => ({ ...it })), !!cmd.erase, "écriture (banc)", true, back);
+      return writeImages(cmd.items.map(it => ({ ...it })), !!cmd.erase, "écriture (banc)", true, back, cmd.md5 !== false);
     }
     case "install": {
       const m = inv.manifests.find(x => x.path === cmd.manifest);
@@ -553,24 +610,27 @@ $("filter").oninput = render; $("showdumps").onchange = render;
 setInterval(refresh, 3000); refresh();
 
 // remote = command from the bench with full access (that grant is the confirmation).
-async function writeImages(items, erase, label, remote = false, back) {
+async function writeImages(items, erase, label, remote = false, back, md5 = true) {
   for (const it of items) if (isNaN(it.addr)) return { ok: false, error: "adresse manquante pour " + it.path };
   if (erase && !remote && !confirm("Effacer TOUTE la flash avant d'écrire ?\n" + items.map(i => i.path + " @" + h(i.addr)).join("\n"))) return { ok: false, error: "annulé" };
-  return op(label, async (l) => {
+  const res = await op(label, async (l) => {
     for (const it of items) {
       it.data = new Uint8Array(await (await fetch(it.path, { cache: "no-store" })).arrayBuffer());
       const sha = hex(await crypto.subtle.digest("SHA-256", it.data));
       if (it.sha && sha !== it.sha) throw new Error(`empreinte inattendue pour ${it.path} (${sha.slice(0, 12)}…), rien n'est écrit`);
       it.sha = sha;
     }
-    if (erase) { bench("erase-flash"); await l.eraseFlash(); }
-    items.forEach(it => bench(`write ${it.path} @${h(it.addr)} sha256 ${it.sha} (${erase ? "after chip erase" : "no chip erase"})`));
-    await l.writeFlash({ fileArray: items.map(it => ({ data: it.data, address: it.addr })), flashMode: "keep", flashFreq: "keep",
-      flashSize: "keep", eraseAll: false, compress: true,
+    items.forEach(it => bench(`write ${it.path} @${h(it.addr)} sha256 ${it.sha} (${erase ? "after chip erase" : "no chip erase"}${md5 ? ", md5 check" : ", no md5"})`));
+    // Never throws: a timeout after the begin is returned as `indeterminate` (the stub may already have erased).
+    const r = await runWrite(l, items, { erase, md5, tracer,
       reportProgress: (i, w, t) => { if (w === t) bench(`  ${items[i].path}: ${w}/${t} (compressé)`); } });
-    bench("written, no reset" + ((back ?? $("autoback").checked) ? "; console reopens: next boot captured" : ""));
-    return items.map(it => ({ path: it.path, addr: h(it.addr), sha256: it.sha, erase }));
+    if (r.ok) bench("written" + (md5 ? ", md5 verified by the loader" : ", md5 not run") + ", no reset" + ((back ?? $("autoback").checked) && !indet ? "; console reopens: next boot captured" : ""));
+    return r;
   }, back);
+  if (!res.ok) return res;
+  const r = res.value;
+  return { ok: true, state: "completed", flash: "written", verification: r.verification,
+           value: items.map(it => ({ path: it.path, addr: h(it.addr), sha256: it.sha, erase })) };
 }
 $("write").onclick = () => {
   const items = inv.images.filter(i => sel.get(i.path)).map(i => ({ path: i.path, sha: i.sha256, addr: num(addrs.get(i.path)) }));
