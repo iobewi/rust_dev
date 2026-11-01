@@ -167,8 +167,23 @@ function dumpTrace(reason, n = 60) {
 }
 // After a flash command whose outcome is unknown the board must be checked (read-back) before anything boots it.
 // Only the operator lifts it, from this page: no remote command does, and no automatic console return happens.
-let indet = null;
+// The state is kept in this browser's storage: a reload, a closed tab or a crash must not lift it. A flash operation in
+// progress is marked the same way before its first flash command, so a page that disappears in the middle of a write
+// finds the mark at the next load and starts in the indeterminate state. (Storage unavailable: the state lasts as long
+// as the page, and the server still reports the command as indeterminate.)
+const store = {
+  get: (k) => { try { return JSON.parse(localStorage.getItem(k) || "null"); } catch (e) { return null; } },
+  set: (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} },
+  del: (k) => { try { localStorage.removeItem(k); } catch (e) {} },
+};
+let indet = store.get("bench.indet");
+const interrupted = store.get("bench.flashop");
+if (interrupted) {
+  indet = { label: interrupted.label, req: "", at: interrupted.at, regions: interrupted.regions, restored: "page-gone-during-operation" };
+  store.set("bench.indet", indet); store.del("bench.flashop");
+}
 function showIndet() {
+  if (indet) store.set("bench.indet", indet); else store.del("bench.indet");
   const el = $("indet");
   el.hidden = !indet;
   el.textContent = indet ? `état indéterminé : ${indet.label} (${indet.regions || "?"}) — relire avant tout démarrage` : "";
@@ -176,6 +191,7 @@ function showIndet() {
 }
 function setIndeterminate(label, r) {
   indet = { label, req: r.req || "", at: new Date().toISOString(), regions: (r.regions || []).map(x => `${x.addr}+${x.size}`).join(" ") };
+  store.del("bench.flashop");
   bench(`INDETERMINATE ${label}: ${r.error || ""} [${r.failed_at || "?"}] flash=${r.flash}; no automatic console return; verify by read-back before any boot`);
   showIndet();
 }
@@ -299,10 +315,14 @@ async function attach(p) {
   } else tag = "[uart] ";
   await openConsole();
 }
+// Any operator action that reopens the console resets the board: with an unknown flash outcome it asks first.
+const mayReboot = () => !indet || confirm("État indéterminé : la réouverture du port réinitialise la carte.\nLa flash a-t-elle été relue et vérifiée ?");
 $("connect").onclick = async () => {
   try {
-    if (port && mode === "off") return await openConsole();
-    await attach(await navigator.serial.requestPort());
+    if (port && mode === "off") { if (!mayReboot()) return; return await openConsole(); }
+    const p = await navigator.serial.requestPort();
+    if (!mayReboot()) return;   // the port stays authorized; « Ouvrir la console » is offered again after a reload
+    await attach(p);
   } catch (e) { bench("connexion refusée: " + e.message); setMode("off"); }
 };
 $("disconnect").onclick = async () => {
@@ -311,7 +331,7 @@ $("disconnect").onclick = async () => {
   setMode("off"); bench("port released (authorization kept)");
 };
 $("toconsole").onclick = () => {
-  if (indet && !confirm("État indéterminé : la réouverture du port réinitialise la carte.\nLa flash a-t-elle été relue et vérifiée ?")) return;
+  if (!mayReboot()) return;
   openConsole().catch(e => bench("ERREUR: " + e.message));
 };
 $("indetclear").onclick = () => {
@@ -340,7 +360,12 @@ navigator.serial.getPorts().then(ps => {
 navigator.serial.addEventListener("connect", async (ev) => {
   if (port && ev.target !== port) return;
   bench("port reappeared");
-  try { port = ev.target; if (mode === "off") await openConsole(); } catch (e) { bench("réouverture impossible: " + e.message); }
+  try {
+    port = ev.target;
+    // Opening the console resets the board: not while a flash operation of unknown outcome has to be read back first.
+    if (mode === "off" && indet) bench("port reappeared: console NOT reopened (indeterminate state pending; « Retour console » asks for confirmation)");
+    else if (mode === "off") await openConsole();
+  } catch (e) { bench("réouverture impossible: " + e.message); }
 });
 navigator.serial.addEventListener("disconnect", (ev) => {
   if (ev.target !== port) return;
@@ -642,9 +667,12 @@ async function writeImages(items, erase, label, remote = false, back, md5 = true
       it.sha = sha;
     }
     items.forEach(it => bench(`write ${it.path} @${h(it.addr)} sha256 ${it.sha} (${erase ? "after chip erase" : "no chip erase"}${md5 ? ", md5 check" : ", no md5"})`));
+    // Marked before the first flash command, removed only when the outcome is known without doubt.
+    store.set("bench.flashop", { label, at: new Date().toISOString(), regions: items.map(it => `${h(it.addr)}+${it.data.length}`).join(" ") });
     // Never throws: a timeout after the begin is returned as `indeterminate` (the stub may already have erased).
     const r = await runWrite(l, items, { erase, md5, tracer,
       reportProgress: (i, w, t) => { if (w === t) bench(`  ${items[i].path}: ${w}/${t} (compressé)`); } });
+    if (r.ok || r.flash === "unchanged") store.del("bench.flashop");   // otherwise op() records the indeterminate state
     if (r.ok) bench("written" + (md5 ? ", md5 verified by the loader" : ", md5 not run") + ", no reset" + ((back ?? $("autoback").checked) && !indet ? "; console reopens: next boot captured" : ""));
     return r;
   }, back);
@@ -665,6 +693,8 @@ function installManifest(m, remote = false, back, erase = false) {
 }
 setMode("off");
 showAccess();
+showIndet();
+if (indet) bench(`INDETERMINATE restored (${indet.label}${indet.restored ? ", " + indet.restored : ""}): no reset, console or tx until the flash is read back and the operator lifts it`);
 </script>
 </body>
 </html>
