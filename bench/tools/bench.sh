@@ -23,7 +23,7 @@ case "${1:-}" in
            || { echo "bench.sh: mark '$2' not acknowledged by the page" >&2; exit 1; } ;;
   since) LOG=$(capture); grep -qF "MARK $2" "$LOG" || { echo "bench.sh: mark '$2' not found in $LOG" >&2; exit 1; }
          awk -v m="MARK $2" 'index($0,m){p=1} p' "$LOG" | grep -av "load:0x\|Build:Mar\|SPIWP\|mode:DIO" || true ;;
-  reset) cmd "{\"op\":\"reset\",\"id\":\"$2\"}" ;;
-  arm)   cmd "{\"op\":\"arm\",\"id\":\"$2\",\"pattern\":\"$3\",\"delay_ms\":${4:-0}}" ;;
+  reset) cmd "{\"op\":\"reset\",\"id\":\"$2\",\"ttl\":30}" ;;
+  arm)   cmd "{\"op\":\"arm\",\"id\":\"$2\",\"pattern\":\"$3\",\"delay_ms\":${4:-0},\"ttl\":30}" ;;
   *)     sed -n '2,7p' "$0"; exit 2 ;;
 esac

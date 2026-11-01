@@ -115,6 +115,7 @@
 import { ESPLoader, Transport, ESPError } from "https://unpkg.com/esptool-js@0.7.0/bundle.js";
 import { makeBenchTransport } from "/bench-transport.js";
 import { Tracer, runWrite } from "/flash-op.js";
+import { makeClient, consoleGuard } from "/cmd-client.js";
 const { BenchTransport } = makeBenchTransport(Transport, ESPError);
 const $ = (id) => document.getElementById(id);
 const hex = (b) => [...new Uint8Array(b)].map(x => x.toString(16).padStart(2, "0")).join("");
@@ -320,6 +321,7 @@ $("mark").onclick = () => { const t = $("marktext").value.trim(); if (t) bench("
 
 async function pulseEn(reason) {
   if (mode !== "console") { bench("reset EN impossible hors console"); return; }
+  if (opRunning) { bench("reset EN refusé : opération en cours"); return; }
   // DevKitC auto-program circuit: RTS asserted with DTR released drives EN low; IO0 stays high.
   await port.setSignals({ dataTerminalReady: false, requestToSend: true });
   await new Promise(r => setTimeout(r, 100));
@@ -406,13 +408,11 @@ setInterval(() => {
   showAccess();
 }, 5000);
 
-async function result(cmd, r) {
-  if (!cmd.req) return;
-  try { await fetch("/api/result", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ req: cmd.req, op: cmd.op, ...r }) }); } catch (e) {}
-}
 async function execute(cmd) {
   const back = cmd.stay ? false : true;
-  if (cmd.expires && Date.now() > cmd.expires) { bench(`dropped expired remote ${cmd.op}`); return { ok: false, error: "commande expirée" }; }
+  // Expiry is decided by the server at acknowledgement time (cmd-client.js), not by comparing clocks here.
+  const refused = consoleGuard(cmd, { opRunning, mode, indet });
+  if (refused) return { ok: false, state: "failed", error: refused };
   if (!LIMITED.has(cmd.op) && !FULL.has(cmd.op)) return { ok: false, error: "commande inconnue " + cmd.op };
   if (tag === "[jtag] " && (cmd.op === "reset" || cmd.op === "arm" || cmd.op === "io0")) return { ok: false, error: cmd.op + " : port USB natif sans lignes EN / IO0" };
   if (FULL.has(cmd.op) && !fullAccess()) { bench(`refused remote ${cmd.op}: limited access`); return { ok: false, error: "accès limité : accès complet à accorder depuis la page" }; }
@@ -467,7 +467,7 @@ async function execute(cmd) {
     case "dump": return dump(cmd.regions.map(r => ({ name: String(r.name).replace(/[^A-Za-z0-9_-]/g, "_"), addr: r.addr, size: r.size })), back);
     case "write": {
       // Only deliverables listed by the server, with the SHA256 the caller expects.
-      const known = new Map(inv.images.map(i => [i.path, i.sha256]));
+      const known = new Map((await (await fetch("/api/images?scope=all&archives=1", { cache: "no-store" })).json()).images.map(i => [i.path, i.sha256]));
       for (const it of cmd.items) if (known.get(it.path) !== it.sha) return { ok: false, error: "image inconnue ou empreinte différente : " + it.path };
       return writeImages(cmd.items.map(it => ({ ...it })), !!cmd.erase, "écriture (banc)", true, back, cmd.md5 !== false);
     }
@@ -485,17 +485,23 @@ let wake = null;
 // but it has no EN / IO0 lines, so reset / arm / io0 stay refused for it (see execute).
 const ready = () => port && (tag === "[uart] " || tag === "[jtag] ") && !opRunning && (mode === "console" || mode === "loader");
 const stateChanged = () => new Promise(r => { wake = r; });
+const pageId = (crypto.randomUUID ? crypto.randomUUID() : String(Math.random()).slice(2)).slice(0, 8);
+const client = makeClient({
+  page: pageId, execute, busy: () => opRunning, bench, tracer,
+  sleep: (ms) => new Promise(r => setTimeout(r, ms)),
+  fetchJson: async (path, body) => {
+    const r = await fetch(path, body === undefined ? { cache: "no-store" } : { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const j = await r.json().catch(() => ({}));
+    if (body === undefined) return j;
+    return { ...j, ok: r.ok && j.ok !== false };     // a 409 on ack/release is an answer, not a network error
+  },
+});
+bench(`page id ${pageId}`);
 (async function commandLoop() {
   for (;;) {
     if (!ready()) { await stateChanged(); continue; }
-    let cmd;
-    try { cmd = await (await fetch("/api/cmd?wait=25", { cache: "no-store" })).json(); }
-    catch (e) { await new Promise(r => setTimeout(r, 1000)); continue; }
-    if (!cmd.op) continue;
-    while (opRunning) await stateChanged();   // a button-started operation finishes first
-    let r;
-    try { r = await execute(cmd); } catch (e) { r = { ok: false, error: e.message }; }
-    await result(cmd, r);
+    try { await client.cycle(); }
+    catch (e) { await new Promise(r => setTimeout(r, 1000)); }
   }
 })();
 

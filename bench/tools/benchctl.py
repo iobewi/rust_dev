@@ -19,12 +19,19 @@ By default every flash operation returns to the console, so the next boot is cap
 
 PATH is a deliverable as listed by `images` (relative to BENCH_WEB, or dumps/...); its
 SHA256 is taken from the server listing and re-checked by the browser before writing.
+
+Lifecycle of a command (server/commands.py) and exit status:
+  completed 0 | failed 1 | no answer 2 | indeterminate 3 | expired (never executed) 4
+A write that ends `indeterminate` may have erased its region: read it back before anything boots the board.
+"no answer" is never read as "not executed": the status asked from the server says which it is.
+A command that waits for the page longer than its ttl (default 120 s) expires and is never executed afterwards.
 """
 import argparse
 import json
 import os
 import sys
 import time
+import urllib.error
 import urllib.request
 import uuid
 
@@ -34,8 +41,14 @@ BASE = "http://localhost:%s" % os.environ.get("BENCH_PORT", "8080")
 def call(path, body=None):
     data = None if body is None else json.dumps(body).encode()
     req = urllib.request.Request(BASE + path, data=data, headers={"Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=10) as r:
-        return json.load(r)
+    try:
+        with urllib.request.urlopen(req, timeout=10) as r:
+            return json.load(r)
+    except urllib.error.HTTPError as e:
+        try:
+            return dict(json.load(e), http=e.code)
+        except ValueError:
+            raise e
 
 
 def num(text):
@@ -48,7 +61,8 @@ def main():
     p.add_argument("args", nargs="*")
     p.add_argument("--erase", action="store_true", help="erase the whole flash first (full access)")
     p.add_argument("--stay", action="store_true", help="stay in the loader instead of reopening the console")
-    p.add_argument("--timeout", type=float, default=300)
+    p.add_argument("--timeout", type=float, default=300, help="how long to wait for the outcome")
+    p.add_argument("--ttl", type=float, default=None, help="seconds a command may wait for the page before it expires unexecuted")
     a = p.parse_args()
 
     if a.op == "images":
@@ -60,8 +74,10 @@ def main():
             print("manifest %s: %s" % (m["path"], m["name"]))
         return 0
 
-    # The page drops commands it pulls after this deadline (closed tab: no late flash write).
-    cmd = {"op": a.op, "req": uuid.uuid4().hex, "stay": a.stay, "expires": int((time.time() + a.timeout) * 1000)}
+    # The server drops a command that waits longer than its ttl (closed tab: no late flash write).
+    cmd = {"op": a.op, "req": uuid.uuid4().hex, "stay": a.stay}
+    if a.ttl is not None:
+        cmd["ttl"] = a.ttl
     if a.erase:
         cmd["erase"] = True
     if a.op == "readpt":
@@ -73,7 +89,7 @@ def main():
         cmd["regions"] = [{"name": "%s-0x%x" % (a.args[i], num(a.args[i + 1])), "addr": num(a.args[i + 1]),
                            "size": num(a.args[i + 2])} for i in range(0, len(a.args), 3)]
     elif a.op == "write":
-        shas = {i["path"]: i["sha256"] for i in call("/api/images")["images"]}
+        shas = {i["path"]: i["sha256"] for i in call("/api/images?scope=all&archives=1")["images"]}
         cmd["items"] = []
         for item in a.args:
             path, _, addr = item.rpartition("@")
@@ -102,16 +118,28 @@ def main():
     elif a.op == "mark":
         cmd["text"] = " ".join(a.args)
 
-    call("/api/cmd", cmd)
+    queued = call("/api/cmd", cmd)
+    if not queued.get("queued"):
+        print(json.dumps(queued), file=sys.stderr)
+        return 2
     deadline = time.monotonic() + a.timeout
     while time.monotonic() < deadline:
         r = call("/api/result?req=" + cmd["req"])
         if r:
             print(json.dumps(r, indent=1, ensure_ascii=False))
-            return 0 if r.get("ok") else 1
+            return EXIT.get(r.get("state"), 0 if r.get("ok") else 1)
         time.sleep(0.3)
-    print("no answer from the page (closed tab, port released or busy?)", file=sys.stderr)
-    return 2
+    st = call("/api/status?req=" + cmd["req"])
+    state = st.get("state", "unknown")
+    if state in ("queued", "claimed"):
+        print("no answer: command %s still %s, NOT executed (closed tab, port released or busy?)" % (cmd["req"], state), file=sys.stderr)
+        return 2
+    print("no answer: command %s is %s; it WAS started, outcome unknown. Read the flash back before anything boots the board."
+          % (cmd["req"], state), file=sys.stderr)
+    return 3
+
+
+EXIT = {"completed": 0, "failed": 1, "indeterminate": 3, "expired": 4}
 
 
 if __name__ == "__main__":
