@@ -4,7 +4,7 @@
 - GET  /...             bench page (bench/web), else data files from BENCH_WEB (manifests, images)
 - GET  /dumps/...       flash read-backs saved by the page (BENCH_LOGS/dumps)
 - GET  /api/info        where this server writes: capture file, dumps, data directory
-- GET  /api/images      deliverable binaries (*.bin under BENCH_WEB and dumps) with SHA256,
+- GET  /api/images[?fresh=1] deliverable binaries (*.bin under BENCH_WEB and dumps) with SHA256,
                         and ESP Web Tools manifests found under BENCH_WEB
 - POST /api/log         JSON {"lines": [{"t": <browser ms>, "s": "<line>"}]} appended to the capture
 - GET  /api/cmd[?wait=S&page=ID] claim the next queued command for the page, or {} (long poll up to S seconds)
@@ -39,65 +39,21 @@ DUMPS.mkdir(parents=True, exist_ok=True)
 CAPTURE = LOGS / "serial.log"
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from commands import Commands  # noqa: E402
+from inventory import Inventory  # noqa: E402
 
-lock = threading.Lock()
+capture_lock = threading.Lock()   # appends to the capture and the event log, nothing else (no disk walk under it)
 commands = Commands(ttl=float(os.environ.get("BENCH_CMD_TTL", "120")), ack_timeout=float(os.environ.get("BENCH_ACK_TIMEOUT", "15")))
 EVENTS = LOGS / "commands.jsonl"
-digests = {}  # path -> (mtime_ns, size, sha256)
+inventory = Inventory(WEB, DUMPS)
 
 
 def write_events():
     """Lifecycle events (op, req, state, reason; never a payload), appended outside the command lock."""
     events = commands.drain_events()
     if events:
-        with lock, EVENTS.open("a", encoding="utf-8") as out:
+        with capture_lock, EVENTS.open("a", encoding="utf-8") as out:
             for e in events:
                 out.write(json.dumps(e) + "\n")
-
-
-def sha256_of(path):
-    st = path.stat()
-    key = str(path)
-    cached = digests.get(key)
-    if cached and cached[:2] == (st.st_mtime_ns, st.st_size):
-        return cached[2]
-    h = hashlib.sha256()
-    with path.open("rb") as f:
-        for chunk in iter(lambda: f.read(1 << 20), b""):
-            h.update(chunk)
-    digests[key] = (st.st_mtime_ns, st.st_size, h.hexdigest())
-    return h.hexdigest()
-
-
-def visible(root):
-    for path in sorted(root.rglob("*")):
-        rel = path.relative_to(root)
-        if path.is_file() and not any(part.startswith(".") for part in rel.parts):
-            yield path, rel
-
-
-def inventory():
-    images, manifests = [], []
-    for root, prefix in ((WEB, ""), (DUMPS, "dumps/")):
-        for path, rel in visible(root):
-            if prefix == "" and rel.parts[0] == "dumps":
-                continue
-            url = prefix + rel.as_posix()
-            if path.suffix == ".bin":
-                st = path.stat()
-                images.append({"path": url, "size": st.st_size, "mtime": int(st.st_mtime),
-                               "sha256": sha256_of(path), "source": "dumps" if prefix else "web"})
-            elif path.suffix == ".json" and not prefix:
-                try:
-                    m = json.loads(path.read_text(encoding="utf-8"))
-                    parts = m["builds"][0]["parts"]
-                    manifests.append({"path": url, "name": m.get("name", url),
-                                      "prompt_erase": bool(m.get("new_install_prompt_erase")),
-                                      "chip": m["builds"][0].get("chipFamily", ""),
-                                      "parts": [{"path": p["path"], "offset": p["offset"]} for p in parts]})
-                except (ValueError, KeyError, IndexError, TypeError):
-                    pass
-    return {"images": images, "manifests": manifests}
 
 
 class Handler(SimpleHTTPRequestHandler):
@@ -172,9 +128,9 @@ class Handler(SimpleHTTPRequestHandler):
             return self._json(200, commands.summary())
         if self.path == "/api/info":
             return self._json(200, {"capture": str(CAPTURE), "dumps": str(DUMPS), "web": str(WEB), "pages": str(PAGES)})
-        if self.path == "/api/images":
-            with lock:
-                return self._json(200, inventory())
+        if self.path.startswith("/api/images"):
+            # fresh=1: rebuild now (the caller has just put a file there); otherwise the snapshot is at most ~1 s old.
+            return self._json(200, inventory.get(fresh="fresh=1" in self.path))
         return super().do_GET()
 
     def do_POST(self):
@@ -182,7 +138,7 @@ class Handler(SimpleHTTPRequestHandler):
         if self.path == "/api/log":
             payload = json.loads(body or b"{}")
             now = time.time()
-            with lock, CAPTURE.open("a", encoding="utf-8") as out:
+            with capture_lock, CAPTURE.open("a", encoding="utf-8") as out:
                 for line in payload.get("lines", []):
                     stamp = time.strftime("%H:%M:%S", time.localtime(now)) + ".%03d" % (now % 1 * 1000)
                     out.write("%s %s\n" % (stamp, line.get("s", "")))
@@ -195,6 +151,7 @@ class Handler(SimpleHTTPRequestHandler):
             (DUMPS / "archive").mkdir(exist_ok=True)
             (DUMPS / (name + ".bin")).write_bytes(body)
             (DUMPS / "archive" / ("%s-%s.bin" % (name, stamp))).write_bytes(body)
+            inventory.invalidate()
             return self._json(200, {"saved": len(body), "sha256": hashlib.sha256(body).hexdigest(),
                                     "archive": "dumps/archive/%s-%s.bin" % (name, stamp)})
         if self.path in ("/api/result", "/api/cmd", "/api/ack", "/api/release"):
@@ -215,7 +172,28 @@ class Handler(SimpleHTTPRequestHandler):
         return self._json(404, {})
 
 
+def acquire_instance_lock(port):
+    """One server per capture directory (two benches, e.g. UART and native USB, have two). Never kills anything."""
+    import fcntl
+    f = (LOGS / ".bench_server.lock").open("a+")
+    try:
+        fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        f.seek(0)
+        sys.exit("bench_server: another instance already serves %s (%s); not starting a second one" % (LOGS, f.read().strip()))
+    f.seek(0)
+    f.truncate()
+    f.write("pid=%d port=%d\n" % (os.getpid(), port))
+    f.flush()
+    return f
+
+
 if __name__ == "__main__":
     port = int(os.environ.get("BENCH_PORT", "8080"))
+    instance = acquire_instance_lock(port)     # kept open for the life of the process
+    try:
+        httpd = ThreadingHTTPServer(("0.0.0.0", port), Handler)
+    except OSError as e:
+        sys.exit("bench_server: cannot listen on :%d (%s); something else owns that port" % (port, e))
     print("bench server on :%d, pages=%s, data=%s, capture=%s" % (port, PAGES, WEB, CAPTURE), flush=True)
-    ThreadingHTTPServer(("0.0.0.0", port), Handler).serve_forever()
+    httpd.serve_forever()

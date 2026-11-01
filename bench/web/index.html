@@ -116,6 +116,7 @@ import { ESPLoader, Transport, ESPError } from "https://unpkg.com/esptool-js@0.7
 import { makeBenchTransport } from "/bench-transport.js";
 import { Tracer, runWrite } from "/flash-op.js";
 import { makeClient, consoleGuard } from "/cmd-client.js";
+import { makePoller } from "/poller.js";
 const { BenchTransport } = makeBenchTransport(Transport, ESPError);
 const $ = (id) => document.getElementById(id);
 const hex = (b) => [...new Uint8Array(b)].map(x => x.toString(16).padStart(2, "0")).join("");
@@ -557,7 +558,7 @@ function dump(regions, back) {
       bench(`dump ${r.name} @${h(r.addr)} ${res.saved} bytes sha256 ${res.sha256} archived ${res.archive}`);
       out.push({ name: r.name, addr: h(r.addr), path: "dumps/" + r.name + ".bin", ...res });
     }
-    refresh();
+    invPoll.trigger();
     return out;
   }, back);
 }
@@ -613,7 +614,10 @@ async function refresh() {
   } catch (e) { $("invstate").textContent = "— serveur injoignable"; }
 }
 $("filter").oninput = render; $("showdumps").onchange = render;
-setInterval(refresh, 3000); refresh();
+// One inventory request at a time, 3 s after the previous one ended, none during a flash operation.
+const invPoll = makePoller(refresh, 3000);
+invPoll.hold(() => opRunning);
+invPoll.start();
 
 // remote = command from the bench with full access (that grant is the confirmation).
 async function writeImages(items, erase, label, remote = false, back, md5 = true) {
