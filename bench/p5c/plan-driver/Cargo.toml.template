@@ -1,0 +1,13 @@
+[package]
+name="p5c_plan"
+version="0.0.0"
+edition="2024"
+[features]
+new=[]
+[dependencies]
+iobewi-firmware-bootauth={path="@P105@/common/firmware/bootauth",features=["host-sign"]}
+iobewi-firmware-boot={path="@P105@/common/firmware/boot"}
+iobewi-firmware-auth={path="@P105@/common/firmware/auth"}
+iobewi-firmware-layout={path="@P105@/common/firmware/layout"}
+iobewi-firmware-image={path="@P105@/common/firmware/image"}
+[workspace]
