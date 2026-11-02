@@ -6,6 +6,8 @@ import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
 
+from test_p5c import frame, meta, otm1          # OTSF frame, OTM1 record and ota_meta image builders of the P5-C tests
+
 spec = importlib.util.spec_from_file_location("check_canonical", Path(__file__).resolve().parent.parent / "canonical/check_canonical.py")
 M = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(M)
@@ -141,6 +143,40 @@ class Refused(unittest.TestCase):
 
     def test_bytes_that_are_not_the_received_ones_fail(self):
         self.assertTrue(self.run_state([(0x1D0010, b"\x00")]))
+
+
+class Accepted(unittest.TestCase):
+    IMG = b"IMG" * 30000
+    PROOF = b"P" * 4096
+
+    def meta_with(self, seq, stage, slot, size, digest, dep):
+        return meta(frame(seq, otm1(stage, slot, digest, dep, size)), frame(seq - 1, otm1(0)))
+
+    def run_state(self, patch_after, id_="p6-b", seq_after=6, digest=None, img=None):
+        import hashlib
+        img = img or self.IMG
+        with tempfile.TemporaryDirectory() as d:
+            f = Path(d) / "img.bin"; f.write_bytes(img)
+            g = Path(d) / "proof.bin"; g.write_bytes(self.PROOF)
+            span = -(-len(img) // 65536) * 65536
+            dig = digest or "sha256:" + hashlib.sha256(img).hexdigest()
+            write(d, "b", [(0x10000, self.meta_with(5, 0, "", 0, "", ""))])
+            write(d, "a", [(0x1D0000, img), (0x1D0000 + len(img), b"\xff" * (span - len(img))), (0x37F000, self.PROOF),
+                           (0x10000, self.meta_with(seq_after, 1, "ota_1", len(img), dig, id_))] + patch_after)
+            M.fails.clear()
+            with redirect_stdout(io.StringIO()):
+                M.accepted_state(type("A", (), {"dumps": d, "before": "b", "after": "a", "image": str(f), "proof": str(g), "slot": "ota_1", "id": "p6-b"})())
+            return list(M.fails)
+
+    def test_the_expected_state_after_an_accepted_upload_passes(self):
+        self.assertEqual(self.run_state([]), [])
+
+    def test_a_wrong_proof_digest_or_sequence_or_stray_change_fails(self):
+        self.assertTrue(self.run_state([(0x37F000, b"X")]))
+        self.assertTrue(self.run_state([], digest="sha256:" + "00" * 32))
+        self.assertTrue(self.run_state([], seq_after=7))
+        self.assertTrue(self.run_state([(0x11000, b"\x00")]))
+        self.assertTrue(self.run_state([], id_="other"))
 
 
 if __name__ == "__main__":

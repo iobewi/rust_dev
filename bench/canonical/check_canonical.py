@@ -4,6 +4,8 @@
   check_canonical.py prepare --frozen DIR                       frozen artefacts: manifest, authenticity, signed sizes
   check_canonical.py show    --dumps D --tag T                  otadata and ota_meta of one checkpoint (decoded with the P5-C codecs)
   check_canonical.py capture --file F --stage S [--from TXT]   S in refused | accepted | activate-c | reboot-c (UART of one step)
+  check_canonical.py accepted-state --before T0 --after T1 --image F --proof F --slot ota_N --id ID
+                                                                state left by one accepted upload (image, erase span, published proof, one Written frame)
   check_canonical.py refused-state --before T0 --after T1 --image FILE
                                                                 state left by one refused upload into ota_1 (bytes written, erase span, blank proof, metadata)
   check_canonical.py plan-restore --current T --reference R --out DIR
@@ -73,6 +75,10 @@ def prepare(a):
         out = verify(img, prf)
         want = img.stat().st_size
         check(out is not None and out.startswith("authentic") and f"Some({want})" in out, f"{name}: valid RSA-PSS proof over exactly its {want} bytes (digest of the signed bytes)", out)
+    for fn, want in (("B2.bin", "1a36e280eabd4610677c0ae14fcfe01b1824c0655c0f887db08dc0d3c138a5f2"), ("B2.iap1", "d1d5843caa241281ff82398041540cb2567e7a032a67525d468a0b604d35d7ad"), ("B2.env", "007e76c302107679cdbfbbe574968528364fbe2c7bd0d530ef80b97b2e072b35")):
+        check((d / fn).exists() and hashlib.sha256((d / fn).read_bytes()).hexdigest() == want, f"positive witness {fn}: complete SHA-256", want)
+    out = verify(d / "B2.bin", d / "B2.iap1")
+    check(out is not None and out.startswith("authentic") and "Some(1050112)" in out, "positive witness: canonical B'' image, proof authentic over exactly 1050112 bytes", out)
     b2 = HERE.parent.parent / "web/p91/m2-B2-app.bin"
     if b2.exists():
         b = b2.read_bytes()
@@ -142,6 +148,35 @@ def capture(a):
         check(not has(r"otadata write|boot: confirmed|refused|panic|HALT"), "no write, no new confirmation, no refusal")
 
 
+def accepted_state(a):
+    """After an accepted upload: the slot holds exactly the image, its erase span is clean, the published proof is the expected one,
+    ota_meta gained exactly one frame (`written`, this slot, size, digest, id; the active deployment is untouched); nothing else changed."""
+    before, after = picture(a.dumps, a.before), picture(a.dumps, a.after)
+    check(before is not None and after is not None, f"checkpoints {a.before} and {a.after} present")
+    if before is None or after is None:
+        return
+    n = a.slot[-1]
+    img, proof = Path(a.image).read_bytes(), Path(a.proof).read_bytes()
+    slot = zone_bytes(after, f"ota{n}_image")
+    span = -(-len(img) // 65536) * 65536
+    check(slot[:len(img)] == img, f"{a.slot} holds exactly the {len(img)} bytes of the image", hashlib.sha256(slot[:len(img)]).hexdigest()[:16])
+    check(set(slot[len(img):span]) <= {255}, f"erase span: {a.slot} {len(img)}..{span:#x} is erased (0xFF)")
+    check(zone_bytes(after, f"ota{n}_proof") == proof, "published proof = the expected proof, byte for byte", hashlib.sha256(zone_bytes(after, f"ota{n}_proof")).hexdigest()[:16])
+    m0, _ = P5C.meta_of(before[0x10000])
+    m1, _ = P5C.meta_of(after[0x10000])
+    ok = bool(m0 and m1)
+    check(ok, "ota_meta: a valid newest frame before and after")
+    if ok:
+        want = {"stage": "written", "slot": a.slot, "size": len(img), "digest": "sha256:" + hashlib.sha256(img).hexdigest(), "deployment_id": a.id,
+                "active_digest": m0["active_digest"], "active_deployment_id": m0["active_deployment_id"]}
+        check(all(m1.get(k) == v for k, v in want.items()), "ota_meta: Written for this image (slot, size, digest, deployment id), active deployment untouched", {k: m1.get(k) for k in want})
+        check(m1["seq"] == m0["seq"] + 1, f"ota_meta: exactly one new frame (sequence {m0['seq']} -> {m1['seq']})")
+    for z in ZONES:
+        if z in (f"ota{n}_image", f"ota{n}_proof", "ota_meta"):
+            continue
+        check(zone_bytes(before, z) == zone_bytes(after, z), f"{z} unchanged")
+
+
 def refused_state(a):
     """After an upload refused at the readback stage: the slot holds exactly the bytes that were received, up to the end of the 64 KiB
     erase span; the proof sector is erased and never rewritten; nothing outside ota_1 changed (ota_meta included)."""
@@ -201,8 +236,11 @@ def plan_restore(a):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("cmd", choices=["prepare", "show", "diff", "capture", "plan-restore", "refused-state"])
+    ap.add_argument("cmd", choices=["prepare", "show", "diff", "capture", "plan-restore", "refused-state", "accepted-state"])
     ap.add_argument("--image")
+    ap.add_argument("--proof")
+    ap.add_argument("--slot", choices=["ota_0", "ota_1"])
+    ap.add_argument("--id")
     ap.add_argument("--current")
     ap.add_argument("--reference")
     ap.add_argument("--out")
@@ -216,7 +254,7 @@ def main(argv=None):
     ap.add_argument("--after")
     ap.add_argument("--allow", default="")
     a = ap.parse_args(argv)
-    {"prepare": prepare, "show": show, "diff": diff, "capture": capture, "plan-restore": plan_restore, "refused-state": refused_state}[a.cmd](a)
+    {"prepare": prepare, "show": show, "diff": diff, "capture": capture, "plan-restore": plan_restore, "refused-state": refused_state, "accepted-state": accepted_state}[a.cmd](a)
     print("\nRESULT:", "PASS" if not fails else "FAIL (%d)" % len(fails))
     sys.exit(1 if fails else 0)
 

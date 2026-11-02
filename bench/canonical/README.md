@@ -1,6 +1,6 @@
-# Qualification du contrôle de longueur canonique côté application (#104 / #105) — protocole amendé, non exécuté
+# Qualification du contrôle de longueur canonique côté application (#104 / #105) — protocole final
 
-**Statut : préparé, aucune opération sur la carte.** L'exécution exige une validation explicite. Cette version remplace le premier protocole (voir §9).
+**Statut : une exécution autorisée (mandat « qualification matérielle finale »).** Cette version ajoute le témoin positif (§4, étape **P**) ; elle remplace les précédentes (§9).
 
 ## 1. Revue de `Handler::upload` (arbre `9ba9533`, `examples/firmware/ota-system/src/ota.rs`)
 
@@ -76,6 +76,7 @@ Un point d'arrêt après **chaque** étape : vérifier, noter, attendre. Relectu
 | **H2** | `mark` ; **un** `/ota/activate` (`p6-c105`, `app.env`) ; ne rien toucher | `otadata` secteur 0 (`0x11000`, qui portait l'entrée seq 1 d'A″), `ota_meta` | 200 `activating` ; `capture --stage activate-c` : `VERIFIED` → `plan slot=0 seq=3` → `otadata write sector=0 seq=3 state=1` → `running ota_0 status PendingVerify` → `boot: confirmed` → `OTA ready` ; zéro refus/panic/watchdog |
 | **H3** | `/health` 200 TLS vérifié (cert …3F) ; un redémarrage (persistance) ; relecture `p6_h3` | aucune | `capture --stage reboot-c` (`Stable`, aucune écriture) ; `otadata` [seq 3 Valid, seq 2 Valid] ; `ota_meta` séquence 9 (`staged` vide, actif = C) ; `ota_1` = B″ inchangée (`46a5d06c…`) ; `diff p6_h1→p6_h3 --allow otadata,ota_meta` |
 | **N1** | upload de N1 (`N1.bin` + `N1.env`, id `p6-n1`) → `ota_1`, depuis C | `ota_1` `[0x1D0000,0x2E0000)` et sa preuve `0x37F000` | **409** ; `capture --stage refused` (`writing`, **pas** de `publishing`, pas de redémarrage) ; `/health` 200 ; relecture `p6_n1` ; `refused-state --before p6_h3 --after p6_n1 --image N1.bin` ; `diff p6_h3→p6_n1 --allow ota1_image,ota1_proof` |
+| **P** (témoin positif, depuis C) | upload de **B″ canonique** (`B2.bin` + `B2.env`, id `p6-bwit`) → `ota_1` ; dernière opération OTA de la campagne ; ni activation ni redémarrage | `ota_1` `[0x1D0000,0x2E0000)` (effacé puis réécrit : la queue nulle de N1 disparaît), preuve `0x37F000`, `ota_meta` (+1 trame `Written`) | 200 `staged`, `writing`+`publishing` (`capture --stage accepted`) ; relecture `p6_w` ; `accepted-state --before p6_n1 --after p6_w --image B2.bin --proof B2.iap1 --slot ota_1 --id p6-bwit` ; `diff p5c_r1→p6_w --allow ota0_image,ota0_proof,otadata,ota_meta` (donc `ota_1` **égale à la référence** `46a5d06c…` et sa preuve `d1d5843c…`) ; `iap1_pack verify` sur la relecture : *authentic* ; `ota_meta` : `Written` pour B″ (`ota_1`, 1 050 112 o, `sha256:1a36e280…`), séquence 10 ; `/health` 200 (cert …3F) ; C toujours `Stable`, aucun redémarrage |
 | **R** | restauration (§6), accès complet 30 min | voir §6 | état = `refs_after_p5c` |
 
 ## 5. Risque de perte du slot de repli, étape par étape
@@ -88,7 +89,7 @@ Un point d'arrêt après **chaque** étape : vérifier, noter, attendre. Relectu
 
 **Principe : restauration pilotée par la différence, idempotente.** Après tout incident : relecture des six plages (tag `p6_x`), puis `check_canonical.py plan-restore --current p6_x --reference p5c_r1 --out web/p91` : seuls les secteurs de 4 Kio qui diffèrent de la référence P5-C, dans les zones `ota_0` (image, preuve), `ota_1` (image, preuve), `otadata`, `ota_meta`, sont réécrits, depuis les relectures `p5c_r1` (empreintes complètes affichées pour chaque fichier). **Une différence dans le bootloader, la table, l'espace `0xA000–0x10000` ou `config` arrête le plan** : anomalie à présenter, pas à restaurer. Le plan est relancé à partir d'une nouvelle relecture après toute interruption : il ne peut que rétrécir. Aucune région conforme n'est écrite.
 
-Plan attendu à la fin de la séquence nominale (simulé sur les octets de la carte : `otadata` secteur 0, `ota_meta`, `ota_0` en deux plages de 450 560 et 634 880 o, preuve `0x1CF000`, secteur `0x2D0000`, preuve `0x37F000`), ≈ 1,1 Mo, dont :
+Plan attendu à la fin de la séquence (étape P comprise), simulé sur les octets de la carte : **`ota_1` n'y figure plus** (le témoin positif l'a rétablie à l'identique) ; restent `otadata` secteur 0 (`0x11000`), `ota_meta` (`0x13000`, 8 Kio, qui porte le `Written` de B″), `ota_0` en deux plages de 450 560 et 634 880 o et la preuve `0x1CF000`, soit 5 plages, 1 101 824 o. Si le témoin positif n'est pas exécuté ou échoue, le plan ajoute le secteur `0x2D0000` et la preuve `0x37F000` d'`ota_1`.
 | Plage | Contenu de référence | Empreinte de référence |
 |---|---|---|
 | `0x37F000`, 4096 | preuve de B″ | `d1d5843caa241281ff82398041540cb2567e7a032a67525d468a0b604d35d7ad` |
@@ -97,7 +98,7 @@ Plan attendu à la fin de la séquence nominale (simulé sur les octets de la ca
 | `ota_1` (secteur `0x2D0000`) | B″ | zone entière `ota_1` `46a5d06c2e6db70eb572c97fced63a8d05a32db8d3e2d498cff66b4f9a770a6e` |
 | `0x11000–0x13000`, `0x13000–0x15000` | `otadata` [seq 1 Valid, seq 2 Valid], `ota_meta` séquence 5 | `0x10000–0x15000` `5dea577cd5bb548ebba56095ad27448af932e6653ba3c894ac8616ae1e0fffa0` |
 
-**Ordre d'écriture** (à chaque instant, une application authentique de plus haute séquence reste démarrable) : 1) `ota_1` (image, preuve), 2) `ota_0` (image, puis preuve), 3) `otadata`, 4) `ota_meta`. Aucun démarrage avant relecture complète.
+**Ordre d'écriture** (à chaque instant, une application authentique de plus haute séquence reste démarrable) : 1) `ota_1` s'il figure au plan (image, preuve), 2) `ota_0` (image, puis preuve), 3) `otadata`, 4) `ota_meta`. Aucun démarrage avant relecture complète.
 
 **Critère final** : relecture des six plages ⇒ `diff p5c_r1→p6_r --allow ''` PASS et `check_p5c.py flash --tag p6_r --state r1 --ref p5c_c1 --s0 p5c_s0` PASS ; `iap1_pack verify` *authentic* pour A″ et B″ sur les relectures ; `ota_meta` staged vide, actif = B″ ; puis **un** démarrage : `VERIFIED`, `plan slot=1 seq=2`, aucune écriture `otadata`, `running ota_1 status Stable`, `/health` 200 TLS vérifié (cert …3E) ; accès complet révoqué.
 
@@ -114,7 +115,7 @@ Plan attendu à la fin de la séquence nominale (simulé sur les octets de la ca
 
 **PASS du contrôle #105** (tout à la fois) :
 1. C démarrée et **confirmée** sous VerifiedBoot (capture `activate-c` conforme, relecture `otadata`/`ota_meta` conforme), puis stable après redémarrage avec `/health` 200 TLS vérifié.
-2. Témoin positif : l'image canonique est acceptée par les validateurs réels (hôte : table ; carte : C, canonique, a été reçue par B″ et acceptée par le bootloader #105 — une image canonique passe les deux règles).
+2. Témoin positif **sur la carte** : après N1, C reçoit B″ canonique : 200 `staged`, `publishing`, `ota_1` = B″ exacte (égale à la référence), preuve *authentic* publiée, `ota_meta` `Written` pour B″, aucune activation, aucun redémarrage, C toujours `Stable` ; plus, sur l'hôte, la table du §2 (canonique acceptée par les deux règles). Ce témoin n'a de valeur que si N1 a été refusée dans les mêmes conditions : il est exécuté **seulement si N1 satisfait ses critères**.
 3. N1 : signature RSA-PSS et digest valides (hôte *authentic* ; carte : `writing`, aucun `Signature Check Failed`), reçue **intégralement** (relecture ROM d'`ota_1` = `N1.bin` octet pour octet).
 4. HTTP 409, **jamais** `publishing`, aucun redémarrage ; le 409 seul ne suffit pas.
 5. Aucune publication : proof sector `0x37F000` vierge, `ota_meta` octet pour octet identique à `p6_h3` ; aucune région hors `ota_1` (image et preuve) modifiée pendant N1.
@@ -128,8 +129,8 @@ Plan attendu à la fin de la séquence nominale (simulé sur les octets de la ca
 ## 8. Variantes non retenues (décision possible)
 * **T0 sur carte** (N1 envoyé depuis B″ : accepté par l'ancien code) : retiré ; remplacé par la démonstration hôte et l'élimination du §2.
 * **N2 sur carte** : retiré ; hôte seulement.
-* **Témoin positif par l'application C** (réuploader B″ depuis C, qui restaurerait aussi `ota_1` par la voie réelle) : ajouterait la preuve que la nouvelle règle *accepte* une image canonique sur la carte ; non retenu pour garder la séquence courte, ajoutable après N1.
+* **Témoin positif par l'application C** : *retenu* dans la version finale (étape P).
 * **Build instrumenté** (journal de la cause du refus) : attribution directe, mais code ≠ #105.
 
 ## 9. Différences avec le premier protocole
-T0 et N2 retirés de la carte ; séquence S0 → H1 → H2 → H3 → N1 → R ; état final imposé = P5-C exact ; restauration **différentielle et idempotente** au lieu de fichiers de slot complets ; contrôle explicite des mutations (`diff`, `refused-state`) ; tableau des régions modifiables ; correction de l'affirmation sur `main.rs` ; démonstration hôte étendue à la porte de publication et au `BadSize` du bootloader, avec versions et entrées figées ; limite d'attribution déclarée.
+T0 et N2 retirés de la carte ; témoin positif ajouté après N1 (étape P, dernière opération OTA) ; séquence S0 → H1 → H2 → H3 → N1 → R ; état final imposé = P5-C exact ; restauration **différentielle et idempotente** au lieu de fichiers de slot complets ; contrôle explicite des mutations (`diff`, `refused-state`) ; tableau des régions modifiables ; correction de l'affirmation sur `main.rs` ; démonstration hôte étendue à la porte de publication et au `BadSize` du bootloader, avec versions et entrées figées ; limite d'attribution déclarée.
