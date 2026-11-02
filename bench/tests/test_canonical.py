@@ -82,5 +82,66 @@ class Capture(unittest.TestCase):
         self.assertTrue(self.run_stage(self.WRITING, "accepted"))
 
 
+class Restore(unittest.TestCase):
+    def plan(self, d, out):
+        M.fails.clear()
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            M.plan_restore(type("A", (), {"dumps": d, "current": "cur", "reference": "ref", "out": out})())
+        return list(M.fails), buf.getvalue()
+
+    def test_only_the_differing_sectors_are_planned_and_coalesced(self):
+        with tempfile.TemporaryDirectory() as d, tempfile.TemporaryDirectory() as out:
+            write(d, "ref"); write(d, "cur", [(0x2D0000, b"\x00" * 16), (0x37F000, b"blank"), (0x13000, b"x"), (0x1D0000, b"y"), (0x1D1000, b"z")])
+            fails, text = self.plan(d, out)
+            self.assertEqual(fails, [])
+            names = sorted(p.name for p in Path(out).iterdir())
+            self.assertEqual(names, ["p6r-ref-0x13000-1000.bin", "p6r-ref-0x1d0000-2000.bin", "p6r-ref-0x2d0000-1000.bin", "p6r-ref-0x37f000-1000.bin"])
+            self.assertEqual((Path(out) / "p6r-ref-0x37f000-1000.bin").read_bytes(), b"\xaa" * 4096)          # the reference bytes, not the current ones
+
+    def test_a_difference_outside_the_restorable_zones_stops_the_plan(self):
+        with tempfile.TemporaryDirectory() as d, tempfile.TemporaryDirectory() as out:
+            write(d, "ref"); write(d, "cur", [(0x0, b"boot"), (0x37F000, b"blank")])
+            fails, _ = self.plan(d, out)
+            self.assertEqual(len(fails), 1)
+            self.assertEqual(list(Path(out).iterdir()), [])
+
+    def test_a_conforming_state_plans_nothing_and_a_partial_restore_only_shrinks_the_plan(self):
+        with tempfile.TemporaryDirectory() as d, tempfile.TemporaryDirectory() as out:
+            write(d, "ref"); write(d, "cur")
+            self.assertEqual(self.plan(d, out)[0], [])
+            self.assertEqual(list(Path(out).iterdir()), [])
+            write(d, "cur", [(0x37F000, b"a"), (0x2D0000, b"b")])
+            self.assertEqual(len(list(Path(out).iterdir())), 0)
+            self.plan(d, out); n1 = len(list(Path(out).iterdir()))
+            write(d, "cur", [(0x2D0000, b"b")])                                        # the proof sector was restored, the other not yet
+            for f in Path(out).iterdir(): f.unlink()
+            self.plan(d, out); n2 = len(list(Path(out).iterdir()))
+            self.assertEqual((n1, n2), (2, 1))
+
+
+class Refused(unittest.TestCase):
+    def run_state(self, patch_after, img=b"IMG" * 30000):
+        with tempfile.TemporaryDirectory() as d:
+            f = Path(d) / "img.bin"; f.write_bytes(img)
+            span = -(-len(img) // 65536) * 65536
+            ota1_after = [(0x1D0000, img), (0x1D0000 + len(img), b"\xff" * (span - len(img))), (0x37F000, b"\xff" * 4096)]
+            write(d, "b"); write(d, "a", ota1_after + patch_after)
+            M.fails.clear()
+            with redirect_stdout(io.StringIO()):
+                M.refused_state(type("A", (), {"dumps": d, "before": "b", "after": "a", "image": str(f)})())
+            return list(M.fails)
+
+    def test_the_expected_state_after_a_refusal_passes(self):
+        self.assertEqual(self.run_state([]), [])
+
+    def test_a_published_proof_or_a_touched_ota_meta_fails(self):
+        self.assertTrue(self.run_state([(0x37F000, b"IAP1")]))
+        self.assertEqual(self.run_state([(0x13000, b"\x00")]), ["ota_meta unchanged"])
+
+    def test_bytes_that_are_not_the_received_ones_fail(self):
+        self.assertTrue(self.run_state([(0x1D0010, b"\x00")]))
+
+
 if __name__ == "__main__":
     unittest.main()

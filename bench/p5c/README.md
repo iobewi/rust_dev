@@ -6,7 +6,7 @@ Cible : `Written → Activating → PendingVerify → Stable`, avec B″ authent
 
 ## 1. Revue du code réellement embarqué
 
-A″ et B″ de la carte = `2e62840` + correctif SHA logiciel. Entre `2e62840` et la tête de #101 (`cc3a8a1`), le diff des crates `boot`, `update`, `bootauth/select`, `arch/esp32/firmware/a` et de `ota-system` ne touche que l'adaptateur SHA (`soft.rs`, `Cargo.toml`, `main.rs` pour son installation, `ota.rs` 6 lignes) : **les transitions lues ci-dessous sont celles de la carte.**
+A″ et B″ de la carte = `2e62840` + correctif SHA logiciel. Entre `2e62840` et la tête de #101 (`cc3a8a1`), les crates `boot`, `update`, `bootauth/select` et `arch/esp32/firmware/a` sont inchangées ; `bootauth` n'ajoute que l'adaptateur SHA logiciel (`soft.rs`) et `ota.rs` ne change que le nom de ce backend (6 lignes). `ota-system/src/main.rs` (+18 lignes) ne gagne que des ajouts de **console** (estampille, `panic_print`, feature `console-uart0`), pas l'installation du SHA (correction d'une première rédaction) ; `boot_task`, `on_boot` et la confirmation sont identiques : **les transitions lues ci-dessous sont celles de la carte.**
 
 ### Transitions (code lu)
 | Étape | Qui | Code | Écriture |

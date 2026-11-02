@@ -1,0 +1,57 @@
+{
+ "commits": {
+  "2e62840": "2e62840c4150605c61828c4afb024179082d622c",
+  "cc3a8a1": "cc3a8a139f397ab5e8a7eaaaba21bc49f7d67c18",
+  "9ba9533": "9ba953362e52103c488bb298b218843464a6b5b9"
+ },
+ "blobs": {
+  "examples/firmware/ota-system/src/ota.rs": {
+   "2e62840": "6389bf354dc26af6043b4d3990de519cf388f07e",
+   "cc3a8a1": "29dfb0644503fc36ac22c7d2d83a25ff60760a1f",
+   "9ba9533": "9b5a9944b350dc3a2461801edc3932a3c648617f"
+  },
+  "common/firmware/image/src/esp.rs": {
+   "cc3a8a1": "5e3ff1437eec0ff3ba5084b4fe1efd4b8687d21d",
+   "9ba9533": "e61bae3a2ce65e65dce31dc1f24407df0b9e0426"
+  },
+  "common/firmware/bootauth/src/select.rs": {
+   "cc3a8a1": "c7b49d821ade6255c5e8bc6353e81b8b615c1b02",
+   "9ba9533": "35cf3cb6a34d63f3884b05e936f6b200faba3e1b"
+  },
+  "common/firmware/bootauth/src/provision.rs": {
+   "cc3a8a1": "475f2bb03ec866ab9d52bc22c1b76fa4b17b8bec",
+   "9ba9533": "475f2bb03ec866ab9d52bc22c1b76fa4b17b8bec"
+  }
+ },
+ "inputs": {
+  "B2 image": [
+   "web:m2-B2-app.bin",
+   "1a36e280eabd4610677c0ae14fcfe01b1824c0655c0f887db08dc0d3c138a5f2"
+  ],
+  "B2 proof": [
+   "web:m2-B2-proof.bin",
+   "d1d5843caa241281ff82398041540cb2567e7a032a67525d468a0b604d35d7ad"
+  ],
+  "N1 image": [
+   "neg:N1.bin",
+   "a72596600ff99708d23fd1e3d0fdb8f0a5275b48a45d924bf26769c32f5d7b7c"
+  ],
+  "N1 proof": [
+   "neg:N1.iap1",
+   "27133b6f33de95bb95d363b44e06a4c62a7b5a5490f7ebeaa836acca276b2d27"
+  ],
+  "N2 image": [
+   "neg:N2.bin",
+   "42acd3de7941808b44f5671a6b5b3f9c6a02160e01aa2dafdd825647fb9b450f"
+  ],
+  "N2 proof": [
+   "neg:N2.iap1",
+   "40f21508663626b363676792c8ea0d9d5749cb8307279065e38eec46866f919b"
+  ],
+  "A'' slot (restore file)": [
+   "web:p6-restore-A-ota0-0x20000.bin",
+   "9677f1c836c5a53e2dcc90b2f1c154303139a3271c38fa1b7c5ead3929a858dc"
+  ]
+ },
+ "upload_hunk_sha256": "b1f7935344112dcf9b79f6eba691e40fec5b4fa6c0fc196fe559f2e0e3b03ea8"
+}

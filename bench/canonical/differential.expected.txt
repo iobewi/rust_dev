@@ -1,0 +1,4 @@
+case                                  total canonical validate   old rule  new rule  pub. gate  boot (#105 select::plan)
+canonical B'' image                 1050112   1050112 ok         accepted  accepted  accepts    boots the upload
+N1 B'' + 16 trailing bytes          1050128   1050112 ok         accepted  REFUSED   accepts    slot 0; slot 1: BadSize
+N2 first 1 MiB of B''               1048576         - SegmentOut REFUSED   REFUSED   accepts    slot 0; slot 1: BadSize

@@ -4,6 +4,10 @@
   check_canonical.py prepare --frozen DIR                       frozen artefacts: manifest, authenticity, signed sizes
   check_canonical.py show    --dumps D --tag T                  otadata and ota_meta of one checkpoint (decoded with the P5-C codecs)
   check_canonical.py capture --file F --stage S [--from TXT]   S in refused | accepted | activate-c | reboot-c (UART of one step)
+  check_canonical.py refused-state --before T0 --after T1 --image FILE
+                                                                state left by one refused upload into ota_1 (bytes written, erase span, blank proof, metadata)
+  check_canonical.py plan-restore --current T --reference R --out DIR
+                                                                the 4 KiB sectors that differ from the reference, as ROM write commands (idempotent)
   check_canonical.py diff    --dumps D --before T0 --after T1 --allow ZONE[,ZONE...]
                                                                 every zone that differs must be allowed; nothing else may change
 
@@ -138,9 +142,70 @@ def capture(a):
         check(not has(r"otadata write|boot: confirmed|refused|panic|HALT"), "no write, no new confirmation, no refusal")
 
 
+def refused_state(a):
+    """After an upload refused at the readback stage: the slot holds exactly the bytes that were received, up to the end of the 64 KiB
+    erase span; the proof sector is erased and never rewritten; nothing outside ota_1 changed (ota_meta included)."""
+    before, after = picture(a.dumps, a.before), picture(a.dumps, a.after)
+    check(before is not None and after is not None, f"checkpoints {a.before} and {a.after} present")
+    if before is None or after is None:
+        return
+    img = Path(a.image).read_bytes()
+    slot = zone_bytes(after, "ota1_image")
+    span = -(-len(img) // 65536) * 65536
+    check(slot[:len(img)] == img, f"ota_1 holds exactly the {len(img)} received bytes (the digest of the flash is the digest that was sent)", hashlib.sha256(slot[:len(img)]).hexdigest()[:16])
+    check(set(slot[len(img):span]) <= {255}, f"erase span: ota_1 {len(img)}..{span:#x} is erased (0xFF)")
+    check(set(zone_bytes(after, "ota1_proof")) == {255}, "ota_1 proof sector is erased and was not rewritten (the upload is not publishable, not activatable)")
+    for z in ZONES:
+        if z in ("ota1_image", "ota1_proof"):
+            continue
+        check(zone_bytes(before, z) == zone_bytes(after, z), f"{z} unchanged")
+
+
+RESTORABLE = ("ota0_image", "ota0_proof", "ota1_image", "ota1_proof", "otadata", "ota_meta")
+
+
+def plan_restore(a):
+    """Restoration driven by the difference: a sector is rewritten only if it differs from the reference, and only inside the zones a
+    campaign step may have touched. Anything else that differs (bootloader, table, config, gap) is an anomaly: nothing is planned."""
+    cur, ref = picture(a.dumps, a.current), picture(a.dumps, a.reference)
+    check(cur is not None and ref is not None, f"checkpoints {a.current} and {a.reference} present")
+    if cur is None or ref is None:
+        return
+    runs = []
+    for z, (lo, hi) in ZONES.items():
+        was, now = zone_bytes(ref, z), zone_bytes(cur, z)
+        if was == now:
+            continue
+        if z not in RESTORABLE:
+            check(False, f"{z} differs from the reference and is not restorable by this plan: stop, report", f"{hashlib.sha256(was).hexdigest()[:12]} != {hashlib.sha256(now).hexdigest()[:12]}")
+            continue
+        for off in range(0, hi - lo, 4096):
+            if was[off:off + 4096] != now[off:off + 4096]:
+                at = lo + off
+                if runs and runs[-1][0] + runs[-1][1] == at:
+                    runs[-1][1] += 4096
+                else:
+                    runs.append([at, 4096])
+    if fails:
+        return
+    out = Path(a.out)
+    out.mkdir(parents=True, exist_ok=True)
+    print(f"   {len(runs)} run(s), {sum(n for _, n in runs)} bytes to write (everything else already conforms)")
+    for at, n in runs:
+        data = bytes(next(b[at - base:at - base + n] for base, b in ref.items() if base <= at and at + n <= base + len(b)))
+        f = out / f"p6r-{a.reference}-0x{at:x}-{n:x}.bin"
+        f.write_bytes(data)
+        print(f"   write {f.name}@0x{at:x}   ({n} bytes, sha256 {hashlib.sha256(data).hexdigest()})")
+    check(True, "restoration plan computed from the read-back (re-run it after any interruption: it only shrinks)")
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("cmd", choices=["prepare", "show", "diff", "capture"])
+    ap.add_argument("cmd", choices=["prepare", "show", "diff", "capture", "plan-restore", "refused-state"])
+    ap.add_argument("--image")
+    ap.add_argument("--current")
+    ap.add_argument("--reference")
+    ap.add_argument("--out")
     ap.add_argument("--file")
     ap.add_argument("--stage", choices=["refused", "accepted", "activate-c", "reboot-c"])
     ap.add_argument("--from", dest="after")
@@ -151,7 +216,7 @@ def main(argv=None):
     ap.add_argument("--after")
     ap.add_argument("--allow", default="")
     a = ap.parse_args(argv)
-    {"prepare": prepare, "show": show, "diff": diff, "capture": capture}[a.cmd](a)
+    {"prepare": prepare, "show": show, "diff": diff, "capture": capture, "plan-restore": plan_restore, "refused-state": refused_state}[a.cmd](a)
     print("\nRESULT:", "PASS" if not fails else "FAIL (%d)" % len(fails))
     sys.exit(1 if fails else 0)
 
