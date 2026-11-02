@@ -29,7 +29,9 @@ export class Tracer {
  * the commands are sent: a region is "touched" the moment its begin is sent, not when it is acknowledged.
  */
 export function instrument(loader, tracer, track) {
+  const originals = new Map();
   const wrap = (name, before, after) => {
+    originals.set(name, loader[name]);
     const orig = loader[name].bind(loader);
     loader[name] = async (...args) => {
       const info = before ? before(...args) : {};
@@ -57,6 +59,7 @@ export function instrument(loader, tracer, track) {
   wrap("flashFinish", () => { track.stage = "finish"; return {}; }, () => { region().transfer = "complete"; track.stage = "verify"; });
   wrap("eraseFlash", () => { track.chipErase = "sent"; track.stage = "erase"; return {}; }, () => { track.chipErase = "done"; });
   wrap("flashMd5sum", (addr, size) => { track.stage = "md5"; return { addr, size }; });
+  return () => { for (const [name, original] of originals) loader[name] = original; };
 }
 
 const outcomeOf = (track) => {
@@ -98,7 +101,7 @@ export async function runWrite(loader, items, opts = {}) {
   const tracer = opts.tracer || new Tracer();
   const track = { regions: [], stage: "prepare", chipErase: false };
   const md5 = opts.md5 !== false;
-  instrument(loader, tracer, track);
+  const restore = instrument(loader, tracer, track);
   try {
     if (opts.erase) await loader.eraseFlash();
     await loader.writeFlash({
@@ -124,5 +127,6 @@ export async function runWrite(loader, items, opts = {}) {
       requires_check: c.state === "indeterminate" || c.flash === "content-mismatch",
       hold: true,   // no automatic return to the console (a reopen resets the board)
     };
-  }
+  } finally { restore(); }
 }
+

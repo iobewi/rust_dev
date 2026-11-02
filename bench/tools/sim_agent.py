@@ -1,0 +1,104 @@
+#!/usr/bin/env python3
+"""Deterministic API agent. Simulation only, never evidence about a real ESP32."""
+import argparse
+import asyncio
+import base64
+import hashlib
+import json
+import os
+import time
+from aiohttp import ClientSession
+
+CAPS = ['identify', 'reset', 'partitions', 'flash.read', 'flash.write', 'flash.erase',
+        'uart.write', 'uart.configure', 'console', 'io0', 'mark', 'trigger']
+
+
+class SimDevice:
+    def __init__(self, capacity=4 * 1024 * 1024):
+        self.flash = bytearray(b'\xff') * capacity
+        self.writes = 0
+
+    async def execute(self, name, args, download, upload):
+        if name == 'identify':
+            return {'chip': 'esp32s3', 'flash_size': len(self.flash), 'simulated': True}
+        if name == 'flash.write':
+            images = [(i, await download(i['artifact'])) for i in args['images']]
+            for i, data in images:
+                if hashlib.sha256(data).hexdigest() != i['sha256']:
+                    raise ValueError('digest mismatch')
+                start = i['address']
+                if start < 0 or start + len(data) > len(self.flash):
+                    raise ValueError('bounds')
+            if args.get('erase'):
+                self.flash[:] = b'\xff' * len(self.flash)
+            for i, data in images:
+                start = i['address']
+                lo, hi = start // 4096 * 4096, (start + len(data) + 4095) // 4096 * 4096
+                self.flash[lo:hi] = b'\xff' * (hi-lo)
+                self.flash[start:start+len(data)] = data
+            self.writes += 1
+            return {'written': len(images), 'simulated': True}
+        if name == 'flash.read':
+            data = bytes(self.flash[args['address']:args['address']+args['size']])
+            return {'artifact': await upload(data), 'simulated': True}
+        if name == 'flash.erase':
+            self.flash[:] = b'\xff' * len(self.flash)
+            return {'erased': True, 'simulated': True}
+        if name == 'partitions':
+            return {'partitions': [], 'simulated': True}
+        return {'command': name, 'simulated': True}
+
+
+async def run(url, token, device_id, grant=0, stop=None):
+    sim = SimDevice()
+    async with ClientSession(headers={'Authorization': 'Bearer ' + token}) as session:
+        async with session.ws_connect(url + '/agent/v1/ws') as ws:
+            await ws.send_json({'type': 'auth', 'version': 1, 'token': token})
+            await ws.receive_json()
+            await ws.send_json({'type': 'register', 'device': {'id': device_id, 'chip': 'esp32s3',
+                                'flash_size': len(sim.flash), 'capabilities': CAPS}})
+            registered = await ws.receive_json()
+            generation, seq = registered['generation'], 0
+            async def event(kind, **payload):
+                await ws.send_json({'type': kind, 'device': device_id, 'generation': generation, **payload})
+            if grant:
+                await event('grant', seconds=grant)
+            pending = {}
+            async def download(key):
+                async with session.get(url + '/api/v1/artifacts/' + key) as r:
+                    r.raise_for_status(); return await r.read()
+            async def upload(data):
+                async with session.post(url + '/api/v1/artifacts', data=data,
+                    headers={'X-SHA256': hashlib.sha256(data).hexdigest()}) as r:
+                    r.raise_for_status(); return await r.json()
+            print(json.dumps({'simulation': True, 'device': device_id, 'connected': True}), flush=True)
+            async for frame in ws:
+                if frame.type.name != 'TEXT':
+                    break
+                m = json.loads(frame.data)
+                if m['type'] == 'offer':
+                    pending[m['id']] = m
+                    await ws.send_json({'type': 'ready', 'id': m['id']})
+                elif m['type'] == 'execute':
+                    op = pending.pop(m['id'], None)
+                    if not op:
+                        continue
+                    try:
+                        result = await sim.execute(op['command'], op['args'], download, upload)
+                        if op['command'] in {'reset', 'uart.write'}:
+                            seq += 1
+                            data = b'SIM boot\r\n' if op['command'] == 'reset' else base64.b64decode(op['args']['data'])
+                            await event('uart', seq=seq, data=base64.b64encode(data).decode(), at=time.time()*1000)
+                        await ws.send_json({'type': 'result', 'id': op['id'], 'state': 'completed', 'result': result})
+                    except Exception:
+                        await ws.send_json({'type': 'result', 'id': op['id'], 'state': 'failed', 'error': {'code': 'simulated_failure'}})
+    return sim
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--url', default='http://127.0.0.1:8080')
+    parser.add_argument('--device', default='esp32-local')
+    parser.add_argument('--grant', type=int, default=0, help='Explicit simulated local grant in seconds')
+    a = parser.parse_args()
+    asyncio.run(run(a.url.rstrip('/'), os.environ['BENCH_AGENT_TOKEN'], a.device, a.grant))

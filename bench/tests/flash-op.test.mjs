@@ -97,3 +97,10 @@ test("trace: monotonic timestamps, visibility, begin start/end, no payload", asy
   assert.ok(tr.snapshot().some((e) => e.vis === "hidden"));
   assert.ok(!JSON.stringify(tr.snapshot()).includes('"data"'));
 });
+
+
+test('instrumentation is removed after each write, including failures',async()=>{
+ const l=fakeLoader(), original=l.flashDeflBegin;
+ await runWrite(l,[item(0)],{md5:false});assert.equal(l.flashDeflBegin,original);
+ await runWrite(l,[item(4096)],{md5:false});assert.equal(l.flashDeflBegin,original);
+});
