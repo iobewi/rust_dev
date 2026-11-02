@@ -18,7 +18,7 @@ Toutes les routes `/api/v1/*` exigent `Authorization: Bearer TOKEN`. Les erreurs
 | `GET /api/v1/operations/{id}` | Propriétaire | État, résultat, erreur, `cancel_requested`, éventuel `late_result` |
 | `DELETE /api/v1/operations/{id}` | Propriétaire | Annulation en attente ou demande d’annulation en cours |
 | `GET /api/v1/devices/{id}/events?after=N` | `read` | Lot d’événements bruts |
-| `GET /api/v1/devices/{id}/events/stream?after=N` | `read` | SSE : `data: {LOT}` toutes les 250 ms, même vide |
+| `GET /api/v1/devices/{id}/events/stream?after=N` | `read` | SSE : `data: {LOT}` toutes les 50 ms, même vide |
 | `GET /api/v1/artifacts` | `read` | Liste temporaire : id, size, sha256, created |
 | `POST /api/v1/artifacts` | Corps binaire + `X-SHA256` hex minuscule | 201 : id, size, sha256, created |
 | `GET /api/v1/artifacts/{id}` | `read` | Octets, `X-SHA256`, téléchargement `.bin` |
@@ -70,7 +70,7 @@ Les arguments inconnus sont refusés. Les opérations flash lisent la capacité 
 
 ### Flux UART
 
-Un lot contient `epoch`, `next`, `lost` et `events`. Chaque événement porte `seq`, `epoch`, `at`, `kind`. Un événement UART ajoute `data` base64, `source_seq`, `source_lost`, `agent_at`. Le prochain appel passe `after=next` : la borne est exclusive. `lost` compte les événements du tampon serveur devenus irrécupérables ; `source_lost` compte les chunks abandonnés par l’agent avant réception serveur. Un changement `epoch` nécessite de repartir de zéro et signale une rupture de continuité. Une nouvelle génération agent et les événements `connected/disconnected` signalent également une rupture. Le numéro source recommence à 1 dans une nouvelle génération.
+Un lot contient `epoch`, `next`, `latest`, `lost` et `events`. Les lots sont bornés à environ 48 Kio pour être consommables comme lignes SSE ; `latest` indique le dernier numéro disponible et `next` le dernier numéro effectivement livré. Chaque événement porte `seq`, `epoch`, `at`, `kind`. Un événement UART ajoute `data` base64, `source_seq`, `source_lost`, `agent_at`. Le prochain appel passe `after=next` : la borne est exclusive. `lost` compte les événements du tampon serveur devenus irrécupérables ; `source_lost` compte les chunks abandonnés par l’agent avant réception serveur. Un changement `epoch` nécessite de repartir de zéro et signale une rupture de continuité. Une nouvelle génération agent et les événements `connected/disconnected` signalent également une rupture. Le numéro source recommence à 1 dans une nouvelle génération.
 
 Le canal SSE exige le header Bearer ; utiliser fetch streaming ou le client Python, pas un token dans l’URL EventSource. Une connexion SSE lente est fermée après 5 s de blocage d’écriture. La réouverture reprend au dernier curseur connu et signale les pertes éventuelles.
 

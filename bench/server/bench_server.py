@@ -6,7 +6,6 @@ import json
 import os
 import sys
 from pathlib import Path
-from urllib.parse import urlsplit
 
 from aiohttp import WSMsgType, web
 
@@ -64,6 +63,8 @@ async def errors(request, handler):
         response = web.json_response({'error': {'code': e.code, 'message': str(e)}}, status=e.status)
     except web.HTTPRequestEntityTooLarge:
         response = web.json_response({'error': {'code': 'body_too_large', 'message': 'Request too large'}}, status=413)
+    except web.HTTPException as e:
+        response = web.json_response({'error': {'code': 'http_error', 'message': e.reason}}, status=e.status)
     except (ValueError, TypeError, KeyError, OverflowError):
         response = web.json_response({'error': {'code': 'invalid_request', 'message': 'Malformed request'}}, status=400)
     response.headers['Cache-Control'] = 'no-store'
@@ -155,7 +156,7 @@ async def event_stream(request):
             snapshot = b.events(device, after)
             await asyncio.wait_for(response.write(('data: ' + json.dumps(snapshot) + '\n\n').encode()), timeout=5)
             after = snapshot['next']
-            await asyncio.sleep(.25)
+            await asyncio.sleep(.05)
     except (ConnectionError, asyncio.TimeoutError):
         pass
     return response
@@ -212,6 +213,8 @@ async def websocket(request):
                     b.finish(identity['id'], message)
                 else:
                     b.agent_event(identity['id'], message)
+                    if kind == 'recover':
+                        await ws.send_json({'type': 'recovered', 'device': message['device'], 'generation': message['generation']})
             except (Fault, ValueError, KeyError, TypeError) as e:
                 await ws.send_json({'type': 'error', 'id': message.get('id') if isinstance(message, dict) else None,
                                     'error': {'code': getattr(e, 'code', 'invalid_message')}})
@@ -272,7 +275,8 @@ def create_app(tokens, broker=None, origin=None):
     app.cleanup_ctx.append(dispatcher)
     app.add_routes([web.get('/health', health), web.get('/agent/v1/ws', websocket),
                     web.get('/api/v1/devices', devices), web.post('/api/v1/leases', leases),
-                    web.route('*', '/api/v1/leases/{id}', leases),
+                    web.get('/api/v1/leases/{id}', leases), web.patch('/api/v1/leases/{id}', leases),
+                    web.delete('/api/v1/leases/{id}', leases),
                     web.post('/api/v1/operations', operations), web.get('/api/v1/operations/{id}', operations),
                     web.delete('/api/v1/operations/{id}', operations),
                     web.get('/api/v1/devices/{device}/events', events),

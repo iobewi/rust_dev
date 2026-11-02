@@ -32,7 +32,7 @@ export class Agent {
   }
   recover() {
     if (this.active) throw new Error('Operation is still running');
-    this.engine.setHold(false); this.event('recover', {});
+    this.recoveryPending = true; this.event('recover', {});
   }
   async artifact(id, bytes) {
     const { sha256 } = await import('./protocol.js');
@@ -79,12 +79,16 @@ export class Agent {
         });
         if (!live()) this.engine.setHold(true);
         this.send({ type: 'result', id: op.id, state: result?.state || 'completed', result,
-          hold: this.engine.hold, ...(result?.error ? { error: result.error } : {}) });
+          hold: this.engine.hold, ...(result?.error ? { error: typeof result.error === 'object' ? result.error : { code: result.error_kind || 'hardware_command_failed' } } : {}) });
       } catch {
         this.send({ type: 'result', id: op.id, state: 'failed', error: { code: 'hardware_command_failed' }, hold: this.engine.hold });
       } finally {
         this.active = null;
         this.engine.persistHold(this.engine.hold);
+      }
+    } else if (m.type === 'recovered') {
+      if (this.recoveryPending && m.generation === this.generation && !this.active) {
+        this.engine.setHold(false); this.recoveryPending = false; this.onState('Operator recovery accepted');
       }
     } else if (m.type === 'lease_revoked') {
       this.revoked.add(m.lease); this.engine.trigger = null;

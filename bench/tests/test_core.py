@@ -152,3 +152,15 @@ class CoreTests(unittest.TestCase):
     def test_pending_control_is_cancelled_after_quarantine(self):
         op=self.submit('reset');self.b.devices['board']['quarantined']=True
         self.assertIsNone(self.b.offer('board'));self.assertEqual(self.b.operations[op['id']]['state'],'cancelled')
+
+    def test_events_paginate_without_skipping_or_oversized_sse_lines(self):
+        from collections import deque
+        import json
+        d=self.b.devices['board'];d['events']=deque(maxlen=100)
+        for seq in range(1,11):
+            self.b.agent_event('agent',{'type':'uart','device':'board','generation':self.generation,'seq':seq,'data':base64.b64encode(b'\x00'*16384).decode()})
+        after=1;seen=[]
+        while after<d['seq']:
+            batch=self.b.events('board',after);self.assertLess(len(json.dumps(batch)),65536)
+            self.assertEqual(batch['lost'],0);seen.extend(e['seq'] for e in batch['events']);after=batch['next']
+        self.assertEqual(seen,list(range(2,12)))

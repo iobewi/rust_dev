@@ -59,3 +59,9 @@ test('engine guards unsafe operations while quarantined',async()=>{
 test('operator recovery is refused while hardware is active',()=>{
  const x=setup();x.agent.active={};assert.throws(()=>x.agent.recover());
 });
+
+test('operator hold is cleared only after server recovery acknowledgement',async()=>{
+ const x=setup();x.engine.hold=true;x.agent.recover();assert.equal(x.engine.hold,true);
+ await x.agent.message({type:'recovered',generation:'old'});assert.equal(x.engine.hold,true);
+ await x.agent.message({type:'recovered',generation:'gen'});assert.equal(x.engine.hold,false);
+});

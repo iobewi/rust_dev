@@ -1,6 +1,7 @@
 """Single-event-loop broker. No USB, project assertions, shell or persistent qualification logs."""
 import copy
 import hashlib
+import json
 import time
 import uuid
 from collections import deque
@@ -61,8 +62,16 @@ class Broker:
     def events(self, device, after):
         d = self.device(device)
         first = d['events'][0]['seq'] if d['events'] else d['seq'] + 1
-        return {'epoch': self.epoch, 'next': d['seq'], 'lost': max(0, first - after - 1),
-                'events': [e for e in d['events'] if e['seq'] > after]}
+        events, size = [], 0
+        for event in d['events']:
+            if event['seq'] <= after:
+                continue
+            event_size = len(json.dumps(event).encode())
+            if events and size + event_size > 48 * 1024:
+                break
+            events.append(event); size += event_size
+        return {'epoch': self.epoch, 'next': events[-1]['seq'] if events else d['seq'],
+                'latest': d['seq'], 'lost': max(0, first - after - 1), 'events': events}
 
     def device(self, device):
         require(device in self.devices, 'not_found', 'Unknown device', 404)
@@ -101,6 +110,7 @@ class Broker:
         require(not any(x['active'] and x['device'] == device for x in self.leases.values()),
                 'device_reserved', 'Device already reserved', 409)
         number(ttl, 1, 3600)
+        require(len(self.leases) < 4096, 'capacity', 'Reservation store full', 503)
         lease = {'id': uid(), 'device': device, 'owner': owner, 'until': self.clock() + ttl, 'active': True}
         self.leases[lease['id']] = lease
         return lease.copy()
@@ -216,6 +226,9 @@ class Broker:
         require(op['unsettled'], 'duplicate_result', 'No execution awaiting a result', 409)
         state = message.get('state')
         require(state in {'completed', 'failed', 'indeterminate', 'cancelled'})
+        error = message.get('error')
+        require(error is None or isinstance(error, dict) and isinstance(error.get('code'), str),
+                'invalid_result', 'Errors must be structured')
         # Timeouts/cancel requests never turn into a fabricated success. Late evidence remains inspectable.
         op['unsettled'] = False
         if op['state'] == 'running':
