@@ -12,3 +12,8 @@
 # Keep these root files
 !/.gitignore
 !/LICENSE
+
+# Bench software validation
+!/.github/
+!/.github/workflows/
+!/.github/workflows/bench.yml

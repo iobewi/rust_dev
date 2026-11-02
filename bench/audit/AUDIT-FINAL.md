@@ -1,3 +1,5 @@
+> Archive historique de la campagne VerifiedBoot sur `bench/audit-final` (9938b64). Ce document ne décrit pas l’API v1 du banc générique. Les recettes référencées restent dans les branches sources ; voir `../docs/architecture.md`.
+
 # Audit final VerifiedBoot #91 / #101 / #104 / #105 — avant fusion
 
 Date : 2026-11-02. Périmètre : ESP32-S3 (QFN56 v0.2, 16 Mio). Aucune opération matérielle pour cet audit ; la carte est restée à l'état P5-C (`bench/p5c/refs_after_p5c.json`), sauvegardes intactes.
@@ -118,3 +120,4 @@ H = hôte, M = matériel (ESP32-S3). Rapports : commentaires de #101 sauf mentio
 * aucun défaut de sécurité bloquant ; le code proposé (#105) **est** celui qualifié sur S3 (bootloader, applications C et D) ; CI 59/59 sur les deux PR ; #101 sans retard sur `main`.
 * conditions : (1) corriger la documentation obsolète et retirer la MAC ; (2) créer les issues de suivi, notamment C3 et la racine matérielle ; (3) revue humaine et sortie du brouillon ; (4) `main` gelé ou CI relancée après tout mouvement ; (5) étiquette de traçabilité.
 **NO-GO** si la fusion doit valoir qualification ESP32-C3, protection contre un attaquant physique, anti-rollback ou « power-loss safe » : ces garanties ne sont pas fournies.
+

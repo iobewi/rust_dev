@@ -30,7 +30,7 @@ test('manual UI and independent API drive the same browser Agent; binary round-t
   });
   await page.waitForFunction(()=>window.testAgent?.generation);
   await page.fill('#client-token','client-alice-123456789');await page.click('#refresh');
-  await page.waitForSelector('#devices option');await page.click('#reserve');await page.waitForFunction(()=>document.querySelector('#lease-state').textContent.includes('Réservation'));
+  await page.waitForSelector('#devices option',{state:'attached'});await page.click('#reserve');await page.waitForFunction(()=>document.querySelector('#lease-state').textContent.includes('Réservation'));
   await page.click('[data-command="identify"]');await page.waitForFunction(()=>JSON.parse(document.querySelector('#result').textContent).state==='completed');
   const op=JSON.parse(await page.textContent('#result'));assert.equal(op.result.simulated,true);
   await page.click('#release');await page.waitForFunction(()=>document.querySelector('#lease-state').textContent==='Libérée.');
