@@ -1,0 +1,7 @@
+[package]
+name="upload_check"
+version="0.0.0"
+edition="2024"
+[dependencies]
+iobewi-firmware-image={path="@P105@/common/firmware/image"}
+[workspace]
