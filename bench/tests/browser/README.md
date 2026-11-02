@@ -20,6 +20,7 @@ page) on top of a **simulated ESP32-S3** behind a fake Web Serial port. Firefox 
 | `qual-critical.mjs` | delayed begin ack, throttled timers, port closed mid-operation, reload during a write, late result, expired commands, protection after `indeterminate`, reconnection |
 | `qual-verdicts-inventory.mjs` | `failed` / `indeterminate` display, background tab (emulated), 600+ file inventory, stock `Transport` vs `BenchTransport` |
 | `qual-security.mjs` | server restart mid-write, command claimed without acknowledgement, confirmation before reopening the console |
+| `qual-truncation.mjs` | an intermediary cuts every `/api/images` answer at 64 KiB (incident P5-A): the write resolves its file by name and completes; a cut lookup is refused with figures, nothing programmed |
 | `lib.mjs`, `fixture.py`, `run-all.mjs` | helpers, test data (608 files), runner |
 
 ## Reproduce

@@ -91,8 +91,8 @@ export async function newPage(browser, name = "A", opts = {}) {
   return P;
 }
 // Load the real page, connect the (simulated) port, wait for the console, optionally grant full access.
-export async function boot(P, { full = true, tab = true } = {}) {
-  await P.page.goto(Q + "/", { waitUntil: "load" });
+export async function boot(P, { full = true, tab = true, base = Q } = {}) {
+  await P.page.goto(base + "/", { waitUntil: "load" });
   await waitFor(async () => (await P.text("#mode")) !== undefined, 5000);
   const hasPort = (await P.text("#mode")) === "port libre";
   await P.page.click("#connect");

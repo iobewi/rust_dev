@@ -6,6 +6,7 @@ import { makeBenchTransport } from "../web/bench-transport.js";
 import { Tracer, runWrite } from "../web/flash-op.js";
 import { makeClient, consoleGuard } from "../web/cmd-client.js";
 import { makePoller } from "../web/poller.js";
+import { fetchJson } from "../web/fetch-json.js";
 import { ESPError, FakeTransport } from "./fakes.mjs";
 
 const html = readFileSync(new URL("../web/index.html", import.meta.url), "utf8");
@@ -26,16 +27,17 @@ test("the page loads, renders the inventory summary and posts its first trace li
   const fetch = async (url, opt) => {
     if (String(url).startsWith("/api/log")) posted.push(JSON.parse(opt.body));
     const out = String(url).startsWith("/api/images") ? inventory : {};
-    return { ok: true, json: async () => out };
+    const bytes = new TextEncoder().encode(JSON.stringify(out));
+    return { ok: true, status: 200, headers: { get: (k) => (k === "content-length" ? String(bytes.length) : null) }, json: async () => out, arrayBuffer: async () => bytes.buffer };
   };
   const unref = (f, ms) => { const t = setTimeout(f, ms); t.unref(); return t; };
   const g = { document, navigator: { serial: { getPorts: async () => [], addEventListener() {} } }, fetch, localStorage: { getItem: () => null, setItem() {} },
     crypto: { subtle: {}, randomUUID: () => "abcdef01-0000" }, confirm: () => false, performance, console, setTimeout: unref, clearTimeout, setInterval: () => 0, URLSearchParams, URL };
   const { BenchTransport } = makeBenchTransport(FakeTransport, ESPError);
-  const names = ["ESPLoader", "Transport", "ESPError", "makeBenchTransport", "Tracer", "runWrite", "makeClient", "consoleGuard", "makePoller", ...Object.keys(g)];
+  const names = ["ESPLoader", "Transport", "ESPError", "makeBenchTransport", "Tracer", "runWrite", "makeClient", "consoleGuard", "makePoller", "fetchJson", ...Object.keys(g)];
   // the page's own timers must not keep node alive
   const poller = (task, ms) => makePoller(task, ms, { setTimeout: unref, clearTimeout });
-  const values = [class {}, FakeTransport, ESPError, makeBenchTransport, Tracer, runWrite, makeClient, consoleGuard, poller, ...Object.values(g)];
+  const values = [class {}, FakeTransport, ESPError, makeBenchTransport, Tracer, runWrite, makeClient, consoleGuard, poller, (u, i) => fetchJson(u, i, fetch), ...Object.values(g)];
   const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
   await new AsyncFunction(...names, body)(...values);
   await new Promise((r) => setTimeout(r, 80));

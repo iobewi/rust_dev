@@ -4,7 +4,7 @@
 - GET  /...             bench page (bench/web), else data files from BENCH_WEB (manifests, images)
 - GET  /dumps/...       flash read-backs saved by the page (BENCH_LOGS/dumps)
 - GET  /api/info        where this server writes: capture file, dumps, data directory
-- GET  /api/images[?scope=all][&archives=1][&fresh=1]  binaries with SHA256, category (artifact, backup, capture,
+- GET  /api/images[?scope=all][&archives=1][&fresh=1][&path=FILE ...]  binaries with SHA256, category (artifact, backup, capture,
                         archive), origin and counts. Default: the folders of BENCH_INVENTORY_DIRS (default p91) and the
                         current read-backs; scope=all adds the other folders, archives=1 the archived copies. ESP Web
                         Tools manifests, and the JSON files that are not (reason given)
@@ -140,8 +140,14 @@ class Handler(SimpleHTTPRequestHandler):
         if self.path.startswith("/api/images"):
             # fresh=1: rebuild now (the caller has just put a file there); otherwise the snapshot is at most ~1 s old.
             q = parse_qs(urlparse(self.path).query)
-            return self._json(200, inventory.get(scope="all" if q.get("scope") == ["all"] else "default",
-                                                 archives=q.get("archives") == ["1"], fresh=q.get("fresh") == ["1"]))
+            snap = inventory.get(scope="all" if q.get("scope") == ["all"] else "default",
+                                 archives=q.get("archives") == ["1"], fresh=q.get("fresh") == ["1"])
+            if "path" in q:
+                # path=<file> (repeatable): only the named entries. A caller that needs its own deliverables does not
+                # have to carry the whole listing, which grows with every read-back.
+                want = set(q["path"])
+                snap = {**snap, "images": [i for i in snap["images"] if i["path"] in want]}
+            return self._json(200, snap)
         return super().do_GET()
 
     def do_POST(self):

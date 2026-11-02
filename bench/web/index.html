@@ -119,6 +119,7 @@ import { makeBenchTransport } from "/bench-transport.js";
 import { Tracer, runWrite } from "/flash-op.js";
 import { makeClient, consoleGuard } from "/cmd-client.js";
 import { makePoller } from "/poller.js";
+import { fetchJson } from "/fetch-json.js";
 const { BenchTransport } = makeBenchTransport(Transport, ESPError);
 const $ = (id) => document.getElementById(id);
 const hex = (b) => [...new Uint8Array(b)].map(x => x.toString(16).padStart(2, "0")).join("");
@@ -495,7 +496,11 @@ async function execute(cmd) {
     case "dump": return dump(cmd.regions.map(r => ({ name: String(r.name).replace(/[^A-Za-z0-9_-]/g, "_"), addr: r.addr, size: r.size })), back);
     case "write": {
       // Only deliverables listed by the server, with the SHA256 the caller expects.
-      const known = new Map((await (await fetch("/api/images?scope=all&archives=1&fresh=1", { cache: "no-store" })).json()).images.map(i => [i.path, i.sha256]));
+      // The lookup names its files: its answer stays small however long the listing is, and an answer that is not
+      // complete stops the command before anything is sent to the chip (fetchJson never returns a partial one).
+      const q = new URLSearchParams({ scope: "all", archives: "1", fresh: "1" });
+      for (const it of cmd.items) q.append("path", it.path);
+      const known = new Map((await fetchJson("/api/images?" + q, { cache: "no-store", peek: true })).images.map(i => [i.path, i.sha256]));
       for (const it of cmd.items) if (known.get(it.path) !== it.sha) return { ok: false, error: "image inconnue ou empreinte différente : " + it.path };
       return writeImages(cmd.items.map(it => ({ ...it })), !!cmd.erase, "écriture (banc)", true, back, cmd.md5 !== false);
     }
@@ -634,7 +639,7 @@ async function refresh() {
     const q = new URLSearchParams();
     if ($("showall").checked) q.set("scope", "all");
     if ($("showarch").checked) q.set("archives", "1");
-    const r = await (await fetch("/api/images?" + q, { cache: "no-store" })).json();
+    const r = await fetchJson("/api/images?" + q, { cache: "no-store", peek: true });
     const key = JSON.stringify(r);
     const c = r.counts, x = r.excluded, ij = r.ignored_json || [];
     $("invstate").textContent = `— ${c.files} fichiers, ${c.unique_sha256} empreintes uniques` +
@@ -646,7 +651,7 @@ async function refresh() {
     invKey = key; inv = r;
     for (const p of [...sel.keys()]) if (!r.images.some(i => i.path === p)) sel.delete(p);
     render();
-  } catch (e) { $("invstate").textContent = "— serveur injoignable"; }
+  } catch (e) { $("invstate").textContent = "— " + (/^réponse /.test(e.message) ? "inventaire non lu : " + e.message : "serveur injoignable"); }
 }
 $("filter").oninput = render; $("showdumps").onchange = render;
 $("showarch").onchange = $("showall").onchange = () => { invKey = ""; invPoll.trigger(); };

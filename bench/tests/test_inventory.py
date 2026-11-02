@@ -90,5 +90,38 @@ class Configuration(unittest.TestCase):
             b.close()
 
 
+class Lookup(unittest.TestCase):
+    """`path=` narrows the answer to the named files: a write checks its own deliverables, not the whole listing."""
+    def setUp(self):
+        self.b = Bench()
+        for i in range(400):                                   # a listing far beyond 64 KiB once serialized
+            f = self.b.logs / "dumps" / "archive" / f"bulk-{i:04d}-0x1d0000-20261101-000000.bin"
+            f.parent.mkdir(parents=True, exist_ok=True)
+            f.write_bytes(bytes([i % 251]) * 16)
+        (self.b.web / "p91").mkdir()
+        (self.b.web / "p91" / "art.bin").write_bytes(b"ART")
+
+    def tearDown(self):
+        self.b.close()
+
+    def test_the_full_listing_is_beyond_64_kib_and_the_lookup_is_not(self):
+        q = "/api/images?scope=all&archives=1&fresh=1"
+        full = self.b.get(q)[1]
+        self.assertGreater(len(json.dumps(full)), 65536)
+        code, one = self.b.get(q + "&path=p91/art.bin")
+        self.assertEqual(code, 200)
+        self.assertEqual([i["path"] for i in one["images"]], ["p91/art.bin"])
+        self.assertLess(len(json.dumps(one)), 2000)
+
+    def test_several_paths_unknown_path_and_unchanged_default(self):
+        q = "/api/images?scope=all&archives=1&fresh=1"
+        _, two = self.b.get(q + "&path=p91/art.bin&path=dumps/archive/bulk-0003-0x1d0000-20261101-000000.bin")
+        self.assertEqual(len(two["images"]), 2)
+        self.assertEqual(self.b.get(q + "&path=nope.bin")[1]["images"], [])
+        self.assertEqual(len(self.b.get(q)[1]["images"]), 401)    # no `path`: the listing as before
+        self.assertEqual(self.b.get(q + "&path=p91/art.bin")[1]["images"][0]["sha256"],
+                         next(i for i in self.b.get(q)[1]["images"] if i["path"] == "p91/art.bin")["sha256"])
+
+
 if __name__ == "__main__":
     unittest.main()
