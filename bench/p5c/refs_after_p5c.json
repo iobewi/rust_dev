@@ -1,0 +1,41 @@
+{
+ "note": "Flash reference after P5-C PASS (B'' Stable under VerifiedBoot #105 a7e884a2\u2026, A'' kept Valid seq 1 as fallback; otadata [seq1 Valid, seq2 Valid]; ota_meta sequence 5, staged empty, active = p5-b2-20261101). Hashes only.",
+ "ranges": [
+  {
+   "name": "bootloader",
+   "addr": "0x0",
+   "size": "0xa000",
+   "sha256": "76811631b20e78d0086e7909615612b201ec0f1f8fd7699a64d989874541b6f3"
+  },
+  {
+   "name": "gap",
+   "addr": "0xa000",
+   "size": "0x6000",
+   "sha256": "a5c805e54531fc6e5d622fe891831c33ec607dc8c78605d74f83b3044bac77cf"
+  },
+  {
+   "name": "otadata+ota_meta+table",
+   "addr": "0x10000",
+   "size": "0x5000",
+   "sha256": "5dea577cd5bb548ebba56095ad27448af932e6653ba3c894ac8616ae1e0fffa0"
+  },
+  {
+   "name": "ota_0",
+   "addr": "0x20000",
+   "size": "0x1b0000",
+   "sha256": "9677f1c836c5a53e2dcc90b2f1c154303139a3271c38fa1b7c5ead3929a858dc"
+  },
+  {
+   "name": "ota_1",
+   "addr": "0x1d0000",
+   "size": "0x1b0000",
+   "sha256": "46a5d06c2e6db70eb572c97fced63a8d05a32db8d3e2d498cff66b4f9a770a6e"
+  },
+  {
+   "name": "config",
+   "addr": "0x380000",
+   "size": "0x80000",
+   "sha256": "8b911b6784dd6d854cfc5fe1f2635f2bf3a8e033701c31bacdd4ca8e58debb5d"
+  }
+ ]
+}
