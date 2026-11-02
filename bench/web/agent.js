@@ -64,7 +64,6 @@ export class Agent {
       }
       this.active = op;
       // Persist before touching the port; a page crash must require operator review.
-      
       this.engine.persistHold(true);
       const generation = this.generation;
       const privileged = ['flash.write', 'flash.erase', 'uart.write', 'io0', 'trigger', 'http.request'].includes(op.command);

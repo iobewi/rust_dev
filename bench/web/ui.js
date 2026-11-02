@@ -3,7 +3,8 @@ import { EspEngine } from './esp-engine.js';
 import { BenchClient } from './api-client.js';
 import { b64, unb64, manifestPlan } from './protocol.js';
 const $ = id => document.getElementById(id);
-let agent, engine, device, lease, current, uploaded, cursor = 0, epoch, imagePlan = [], capture = [];
+let agent, engine, device, lease, current, uploaded, cursor = 0, epoch, imagePlan = [], capture = [], captureSize = 0;
+const uartDecoder = new TextDecoder();
 const client = () => new BenchClient($('client-token').value);
 const safe = fn => async () => { try { await fn(); } catch(e) { $('client-state').textContent = e.message; } };
 function hook(id, fn) { $(id).onclick = safe(fn); }
@@ -16,9 +17,9 @@ async function attach(port) {
   engine = new EspEngine(port, deps, (type, data) => {
     agent?.event(type, data);
     if (type === 'uart') {
-      const bytes = unb64(data.data); capture.push(bytes);
-      while (capture.reduce((n, b) => n + b.length, 0) > 1024 * 1024) capture.shift();
-      $('uart-log').textContent = ($('uart-log').textContent + new TextDecoder().decode(bytes)).slice(-65536);
+      const bytes = unb64(data.data); capture.push(bytes); captureSize += bytes.length;
+      while (captureSize > 1024 * 1024) captureSize -= capture.shift().length;
+      $('uart-log').textContent = ($('uart-log').textContent + uartDecoder.decode(bytes, { stream: true })).slice(-65536);
     }
   }, persist);
   engine.hold = localStorage.getItem(key) === '1';
@@ -83,7 +84,11 @@ hook('write',async()=>{if(confirm('Programmer les régions sélectionnées ?'))a
 hook('erase',async()=>{if(confirm('Effacer TOUTE la flash ?'))await submit('flash.erase',{chip:chip(),return_console:false},true);});
 hook('install',async()=>{
   const m=$('manifest').files[0];if(!m)throw new Error('Choisissez un manifeste');const files=new Map();
-  for(const f of $('manifest-files').files)files.set(f.webkitRelativePath||f.name,await client().upload(new Uint8Array(await f.arrayBuffer())));
+  for(const f of [...$('manifest-files').files,...$('manifest-directory').files]){
+    const path=f.webkitRelativePath ? f.webkitRelativePath.split('/').slice(1).join('/') : f.name;
+    if(files.has(path))throw new Error('Chemin de manifeste dupliqué : '+path);
+    files.set(path,await client().upload(new Uint8Array(await f.arrayBuffer())));
+  }
   const plan=manifestPlan(JSON.parse(await m.text()),chip(),files);if(confirm('Programmer ce manifeste sans effacement global ?'))await submit('flash.write',plan,true);
 });
 hook('send',()=>{const text=$('uart').value.replace(/\s/g,'');if(!/^(?:[a-f0-9]{2})+$/i.test(text))throw new Error('Octets hexadécimaux attendus');return submit('uart.write',{data:b64(Uint8Array.from(text.match(/../g),n=>parseInt(n,16)))});});

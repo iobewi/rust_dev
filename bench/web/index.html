@@ -22,7 +22,7 @@
 <div class="row"><button id="artifacts">Actualiser les artefacts</button><select id="artifact-list" aria-label="Artefacts"></select><button id="select-artifact">Utiliser cet artefact</button></div>
 <p id="plan-state">Plan vide.</p>
 <label>Manifeste ESP Web Tools <input id="manifest" type="file" accept=".json"></label>
-<label>Binaires du manifeste <input id="manifest-files" type="file" multiple accept=".bin"></label><button id="install">Installer le manifeste</button>
+<label>Binaires du manifeste <input id="manifest-files" type="file" multiple accept=".bin"></label><label>Dossier contenant les images (optionnel) <input id="manifest-directory" type="file" webkitdirectory multiple></label><button id="install">Installer le manifeste</button>
 <div class="row"><label>UART · octets hexadécimaux <input id="uart" placeholder="00 ff 0d 0a"></label><button id="send">Émettre</button><label>Baud <input id="baud" value="115200"></label><button id="configure">Appliquer</button></div>
 <div class="row"><label>Repère <input id="marker" value="capture"></label><button id="mark">Marquer</button><label>GPIO0 · ms <input id="io0-duration" value="1000"></label><button id="io0">Maintenir BOOT</button></div>
 <div class="row"><label>Déclencheur · texte exact <input id="trigger-text"></label><select id="trigger-action" aria-label="Action"><option value="mark">Repère</option><option value="reset">Reset EN</option></select><button id="trigger">Armer une fois · 30 s</button></div>

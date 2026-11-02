@@ -41,3 +41,11 @@ test('conditional byte trigger crosses chunk boundary and fires once',async()=>{
  x.engine.matchTrigger(new TextEncoder().encode('xa'));x.engine.matchTrigger(new TextEncoder().encode('bcabc'));
  await new Promise(r=>setTimeout(r,5));assert.equal(events.filter(e=>e.name==='trigger').length,1);assert.equal(events.filter(e=>e.name==='mark').length,1);
 });
+
+test('continuous UART capture splits large Web Serial reads into valid bounded binary frames',async()=>{
+ const bytes=Uint8Array.from({length:50000},(_,i)=>i%256),frames=[];let reads=0;
+ const port={getInfo:()=>({}),readable:{getReader:()=>({read:async()=>reads++?{done:true}:{value:bytes},releaseLock(){}})}};
+ const engine=new EspEngine(port,{},(kind,data)=>{if(kind==='uart')frames.push(data.data);});await engine.readLoop();
+ const {unb64}=await import('../web/protocol.js');assert.equal(frames.length,4);assert.ok(frames.every(s=>unb64(s).length<=16384));
+ assert.deepEqual(Buffer.concat(frames.map(s=>Buffer.from(unb64(s)))),Buffer.from(bytes));
+});

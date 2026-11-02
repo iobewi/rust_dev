@@ -31,7 +31,9 @@ export class EspEngine {
     try {
       for (;;) {
         const { value, done } = await this.reader.read(); if (done) break;
-        this.event('uart', { data: b64(value), at: Date.now() });
+        for (let offset = 0; offset < value.length; offset += 16384) {
+          this.event('uart', { data: b64(value.subarray(offset, offset + 16384)), at: Date.now() });
+        }
         this.matchTrigger(value);
       }
     } catch { this.event('transport', { detail: 'UART interrupted' }); }
