@@ -220,6 +220,8 @@ class Broker:
                 'execution_deadline_ms': op['deadline'] * 1000}
 
     def finish(self, agent, message):
+        # Results can arrive between dispatcher ticks: enforce the deadline before accepting them.
+        self.sweep()
         op = self.operations.get(message.get('id'))
         require(op is not None, 'not_found', 'Unknown operation', 404)
         d = self.device(op['device'])

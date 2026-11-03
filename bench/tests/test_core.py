@@ -172,3 +172,11 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(execute['execution_deadline_ms'],102500)
         self.assertEqual(execute['execution_deadline_ms'],self.b.operations[op['id']]['deadline']*1000)
         self.assertEqual(execute['deadline_ms'],130000)
+
+    def test_late_result_enforces_timeout_without_waiting_for_dispatcher_tick(self):
+        op=self.start(timeout=1);self.now+=1.01
+        self.b.finish('agent',{'id':op['id'],'state':'completed','result':{'verified':True}})
+        result=self.b.operation(op['id'],'alice')
+        self.assertEqual(result['state'],'indeterminate')
+        self.assertEqual(result['late_result']['state'],'completed')
+        self.assertTrue(self.b.devices['board']['quarantined'])
