@@ -1,13 +1,13 @@
 // Authenticated WebSocket executor; it owns no UI and never replays a hardware operation.
 export class Agent {
-  constructor({ engine, device, token, onState = () => {}, socketFactory = url => new WebSocket(url) }) {
-    Object.assign(this, { engine, device, token, onState, socketFactory });
+  constructor({ engine, device, token, onState = () => {}, socketFactory = url => new WebSocket(url), now = () => performance.now() }) {
+    Object.assign(this, { engine, device, token, onState, socketFactory, now });
     this.seq = 0; this.seen = new Set(); this.grantUntil = 0; this.pending = null; this.revoked = new Set();
   }
   connect() {
     const url = new URL('/agent/v1/ws', location.href); url.protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
     this.socket = this.socketFactory(url);
-    this.socket.onopen = () => { this.authSent = performance.now(); this.send({ type: 'auth', version: 1, token: this.token }); };
+    this.socket.onopen = () => { this.authSent = this.now(); this.send({ type: 'auth', version: 1, token: this.token }); };
     this.socket.onmessage = e => this.message(JSON.parse(e.data)).catch(() => this.onState('agent error'));
     this.socket.onclose = () => {
       this.generation = null; this.grantUntil = 0; this.engine.trigger = null;
@@ -27,7 +27,7 @@ export class Agent {
     this.send(message);
   }
   grant(seconds) {
-    this.grantUntil = performance.now() + seconds * 1000;
+    this.grantUntil = this.now() + seconds * 1000;
     this.event('grant', { seconds });
   }
   recover() {
@@ -52,14 +52,15 @@ export class Agent {
     } else if (m.type === 'offer') {
       if (this.active || this.seen.has(m.id) || m.generation !== this.generation) return;
       // Remember offer deadline on a monotonic local clock; background throttling cannot extend it.
-      this.pending = { ...m, until: m.deadline_ms - this.serverOffset - 100, received: performance.now() };
+      this.pending = { ...m, until: m.deadline_ms - this.serverOffset - 100, received: this.now() };
       this.send({ type: 'ready', id: m.id });
     } else if (m.type === 'execute') {
       const op = this.pending; this.pending = null;
       if (!op || op.id !== m.id || this.seen.has(op.id) || this.active) return;
       this.seen.add(op.id);
       const until = Math.min(op.until, m.deadline_ms - this.serverOffset - 100);
-      if (performance.now() >= until) {
+      const executionUntil = m.execution_deadline_ms - this.serverOffset - 100;
+      if (this.now() >= until) {
         this.send({ type: 'result', id: op.id, state: 'cancelled', error: { code: 'expired_before_execution' } }); return;
       }
       this.active = op;
@@ -67,14 +68,16 @@ export class Agent {
       this.engine.persistHold(true);
       const generation = this.generation;
       const privileged = ['flash.write', 'flash.erase', 'uart.write', 'io0', 'trigger', 'http.request'].includes(op.command);
-      const live = () => this.generation === generation && this.socket?.readyState === 1 && !this.revoked.has(op.lease) && performance.now() < op.lease_deadline_ms - this.serverOffset - 100 && (!privileged || performance.now() < this.grantUntil);
+      const leaseLive = () => this.generation === generation && this.socket?.readyState === 1 && !this.revoked.has(op.lease) && this.now() < op.lease_deadline_ms - this.serverOffset - 100 && (!privileged || this.now() < this.grantUntil);
+      // The server starts this deadline before sending execute; network delay cannot extend it.
+      const live = () => leaseLive() && this.now() < executionUntil;
       try {
         const check = () => {
-          if (!live() || performance.now() >= until) throw new Error('Expired command, lost connection or local grant');
+          if (!live() || this.now() >= until) throw new Error('Expired command, lost connection or local grant');
         };
         check();
         const result = await this.engine.execute(op.command, op.args, {
-          check, live, device: this.device, download: id => this.artifact(id), upload: bytes => this.artifact(null, bytes),
+          check, live, triggerLive: leaseLive, device: this.device, download: id => this.artifact(id), upload: bytes => this.artifact(null, bytes),
         });
         if (!live()) this.engine.setHold(true);
         this.send({ type: 'result', id: op.id, state: result?.state || 'completed', result,

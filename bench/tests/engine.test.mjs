@@ -49,3 +49,27 @@ test('continuous UART capture splits large Web Serial reads into valid bounded b
  const {unb64}=await import('../web/protocol.js');assert.equal(frames.length,4);assert.ok(frames.every(s=>unb64(s).length<=16384));
  assert.deepEqual(Buffer.concat(frames.map(s=>Buffer.from(unb64(s)))),Buffer.from(bytes));
 });
+
+for(const fail of [false,true]){
+ test(`triggered reset holds the hardware lock until ${fail?'failure':'completion'}`,async()=>{
+  const x=await setup();x.engine.mode='console';
+  let startedReset,finishReset,finishedReset,identityCalls=0;
+  const started=new Promise(resolve=>{startedReset=resolve;});
+  const gate=new Promise(resolve=>{finishReset=resolve;});
+  const finished=new Promise(resolve=>{finishedReset=resolve;});
+  x.engine.reset=async()=>{startedReset();await gate;if(fail)throw new Error('Reset transport failure');};
+  x.engine.identity=async()=>{identityCalls++;return {chip:'esp32s3',flash_size:4194304};};
+  x.engine.event=(kind)=>{if(kind==='transport')finishedReset();};
+  await x.engine.execute('trigger',{data:'YQ==',action:'reset',delay_ms:0,expires_ms:1000},x.context);
+  x.engine.matchTrigger(new Uint8Array([97]));await started;
+  try{
+   assert.equal(x.engine.busy,true);
+   await assert.rejects(x.engine.execute('identify',{},x.context),/Device is busy/);
+   assert.equal(identityCalls,0);
+  }finally{finishReset();}
+  if(fail)await finished;
+  else await new Promise(resolve=>setTimeout(resolve,0));
+  assert.equal(x.engine.busy,false);
+  await x.engine.execute('identify',{},x.context);assert.equal(identityCalls,1);
+ });
+}

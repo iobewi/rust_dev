@@ -95,9 +95,12 @@ export class EspEngine {
     setTimeout(async () => {
       // A delayed trigger must never collide with flash, another reservation, or a disconnected server.
       if (!trigger.live() || this.hold || performance.now() >= trigger.until) return;
-      if (trigger.action === 'reset' && (this.busy || this.mode !== 'console')) return;
+      const resetting = trigger.action === 'reset';
+      if (resetting && (this.busy || this.mode !== 'console')) return;
+      if (resetting) this.busy = true;
       try { if (trigger.action === 'reset') await this.reset(); else this.event('mark', { detail: 'trigger' }); }
       catch { this.event('transport', { detail: 'trigger action failed' }); }
+      finally { if (resetting) this.busy = false; }
     }, trigger.delay);
   }
   async execute(command, args, context) {
@@ -112,7 +115,7 @@ export class EspEngine {
         if (args.action === 'disarm') { this.trigger = null; return { armed: false }; }
         if (args.action === 'reset' && this.native) throw new Error('No EN line');
         this.trigger = { bytes: unb64(args.data), action: args.action, until: performance.now() + args.expires_ms,
-          delay: args.delay_ms || 0, live: context.live };
+          delay: args.delay_ms || 0, live: context.triggerLive || context.live };
         this.tail = new Uint8Array(); return { armed: true };
       }
       if (command === 'http.request') {

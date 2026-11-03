@@ -45,7 +45,7 @@ Les agents utilisent REST seulement pour uploader les dumps et télécharger les
 }
 ```
 
-`ttl` borne le délai de départ (0,1 à 120 s). `timeout` borne l’attente du résultat après autorisation de départ (0,1 à 600 s). Le TTL ne sert pas à couper une programmation démarrée. La réservation dure de 1 à 3 600 s. Aucun retry automatique : après une réponse de soumission perdue, inspecter l’état du banc et ne pas renvoyer aveuglément une écriture. La réservation reste exclusive même si le client HTTP disparaît, jusqu’à libération ou expiration.
+`ttl` borne le délai de départ (0,1 à 120 s). `timeout` borne l’attente du résultat après autorisation de départ (0,1 à 600 s). Le TTL ne sert pas à couper une programmation démarrée. L’agent contrôle aussi l’échéance d’exécution du serveur : après expiration, une opération flash en cours peut se terminer, mais le blocage reste actif et aucun retour console automatique ne redémarre la carte. La réservation dure de 1 à 3 600 s. Aucun retry automatique : après une réponse de soumission perdue, inspecter l’état du banc et ne pas renvoyer aveuglément une écriture. La réservation reste exclusive même si le client HTTP disparaît, jusqu’à libération ou expiration.
 
 | Commande | Arguments | Grant local temporaire |
 |---|---|---|
@@ -92,7 +92,7 @@ Réponse `registered` : `device`, `generation`. Une connexion concurrente du mê
 
 1. Serveur → `offer` : id, device, generation, command, args, lease, lease_deadline_ms, deadline_ms, remaining_ms, timeout_ms.
 2. Agent → `ready` : id, sans exécution matérielle.
-3. Serveur revérifie le TTL, la génération, la réservation, la quarantaine et le grant ; → `execute` : id, deadline_ms, remaining_ms. Le serveur a alors enregistré `running`.
+3. Serveur revérifie le TTL, la génération, la réservation, la quarantaine et le grant ; → `execute` : id, deadline_ms, remaining_ms, execution_deadline_ms (échéance monotone serveur de fin d’exécution). Le serveur a alors enregistré `running`.
 4. L’agent revérifie l’échéance monotone et les autorisations, garde l’identifiant dans un ensemble anti-rejeu, exécute une seule fois et → `result` : id, state (`completed/failed/indeterminate/cancelled`), result, error, hold éventuel.
 
 Une trame `error` refuse une transition : elle n’autorise aucune exécution. Le serveur ne remet aucune offre en file après déconnexion. Le message `lease_revoked` supprime les déclencheurs et clôt les droits associés ; l’agent contrôle aussi son échéance locale de réservation, indépendamment de la réception de ce message. `cancel` exprime uniquement une demande. Heartbeat WebSocket serveur 15 s.

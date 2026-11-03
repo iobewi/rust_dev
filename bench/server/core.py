@@ -216,7 +216,8 @@ class Broker:
         op['state'], op['unsettled'] = 'running', True
         op['deadline'] = self.clock() + op['timeout']
         return {'type': 'execute', 'id': key, 'remaining_ms': op['start_remaining_ms'],
-                'deadline_ms': self.clock() * 1000 + op['start_remaining_ms']}
+                'deadline_ms': self.clock() * 1000 + op['start_remaining_ms'],
+                'execution_deadline_ms': op['deadline'] * 1000}
 
     def finish(self, agent, message):
         op = self.operations.get(message.get('id'))

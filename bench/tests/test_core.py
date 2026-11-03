@@ -164,3 +164,11 @@ class CoreTests(unittest.TestCase):
             batch=self.b.events('board',after);self.assertLess(len(json.dumps(batch)),65536)
             self.assertEqual(batch['lost'],0);seen.extend(e['seq'] for e in batch['events']);after=batch['next']
         self.assertEqual(seen,list(range(2,12)))
+
+    def test_execute_transmits_exact_server_execution_deadline(self):
+        op=self.submit(ttl=30, timeout=2)
+        self.b.offer('board');self.now+=.5
+        execute=self.b.commit('agent',op['id'])
+        self.assertEqual(execute['execution_deadline_ms'],102500)
+        self.assertEqual(execute['execution_deadline_ms'],self.b.operations[op['id']]['deadline']*1000)
+        self.assertEqual(execute['deadline_ms'],130000)
