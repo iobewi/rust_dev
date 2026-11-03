@@ -51,8 +51,10 @@ class Broker:
         return generation
 
     def view(self, d):
+        reservation = next((lease for lease in self.leases.values() if lease['device'] == d['id'] and lease['active'] and lease['until'] > self.clock()), None)
         return {k: v for k, v in d.items() if k not in {'events', 'grant_until', 'source_seq'}} | {
-            'privileged_seconds': max(0, d['grant_until'] - self.clock())}
+            'privileged_seconds': max(0, d['grant_until'] - self.clock()),
+            'reservation': {'owner': reservation['owner'], 'remaining_seconds': max(0, reservation['until'] - self.clock())} if reservation else None}
 
     def event(self, device, kind, payload):
         d = self.devices[device]

@@ -9,7 +9,7 @@ Toutes les routes `/api/v1/*` exigent `Authorization: Bearer TOKEN`. Les erreurs
 | Méthode et chemin | Entrée | Sortie |
 |---|---|---|
 | `GET /health` | Public | `status`, version du protocole, `epoch` |
-| `GET /api/v1/devices` | — | `devices`, `agents` connectés ; carte : id, famille, capacité, capacités, génération, connexion, quarantaine, durée restante du grant |
+| `GET /api/v1/devices` | — | `devices`, `agents` connectés ; carte : id, famille, capacité, capacités, génération, connexion, quarantaine, durée restante du grant, réservation publique (`owner`, `remaining_seconds`) sans identifiant de réservation |
 | `POST /api/v1/leases` | `{"device":"esp32-local","ttl":900}` | 201 : `id`, `device`, `owner`, `until`, `active` |
 | `GET /api/v1/leases/{id}` | Propriétaire | Réservation active |
 | `PATCH /api/v1/leases/{id}` | `{"ttl":900}` | Renouvellement de la réservation active |

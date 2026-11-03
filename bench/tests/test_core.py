@@ -185,3 +185,10 @@ class CoreTests(unittest.TestCase):
         self.b.agent_event('agent',{'type':'hold','device':'board','generation':self.generation})
         self.assertTrue(self.b.devices['board']['quarantined'])
         with self.assertRaises(Fault):self.submit('reset')
+
+    def test_device_view_reports_reservation_owner_without_disclosing_reservation_id(self):
+        view=self.b.view(self.b.devices['board'])
+        self.assertEqual(view['reservation'],{'owner':'alice','remaining_seconds':100})
+        self.assertNotIn(self.lease['id'],str(view))
+        self.b.release(self.lease['id'],'alice')
+        self.assertIsNone(self.b.view(self.b.devices['board'])['reservation'])

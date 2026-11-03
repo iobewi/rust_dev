@@ -6,6 +6,7 @@ Cette refonte part de **`bench/audit-final` (`9938b64`)**, qui contient entière
 
 - [Architecture et audit](docs/architecture.md)
 - [Contrat REST et WebSocket](docs/api.md)
+- [Interface d’instrumentation et parcours de connexion](docs/interface.md)
 - [Couverture de l’existant et validation matérielle restante](docs/coverage.md)
 - [Client Python indépendant](examples/client.py)
 
@@ -38,7 +39,7 @@ PY
 BENCH_TOKENS_FILE=/tmp/bench-tokens.json python3 bench/server/bench_server.py
 ```
 
-Le serveur écoute `127.0.0.1:8080`. Ouvrir `http://localhost:8080` sur le PC qui possède le port USB. Saisir le token agent et l’identifiant de carte déclaré dans sa liste `devices`, puis choisir le port. Le token client permet de réserver cette carte et de commander les opérations manuelles. **Ces boutons passent par la même API et la même file que les clients externes.** Seuls le choix du port, l’identification initiale, la connexion, l’octroi local des droits et la récupération de sécurité sont locaux.
+Le serveur écoute `127.0.0.1:8080`. Ouvrir `http://localhost:8080` sur le PC qui possède le port USB. Le bouton **Connecter un port série** ouvre Web Serial et permet d’observer la console locale sans token. Dans **Pilotage distant et accès…**, saisir le token agent, l’identifiant déclaré dans sa liste `devices` et le token client, puis ouvrir la session du banc. L’origine du serveur est automatiquement celle de la page. **Prendre le pilotage manuel** réserve la carte ; **Autoriser le pilotage distant** termine cette réservation en gardant le port ouvert. **Ces boutons passent par la même API et la même file que les clients externes.** Seuls le choix du port, l’identification initiale, la connexion, l’octroi local des droits et la récupération de sécurité sont locaux.
 
 L’identifiant de carte est un nom logique choisi par l’opérateur ; la famille et la capacité flash sont mesurées par esptool, puis revérifiées avant les opérations flash. Deux ports physiques ne doivent pas être déclarés sous deux identifiants pour une même carte.
 
