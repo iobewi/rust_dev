@@ -38,7 +38,7 @@ PY
 BENCH_TOKENS_FILE=/tmp/bench-tokens.json python3 bench/server/bench_server.py
 ```
 
-Le serveur écoute `127.0.0.1:8080`. Ouvrir `http://localhost:8080` sur le PC qui possède le port USB. La page établit automatiquement une session locale, sans token à saisir. **Connecter un port série** ouvre le sélecteur Web Serial et rattache automatiquement la carte au serveur. Cliquer ensuite directement sur Identifier, Lire, Reset ou les autres commandes : le serveur prend et libère la réservation pour chaque opération, après stabilisation du retour console. **Tous ces boutons utilisent la même API et la même file que les clients externes.** Programmation et effacement conservent une confirmation explicite ; les actions locales ne créent aucun grant pour les clients distants. Le panneau avancé sert à autoriser temporairement les opérations sensibles de Claude. Les clés de la configuration ne sont plus recopiées dans la page. Cette session automatique exige un accès direct en boucle locale ; l’authentification d’une UI par le réseau n’est pas implémentée.
+Le serveur écoute `127.0.0.1:8080`. Ouvrir `http://localhost:8080` sur le PC qui possède le port USB. La page établit automatiquement une session locale, sans token à saisir. **Connecter un port série** ouvre le sélecteur Web Serial et rattache automatiquement la carte au serveur. Cliquer ensuite directement sur Identifier, Lire, Reset ou les autres commandes : le serveur prend et libère la réservation pour chaque opération, après stabilisation du retour console. **Tous ces boutons utilisent la même API et la même file que les clients externes.** Programmation et effacement conservent une confirmation explicite ; les actions locales ne créent aucun grant pour les clients distants. Le panneau avancé sert à autoriser temporairement les opérations sensibles de Claude. Les clés de la configuration ne sont plus recopiées dans la page. La session automatique accepte l’accès direct en boucle locale et les redirections locales explicitement configurées ci-dessous ; l’authentification d’une UI par le réseau n’est pas implémentée.
 
 L’identifiant de carte est un nom logique configuré pour le banc (`esp32-local` par défaut) ; la famille et la capacité flash sont mesurées par esptool, puis revérifiées avant les opérations flash. Deux ports physiques ne doivent pas être déclarés sous deux identifiants pour une même carte.
 
@@ -66,6 +66,22 @@ python3 bench/examples/client.py --device esp32-local --image /path/to/image.bin
 ```
 
 Les captures durables, assertions et rapports appartiennent au client. `BenchClient.events()` offre un abonnement SSE ; chaque lot donne `epoch`, `next`, `lost` et les événements. Les réceptions UART restent des octets base64, pas des lignes décodées par le serveur. Vérifier aussi `source_lost` et les événements de déconnexion. Le journal UART peut contenir des secrets émis par le firmware ; il n’est accessible qu’aux tokens `read`.
+
+## Devcontainer et redirection de port locale
+
+L’écoute `0.0.0.0` dans le conteneur est compatible avec la page ouverte sur `localhost` du PC. Déclarer l’origine publique exacte et l’adresse du relais telle que le serveur la voit :
+
+```sh
+BENCH_HOST=0.0.0.0 \
+BENCH_ORIGIN=http://localhost:8080 \
+BENCH_UI_FORWARD_PEERS=172.18.0.1 \
+BENCH_TOKENS_FILE=/path/to/bench-tokens.json \
+python3 bench/server/bench_server.py
+```
+
+`172.18.0.1` est un exemple à remplacer par le pair réel du relais ; ce n’est pas une adresse présumée de votre devcontainer. `BENCH_UI_FORWARD_PEERS` accepte des adresses ou CIDR séparés par des virgules ; préférer l’adresse précise du relais. `BENCH_ORIGIN` est l’URL `localhost` visible dans le navigateur, qui peut avoir un port différent du port interne. Aucun nouveau token n’est demandé dans la page.
+
+Le serveur vérifie le pair TCP réel et l’origine publique configurée. Les en-têtes `Forwarded` et `X-Forwarded-*` peuvent traverser le relais, mais ne déterminent jamais l’identité de confiance, l’origine attendue ou le caractère Secure du cookie. Sans cette configuration, le mode direct conserve ses contrôles. La redirection déclarée doit être réservée à la boucle locale du PC ; ce mode ne fournit pas d’authentification pour une publication LAN ou publique.
 
 ## Tests logiciels
 

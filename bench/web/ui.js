@@ -26,7 +26,7 @@ const selected = () => $('devices').value;
 const info = id => knownDevices.find(d => d.id === (id || selected()));
 const capture = id => { if (!captures.has(id)) captures.set(id, new ConsoleBuffer()); return captures.get(id); };
 const feedback = message => { $('client-state').textContent = message; };
-const errorText = error => ({ unauthenticated: 'Session du banc expirée : rétablissez la liaison au serveur', local_session_only: 'La session automatique nécessite un accès local direct au serveur', device_changed: 'La carte a changé : vérifiez et confirmez de nouveau la cible', forbidden: 'Droits API insuffisants',
+const errorText = error => ({ unauthenticated: 'Session du banc expirée : rétablissez la liaison au serveur', local_session_only: 'La session du banc est refusée pour ce chemin de connexion ; vérifiez la configuration de la redirection locale', device_changed: 'La carte a changé : vérifiez et confirmez de nouveau la cible', forbidden: 'Droits API insuffisants',
   grant_required: 'Autorisation locale temporaire requise sur l’agent de cette carte', device_reserved: 'Carte déjà pilotée par un autre client',
   device_quarantined: 'Carte bloquée : relisez la flash avant la récupération opérateur', lease_expired: 'Pilotage expiré : reprenez la main',
   device_unavailable: 'Carte indisponible', flash_overlap: 'Les secteurs d’effacement se chevauchent' }[error.message] || diagnostic(error.message));

@@ -182,3 +182,27 @@ test('local browser session connects Web Serial and drives automatic per-operati
   assert.deepEqual(errors,[]);
  } finally {await browser?.close();proc.kill('SIGTERM');lines.close();}
 });
+
+test('automatic browser session and manual API work through a real HTTP and WebSocket port forward',async()=>{
+ const proc=spawn('python3',['tests/browser_fixture.py','--forwarded'],{cwd:new URL('..',import.meta.url),stdio:['ignore','pipe','pipe']});
+ let stderr='';proc.stderr.on('data',b=>stderr+=b);const lines=createInterface({input:proc.stdout});let browser;
+ try {
+  const url=await new Promise((resolve,reject)=>{lines.once('line',s=>resolve(JSON.parse(s).url));proc.once('exit',()=>reject(Error(stderr)));});
+  browser=await chromium.launch({headless:true,executablePath:chromium.executablePath(),args:['--no-sandbox']});
+  const page=await browser.newPage(),errors=[];page.on('pageerror',e=>errors.push(e.message));await page.goto(url);
+  await page.waitForFunction(()=>document.querySelector('#server-state').textContent==='session ouverte');
+  assert.equal(await page.locator('#agent-token').count(),0);assert.equal(await page.locator('#client-token').count(),0);
+  await page.evaluate(async()=>{
+   const {Agent}=await import('/agent.js');
+   const engine={hold:false,persistHold(){},setHold(v){this.hold=v;},async execute(name,args,context){context.check();return {simulated:true,command:name};}};
+   window.forwardedAgent=new Agent({engine,device:{id:'board',chip:'esp32s3',flash_size:4194304,capabilities:['identify']}});
+   window.forwardedAgent.connect();
+  });
+  await page.waitForFunction(()=>window.forwardedAgent.generation);
+  await page.click('#refresh');await page.waitForFunction(()=>!document.querySelector('[data-command="identify"]').disabled);
+  await page.click('[data-command="identify"]');
+  await page.waitForFunction(()=>{const op=JSON.parse(document.querySelector('#result').textContent);return op.state==='completed'&&op.result?.simulated;});
+  await page.waitForFunction(async()=>{const r=await fetch('/api/v1/devices');const d=(await r.json()).devices[0];return d.reservation===null;});
+  assert.equal(await page.locator('#reserve').count(),0);assert.deepEqual(errors,[]);
+ } finally {await browser?.close();proc.kill('SIGTERM');lines.close();}
+});
