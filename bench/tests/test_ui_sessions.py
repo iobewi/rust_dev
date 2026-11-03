@@ -69,7 +69,7 @@ class BrowserSessionTests(unittest.IsolatedAsyncioTestCase):
         r = await self.client.post('/session/v1/open'); self.assertEqual(r.status, 403)
         await self.open()
         for headers in [{}, {'Origin': 'https://evil.example'}, {**self.headers, 'Sec-Fetch-Site': 'cross-site'},
-                        {'Host': 'attacker.example', 'Origin': 'http://attacker.example'}]:
+                        {'Host': 'attacker.example', 'Origin': 'http://attacker.example'}, {**self.headers, 'X-Forwarded-For': '192.168.1.2'}]:
             r = await self.client.post('/api/v1/leases', json={'device': 'board'}, headers=headers)
             self.assertEqual(r.status, 403)
         r = await self.client.get('/api/v1/devices', headers={'Host': 'attacker.example'})

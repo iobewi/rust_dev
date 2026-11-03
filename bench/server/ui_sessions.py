@@ -17,6 +17,8 @@ def loopback(value):
 
 
 def local_request(request, mutation=False):
+    require(not any(header in request.headers for header in ('Forwarded', 'X-Forwarded-For', 'X-Forwarded-Host', 'X-Forwarded-Proto', 'X-Real-IP')),
+            'local_session_only', 'Automatic browser sessions cannot use proxy forwarding headers', 403)
     host = urlsplit('http://' + request.host).hostname
     require((host == 'localhost' or loopback(host)) and loopback(request.remote),
             'local_session_only', 'Automatic browser sessions require a direct loopback connection', 403)
