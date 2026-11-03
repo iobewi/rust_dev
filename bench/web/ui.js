@@ -143,15 +143,14 @@ function renderState() {
   $('reserve').textContent = manualHistory.has(selected()) ? 'Reprendre la main' : 'Prendre la main';
   $('reserve').hidden = Boolean(lease); $('release').hidden = !lease;
   $('reserve').disabled = working || !info()?.connected || Boolean(d?.reservation && !lease);
-  $('release').disabled = working || Boolean(ownBusy); $('renew').disabled = working;
+  $('release').disabled = working || Boolean(ownBusy);
   $('cancel').disabled = !working || !current;
   $('usb-state').textContent = portConnected ? 'connecté' : 'non connecté';
   $('device-mode').textContent = local ? engine?.mode || '—' : d?.connected ? 'Agent distant' : '—';
   $('chip-info').textContent = d?.chip || '—'; $('flash-info').textContent = d?.flash_size ? `${hex(d.flash_size)} · ${d.flash_size} octets` : '—';
   $('rdid-info').textContent = local && localDevice.flash_id != null ? hex(localDevice.flash_id) : '—';
-  $('interface-info').textContent = local ? engine.native ? 'USB Serial/JTAG' : 'UART externe' : 'Agent du banc';
+  $('interface-info').textContent = local ? engine?.native ? 'USB Serial/JTAG' : 'UART externe' : 'Agent du banc';
   $('signals-info').textContent = capability.has('reset') && capability.has('io0') ? 'Disponibles' : 'Non exposés';
-  const remaining = lease ? Math.max(0, Math.ceil((lease.localUntil - performance.now()) / 1000)) : 0;
   $('control-state').textContent = lease ? 'Pilotage manuel · vous' : d?.reservation ? 'Pilotée par : ' + d.reservation.owner : d?.connected && !d?.localOnly ? 'Disponible pour le pilotage distant' : 'Local · observation';
   if (lease) $('lease-state').textContent = `Pilotage manuel : ${lease.device}`;
   else $('lease-state').textContent = d?.reservation ? `Pilotée par : ${d.reservation.owner}` : 'Disponible pour le pilotage distant.';

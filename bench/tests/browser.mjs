@@ -103,7 +103,8 @@ test('instrumentation UI connects Web Serial without API credentials, captures b
   });
   await page.goto(url);assert.equal(await page.locator('#access-panel').isVisible(),false);
   await page.click('#access-toggle');await page.fill('#device-id','board');await page.click('#access-toggle');
-  await page.click('#connect');await page.waitForFunction(()=>document.querySelector('#usb-state').textContent==='connecté');
+  await page.click('#connect');await page.waitForFunction(()=>document.querySelector('#usb-state').textContent==='connecté'||!document.querySelector('#client-state').textContent.startsWith('Connectez un port série'));
+  assert.equal(await page.textContent('#usb-state'),'connecté',JSON.stringify({feedback:await page.textContent('#client-state'),errors}));
   await page.waitForFunction(()=>document.querySelector('#uart-log').textContent.includes('READY'));
   assert.equal(await page.textContent('#server-state'),'session non ouverte');
   assert.equal(await page.locator('[data-command="reset"]').isDisabled(),true);
@@ -134,6 +135,11 @@ test('instrumentation UI connects Web Serial without API credentials, captures b
   await page.click('#write');await page.waitForSelector('#program-confirmation');assert.ok((await page.textContent('#confirmation-target')).includes('board'));
   assert.ok((await page.textContent('#confirmation-regions')).includes('0x00020004'));
   await page.click('#cancel-write');assert.equal(await page.locator('#program-confirmation').isVisible(),false);
+  // Authorization is requested at the action, not as an extra prerequisite panel.
+  await page.fill('#uart','00 ff');page.once('dialog',dialog=>dialog.accept());await page.click('#send');
+  await page.waitForFunction(()=>{const op=JSON.parse(document.querySelector('#result').textContent);return op.command==='uart.write'&&op.state==='completed';});
+  await page.waitForSelector('#revoke',{state:'visible'});await page.click('#revoke');
+  await page.waitForFunction(()=>document.querySelector('#revoke').hidden);
   await page.waitForFunction(()=>!document.querySelector('#release').disabled);await page.click('#release');
   await page.waitForFunction(()=>document.querySelector('#control-state').textContent==='Disponible pour le pilotage distant');
   assert.equal(await page.textContent('#usb-state'),'connecté');assert.equal(await page.locator('[data-command="reset"]').isDisabled(),true);
@@ -161,6 +167,13 @@ test('instrumentation UI connects Web Serial without API credentials, captures b
   await page.waitForFunction(()=>document.querySelector('#follow').hidden);
   // A narrow viewport must retain the console and put dense tables in their own horizontal scroller.
   await page.setViewportSize({width:360,height:900});assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
+  // A persisted uncertain outcome survives automatic reconnect; no API work is replayed.
+  let replayed=0;page.on('request',r=>{if(r.method()==='POST'&&r.url().endsWith('/api/v1/operations'))replayed++;});
+  await page.evaluate(async()=>{localStorage.setItem('bench.v1.hold.board','1');const port=window.__serialPort;port.controller.error(new DOMException('Unplugged','NetworkError'));await port.close();const e=new Event('disconnect');Object.defineProperty(e,'port',{value:port});window.__serial.dispatchEvent(e);});
+  await page.waitForFunction(()=>document.querySelector('#usb-state').textContent==='non connecté');
+  await page.waitForFunction(()=>document.querySelector('#usb-state').textContent==='connecté');
+  await page.waitForFunction(async()=>{const r=await fetch('/api/v1/devices',{headers:{Authorization:'Bearer client-alice-123456789'}});return (await r.json()).devices[0].quarantined;});
+  assert.equal(await page.textContent('#device-mode'),'loader');assert.equal(replayed,0);
   assert.deepEqual(errors,[]);
  } finally {await browser?.close();proc.kill('SIGTERM');lines.close();}
 });
