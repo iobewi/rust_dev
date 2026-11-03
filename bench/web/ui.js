@@ -12,8 +12,9 @@ const actions = { read: 'flash.read', write: 'flash.write', erase: 'flash.erase'
   configure: 'uart.configure', io0: 'io0', mark: 'mark', trigger: 'trigger', disarm: 'trigger', http: 'http.request' };
 let agent, engine, localDevice, portConnected = false, lease, current, working = false;
 let knownDevices = [], imagePlan = [], artifactList = [], confirmation;
-let format = 'text', paused = false, pausedAt = Infinity, renderPending = false, selectedOperation;
+let format = 'text', paused = false, pausedAt = Infinity, renderPending = false, selectedOperation, lastConsoleKey;
 let streamController, streamGeneration = 0, refreshPromise, sessionOpened = false;
+const manualHistory = new Set();
 const captures = new Map(), cursors = new Map(), operationLog = new Map(), partitionCache = new Map();
 const api = () => new BenchClient($('client-token').value);
 const selected = () => $('devices').value;
@@ -51,13 +52,20 @@ function scheduleConsole() {
   requestAnimationFrame(() => { renderPending = false; if (!paused) renderConsole(); });
 }
 function renderConsole() {
-  const id = selected(), body = $('uart-log'); body.replaceChildren();
+  const id = selected(), body = $('uart-log');
+  const previousScroll = body.scrollTop, follow = body.scrollHeight - body.clientHeight - body.scrollTop < 30;
   if (!id || !captures.has(id)) {
+    if (lastConsoleKey === 'empty:' + id) return;
+    lastConsoleKey = 'empty:' + id; body.replaceChildren();
     const empty = document.createElement('div'); empty.className = 'console-empty';
     empty.textContent = 'Aucun octet reçu. Connectez un port Web Serial ou observez une carte du banc.'; body.append(empty);
     $('capture-state').textContent = 'Aucune capture'; return;
   }
   const buffer = capture(id), timestamps = $('timestamps').checked;
+  $('capture-state').textContent = `${buffer.byteLength} octets conservés` + (buffer.droppedBytes || buffer.droppedEvents ? ` · tampon : ${buffer.droppedBytes} octets / ${buffer.droppedEvents} événements évincés` : '');
+  const key = JSON.stringify([id, Math.min(buffer.sequence, paused ? pausedAt : Infinity), buffer.displayAfter, format, $('console-search').value, timestamps]);
+  if (key === lastConsoleKey) return;
+  lastConsoleKey = key; body.replaceChildren();
   for (const event of buffer.visible({ format, query: $('console-search').value, before: paused ? pausedAt : Infinity })) {
     const row = document.createElement('div'); row.className = 'console-row' + (timestamps ? '' : ' no-time') + (event.kind === 'REP' ? ' mark' : '');
     const cells = [['span', 'seq', event.seq], ...(timestamps ? [['time', '', new Date(event.at).toLocaleTimeString('fr-FR', { hour12: false }) + '.' + String(new Date(event.at).getMilliseconds()).padStart(3, '0')]] : []), ['span', 'kind', event.kind], ['span', 'payload', event.display]];
@@ -65,7 +73,7 @@ function renderConsole() {
     body.append(row);
   }
   if (!body.children.length) { const empty = document.createElement('div'); empty.className = 'console-empty'; empty.textContent = 'Aucune entrée affichée. La capture brute est conservée.'; body.append(empty); }
-  $('capture-state').textContent = `${buffer.byteLength} octets conservés` + (buffer.droppedBytes || buffer.droppedEvents ? ` · tampon : ${buffer.droppedBytes} octets / ${buffer.droppedEvents} événements évincés` : '');
+  body.scrollTop = follow ? body.scrollHeight : previousScroll;
 }
 hook('format-text', () => { format = 'text'; $('format-text').setAttribute('aria-pressed', 'true'); $('format-hex').setAttribute('aria-pressed', 'false'); renderConsole(); });
 hook('format-hex', () => { format = 'hex'; $('format-text').setAttribute('aria-pressed', 'false'); $('format-hex').setAttribute('aria-pressed', 'true'); renderConsole(); });
@@ -97,6 +105,7 @@ function renderState() {
   const base = Boolean(lease && d?.connected && !working && !ownBusy);
   document.querySelectorAll('[data-hardware]').forEach(button => { const command = button.dataset.command || actions[button.id]; button.disabled = !base || !capability.has(command) || Boolean(blocked && !safeCommands.has(command)); });
   $('devices').disabled = Boolean(lease || working);
+  $('reserve').textContent = manualHistory.has(selected()) ? 'Reprendre le pilotage manuel' : 'Prendre le pilotage manuel';
   $('reserve').hidden = Boolean(lease); $('release').hidden = !lease; $('renew').hidden = !lease;
   $('reserve').disabled = working || !info()?.connected || Boolean(d?.reservation && !lease);
   $('release').disabled = working || Boolean(ownBusy); $('renew').disabled = working;
@@ -241,6 +250,7 @@ hook('reserve', async () => {
   if (!id || !d) throw new Error('Choisissez une carte enregistrée sur le banc');
   const reserved = await api().request('leases', { method: 'POST', data: { device: id, ttl: 900 } });
   lease = { ...reserved, chip: d.chip, flash_size: d.flash_size, localUntil: performance.now() + 900000 };
+  manualHistory.add(id);
   $('devices').value = lease.device; renderState(); confirmation = null; $('program-confirmation').hidden = true;
 });
 hook('release', async () => {
