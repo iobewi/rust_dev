@@ -13,6 +13,11 @@ export class EspEngine {
     this.trace = new Tracer(); this.busy = false;
   }
   setHold(value) { this.hold = value; this.persistHold(value); }
+  cancelTrigger() {
+    clearTimeout(this.triggerTimer);
+    this.triggerTimer = null; this.trigger = null; this.tail = new Uint8Array();
+    this.triggerGeneration = (this.triggerGeneration || 0) + 1;
+  }
   capabilities() {
     const caps = ['identify', 'partitions', 'flash.read', 'flash.write', 'flash.erase', 'uart.write', 'uart.configure', 'console', 'mark', 'trigger', 'http.request'];
     return this.native ? caps : [...caps, 'reset', 'io0'];
@@ -47,7 +52,7 @@ export class EspEngine {
     await this.port.close();
   }
   async close() {
-    this.trigger = null;
+    this.cancelTrigger();
     await this.closeConsole();
     if (this.transport) { await this.transport.disconnect(); this.transport = null; this.loader = null; }
     this.mode = 'off';
@@ -92,9 +97,10 @@ export class EspEngine {
     if (!matched) return;
     this.trigger = null;
     this.event('trigger', { detail: 'one-shot byte pattern matched' });
-    setTimeout(async () => {
+    const generation = this.triggerGeneration;
+    this.triggerTimer = setTimeout(async () => {
       // A delayed trigger must never collide with flash, another reservation, or a disconnected server.
-      if (!trigger.live() || this.hold || performance.now() >= trigger.until) return;
+      if (generation !== this.triggerGeneration || !trigger.live() || this.hold || performance.now() >= trigger.until) return;
       const resetting = trigger.action === 'reset';
       if (resetting && (this.busy || this.mode !== 'console')) return;
       if (resetting) this.busy = true;
@@ -112,8 +118,9 @@ export class EspEngine {
       context.check();
       if (command === 'mark') { this.event('mark', { detail: args.label }); return { label: args.label }; }
       if (command === 'trigger') {
-        if (args.action === 'disarm') { this.trigger = null; return { armed: false }; }
+        if (args.action === 'disarm') { this.cancelTrigger(); return { armed: false }; }
         if (args.action === 'reset' && this.native) throw new Error('No EN line');
+        this.cancelTrigger();
         this.trigger = { bytes: unb64(args.data), action: args.action, until: performance.now() + args.expires_ms,
           delay: args.delay_ms || 0, live: context.triggerLive || context.live };
         this.tail = new Uint8Array(); return { armed: true };
@@ -182,13 +189,16 @@ export class EspEngine {
         result = await runWrite(l, images.map(i => ({ data: i.data, addr: i.address, path: i.artifact, sha: i.sha256 })),
           { erase: args.erase === true, tracer: this.trace });
         if (!result.ok) return { ...result, hold: true };
-        if (context.live()) this.setHold(false);
+        if (context.live() && !context.deferCompletion) this.setHold(false);
       } else if (command === 'flash.erase') {
         context.check(); destructive = true; this.setHold(true);
         await l.eraseFlash(); result = { erased: true };
-        if (context.live()) this.setHold(false);
+        if (context.live() && !context.deferCompletion) this.setHold(false);
       } else throw new Error('Unsupported command');
-      if (args.return_console !== false && !this.hold && context.live()) await this.openConsole();
+      if (context.deferCompletion) {
+        const hold = destructive ? !context.live() : this.hold;
+        context.complete({ hold, returnConsole: args.return_console !== false && !hold && context.live() });
+      } else if (args.return_console !== false && !this.hold && context.live()) await this.openConsole();
       return result;
     } catch (e) {
       if (destructive) { this.setHold(true); return { state: 'indeterminate', hold: true, error: { code: 'hardware_outcome_unknown' }, trace: this.trace.snapshot().slice(-60) }; }

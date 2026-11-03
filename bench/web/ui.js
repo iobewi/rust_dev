@@ -40,15 +40,31 @@ hook('grant', () => { if (confirm('Autoriser temporairement programmation, effac
 hook('revoke', () => agent.grant(0));
 hook('recover', () => { if (confirm('Avez-vous relu la flash et vérifié l’état matériel ? Lever le blocage autorise de nouveaux resets.')) agent.recover(); });
 hook('refresh', async () => {
+  const selected = lease?.device || $('devices').value;
   const data = await client().request('devices'); $('devices').replaceChildren();
   for (const d of data.devices) { const o = document.createElement('option'); o.value = d.id; o.textContent = `${d.id} · ${d.chip} · ${d.connected ? 'connecté' : 'absent'}${d.quarantined ? ' · bloqué' : ''}`; o.dataset.chip = d.chip; $('devices').append(o); }
+  $('devices').value = selected;
+  if (!$('devices').value && !lease && $('devices').options.length) $('devices').selectedIndex = 0;
+  $('devices').disabled = Boolean(lease);
   json(data);
 });
-hook('reserve', async () => { lease = await client().request('leases', { method:'POST', data:{ device:$('devices').value, ttl:900 } }); cursor=0; $('lease-state').textContent='Réservation : '+lease.id; });
-hook('release', async () => { await client().request('leases/'+lease.id, {method:'DELETE'}); lease=null; $('lease-state').textContent='Libérée.'; });
-async function submit(command, args={}, destructive=false) {
+hook('reserve', async () => {
+  if (lease) throw new Error('Libérez la réservation active avant de changer de carte');
+  const deviceId = $('devices').value, family = $('devices').selectedOptions[0]?.dataset.chip;
+  const reserved = await client().request('leases', { method:'POST', data:{ device:deviceId, ttl:900 } });
+  lease = { ...reserved, chip: family };
+  $('devices').value = lease.device; $('devices').disabled = true; cursor=0;
+  $('lease-state').textContent='Réservation : '+lease.device+' · '+lease.id;
+});
+hook('release', async () => { await client().request('leases/'+lease.id, {method:'DELETE'}); lease=null; $('devices').disabled=false; $('lease-state').textContent='Libérée.'; });
+function reservedDevice() {
   if (!lease) throw new Error('Réservez une carte');
-  const op = await client().request('operations', { method:'POST', data:{ lease:lease.id, command, args, allow_destructive:destructive } });
+  if ($('devices').value !== lease.device) throw new Error('La carte sélectionnée diffère de la carte réservée');
+  return lease;
+}
+async function submit(command, args={}, destructive=false) {
+  const target = reservedDevice();
+  const op = await client().request('operations', { method:'POST', data:{ lease:target.id, command, args, allow_destructive:destructive } });
   current=op.id; json(op); await poll(op.id);
 }
 async function poll(id) {
@@ -68,7 +84,7 @@ async function poll(id) {
     await new Promise(r=>setTimeout(r,300));
   }
 }
-function chip(){return $('devices').selectedOptions[0]?.dataset.chip;}
+function chip(){return reservedDevice().chip;}
 function addr(){const n=Number($('address').value);if(!Number.isSafeInteger(n))throw new Error('Adresse invalide');return n;}
 document.querySelectorAll('[data-command]').forEach(b=>b.onclick=safe(()=>submit(b.dataset.command)));
 hook('read',()=>submit('flash.read',{address:addr(),size:Number($('size').value)}));

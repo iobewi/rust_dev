@@ -82,6 +82,8 @@ class HttpTests(unittest.IsolatedAsyncioTestCase):
         await self.ws.send_json({'type':'ready','id':offer['id']})
         self.assertEqual((await self.ws.receive_json())['type'],'execute')
         await self.ws.send_json({'type':'result','id':op['id'],'state':'completed','result':{'chip':'esp32s3'}})
+        ack=await self.ws.receive_json()
+        self.assertEqual(ack,{'type':'result_ack','id':op['id'],'device':'board','generation':self.generation,'state':'completed','quarantined':False})
         for _ in range(30):
             r=await self.client.get('/api/v1/operations/'+op['id'],headers=ALICE);done=await r.json()
             if done['state']=='completed':break
@@ -151,3 +153,13 @@ class HttpTests(unittest.IsolatedAsyncioTestCase):
         import json
         self.assertEqual(json.loads(line[6:])['events'][0]['kind'],'connected');r.close()
         r=await self.client.get('/api/v1/artifacts',headers=ALICE);self.assertEqual((await r.json())['artifacts'],[])
+
+    async def test_late_result_acknowledges_server_quarantine(self):
+        await self.agent();_,lease=await self.reserve()
+        r=await self.client.post('/api/v1/operations',headers=ALICE,json={'lease':lease['id'],'command':'identify','timeout':.1})
+        op=await r.json();await self.ws.receive_json()
+        await self.ws.send_json({'type':'ready','id':op['id']});await self.ws.receive_json()
+        await asyncio.sleep(.15)
+        await self.ws.send_json({'type':'result','id':op['id'],'state':'completed','result':{'late':True}})
+        ack=await self.ws.receive_json()
+        self.assertEqual(ack['type'],'result_ack');self.assertEqual(ack['state'],'indeterminate');self.assertTrue(ack['quarantined'])

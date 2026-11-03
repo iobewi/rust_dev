@@ -180,3 +180,8 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(result['state'],'indeterminate')
         self.assertEqual(result['late_result']['state'],'completed')
         self.assertTrue(self.b.devices['board']['quarantined'])
+
+    def test_agent_can_report_failed_console_return_as_quarantine(self):
+        self.b.agent_event('agent',{'type':'hold','device':'board','generation':self.generation})
+        self.assertTrue(self.b.devices['board']['quarantined'])
+        with self.assertRaises(Fault):self.submit('reset')

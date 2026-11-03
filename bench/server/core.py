@@ -242,6 +242,8 @@ class Broker:
         if state == 'indeterminate' or message.get('hold') is True:
             d['quarantined'] = True
         self.event(d['id'], 'operation', {'id': op['id'], 'state': op['state']})
+        return {'type': 'result_ack', 'id': op['id'], 'device': d['id'], 'generation': d['generation'],
+                'state': op['state'], 'quarantined': d['quarantined']}
 
     def cancel(self, key, owner):
         op = self.operations.get(key)
@@ -277,6 +279,9 @@ class Broker:
             seconds = number(message.get('seconds'), 0, 14400)
             d['grant_until'] = self.clock() + seconds
             self.event(d['id'], 'grant', {'seconds': seconds})
+        elif kind == 'hold':
+            d['quarantined'] = True
+            self.event(d['id'], 'quarantined', {})
         elif kind == 'recover':
             require(not any(o['device'] == d['id'] and o['unsettled'] for o in self.operations.values()),
                     'still_running', 'Hardware execution is still unsettled', 409)

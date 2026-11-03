@@ -51,7 +51,9 @@ Les données firmware sont téléchargées et vérifiées avant toute écriture,
 
 La perte de l’agent invalide la réservation. Une commande déjà `running`, un timeout d’exécution ou la libération d’une réservation en cours de commande produit `indeterminate` et met la carte en quarantaine. Les commandes risquées déjà en attente sont annulées. La relecture, les partitions, l’identification et les repères restent possibles sous réservation pour préparer la récupération. L’opérateur peut lever le blocage localement après vérification et seulement quand aucune exécution n’est encore en suspens. L’état dangereux est persisté dans le navigateur **avant** toute exécution ; une page rechargée ne rouvre pas spontanément la console.
 
-Une annulation demandée sur une commande en cours positionne `cancel_requested`; elle ne prétend pas interrompre esptool. Un résultat tardif après timeout est conservé dans `late_result`, sans transformer le résultat indéterminé en succès. Une fin d’exécution connue après annulation demandée peut être `completed` avec `cancel_requested:true` : la demande n’a pas interrompu le matériel.
+Une annulation demandée sur une commande en cours positionne `cancel_requested`; elle ne prétend pas interrompre esptool. Un résultat tardif après timeout est conservé dans `late_result`, sans transformer le résultat indéterminé en succès. Le serveur accuse réception de chaque résultat avec son état de quarantaine. Le navigateur ne lève pas son blocage persistant et ne retourne pas automatiquement à la console avant cet accusé. Un accusé perdu laisse le blocage actif, sans réexécution matérielle. Une panne de retour console est signalée au serveur pour conserver la quarantaine.
+
+Une fin d’exécution connue après annulation demandée peut être `completed` avec `cancel_requested:true` : la demande n’a pas interrompu le matériel.
 
 Les requêtes HTTP LAN sont exécutées uniquement par le navigateur, vers une origine RFC1918 littérale déclarée localement, sans credentials automatiques ni redirection, GET/POST et tailles/délais bornés. La réponse `no-cors` est opaque : `http_status:"unknown", verified:false`. Elles ne prouvent aucune assertion métier. HTTPS de la page, politiques navigateur de réseau local et contenu mixte peuvent bloquer cet accès ; c’est une limitation explicite à qualifier.
 
@@ -66,3 +68,5 @@ Le serveur ne sert aucun répertoire arbitraire, n’exécute aucune commande sy
 - Pas d’auto-reconnexion USB ou réseau qui pourrait redémarrer une carte sans décision de l’opérateur. Retrouver un port déjà autorisé ne réexécute aucune ancienne commande.
 - Le retour console ouvre le port et peut réinitialiser la carte ; l’absence de reset supplémentaire et la capture depuis la ROM restent à qualifier physiquement.
 - Dépendance navigateur externe esptool-js 0.7.0 ; les particularités S3/C3 et les modes USB doivent être validés sur cartes réelles.
+
+Le client manuel verrouille la sélection sur la carte réservée ; les commandes revérifient cette correspondance et utilisent la famille de puce associée à la réservation. La liste peut être actualisée sans changer la cible active.

@@ -210,7 +210,7 @@ async def websocket(request):
                 elif kind == 'ready':
                     await ws.send_json(b.commit(identity['id'], message.get('id')))
                 elif kind == 'result':
-                    b.finish(identity['id'], message)
+                    await ws.send_json(b.finish(identity['id'], message))
                 else:
                     b.agent_event(identity['id'], message)
                     if kind == 'recover':

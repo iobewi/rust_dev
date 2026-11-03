@@ -120,3 +120,63 @@ test('completed trigger keeps its own lifetime after the setup execution deadlin
  now=2200;assert.equal(engine.trigger.live(),true);
  await agent.message({type:'lease_revoked',lease:'lease'});assert.equal(engine.trigger,null);
 });
+
+test('completion remains persistently blocked until the matching result acknowledgement',async()=>{
+ const x=setup();await x.agent.message(x.offer());
+ await x.agent.message({type:'execute',id:'op',deadline_ms:performance.now()+11000,execution_deadline_ms:performance.now()+121000});
+ assert.equal(x.engine.hold,true);assert.equal(x.holds.at(-1),true);assert.equal(x.agent.awaitingResult.id,'op');
+ for(const ack of [{id:'other',generation:'gen'},{id:'op',generation:'stale'}]){
+  await x.agent.message({type:'result_ack',...ack,quarantined:false});assert.equal(x.engine.hold,true);
+ }
+ await x.agent.message({type:'result_ack',id:'op',generation:'gen',quarantined:false});
+ assert.equal(x.engine.hold,false);assert.equal(x.agent.awaitingResult,null);
+});
+test('server quarantine acknowledgement never clears the local hold',async()=>{
+ const x=setup();await x.agent.message(x.offer());
+ await x.agent.message({type:'execute',id:'op',deadline_ms:performance.now()+11000,execution_deadline_ms:performance.now()+121000});
+ await x.agent.message({type:'result_ack',id:'op',generation:'gen',quarantined:true});
+ assert.equal(x.engine.hold,true);
+});
+test('disconnect after sending an unacknowledged result preserves the hold and never replays',async()=>{
+ const x=setup();globalThis.location={href:'http://localhost/',protocol:'http:'};
+ x.agent.socketFactory=()=>x.agent.socket;x.agent.connect();
+ await x.agent.message(x.offer());
+ await x.agent.message({type:'execute',id:'op',deadline_ms:performance.now()+11000,execution_deadline_ms:performance.now()+121000});
+ x.agent.socket.readyState=3;x.agent.socket.onclose();
+ assert.equal(x.engine.hold,true);assert.equal(x.holds.at(-1),true);assert.equal(x.runs(),1);
+ await x.agent.message({type:'result_ack',id:'op',generation:'gen',quarantined:false});assert.equal(x.engine.hold,true);
+});
+test('next offer waits until acknowledged console return has finished',async()=>{
+ const x=setup();let finishConsole,startedConsole;
+ const gate=new Promise(resolve=>{finishConsole=resolve;});const started=new Promise(resolve=>{startedConsole=resolve;});
+ x.engine.execute=async(name,args,ctx)=>{ctx.complete({hold:false,returnConsole:true});return {ok:true};};
+ x.engine.openConsole=async()=>{startedConsole();await gate;};
+ await x.agent.message(x.offer());await x.agent.message({type:'execute',id:'op',deadline_ms:performance.now()+11000,execution_deadline_ms:performance.now()+121000});
+ const ack=x.agent.message({type:'result_ack',id:'op',generation:'gen',quarantined:false});await started;
+ const before=x.messages.length;await x.agent.message({...x.offer(),id:'second'});assert.equal(x.messages.length,before);
+ finishConsole();await ack;assert.deepEqual(x.messages.at(-1),{type:'ready',id:'second'});
+});
+
+test('actual flash engine defers hold release and console return until result acknowledgement',async()=>{
+ const {fakeLoader}=await import('./fakes.mjs');const {sha256}=await import('../web/protocol.js');const {md5hex}=await import('../web/md5.js');
+ const data=new Uint8Array([1,2,3]),holds=[];let consoleOpens=0;
+ const engine=new EspEngine({getInfo:()=>({})},{},()=>{},v=>holds.push(v));
+ engine.loader=fakeLoader({flashMd5sum:()=>md5hex(data)});engine.identity=async()=>({chip:'esp32s3',flash_size:4194304});
+ engine.openConsole=async()=>{consoleOpens++;};
+ const agent=new Agent({engine,device:{id:'board',chip:'esp32s3',flash_size:4194304},token:'secret',now:()=>1000});
+ const messages=[];agent.socket={readyState:1,send:s=>messages.push(JSON.parse(s))};agent.generation='gen';agent.serverOffset=0;agent.grantUntil=60000;agent.artifact=async()=>data;
+ await agent.message({type:'offer',id:'op',generation:'gen',lease:'lease',command:'flash.write',
+  args:{chip:'esp32s3',images:[{artifact:'a',address:65536,sha256:await sha256(data)}]},deadline_ms:30000,lease_deadline_ms:60000});
+ await agent.message({type:'execute',id:'op',deadline_ms:30000,execution_deadline_ms:120000});
+ assert.equal(consoleOpens,0);assert.equal(engine.hold,true);assert.equal(holds.at(-1),true);
+ assert.equal(messages.at(-1).hold,false);assert.equal(messages.at(-1).state,'completed');
+ await agent.message({type:'result_ack',id:'op',generation:'gen',quarantined:false});
+ assert.equal(consoleOpens,1);assert.equal(engine.hold,false);assert.equal(holds.at(-1),false);
+});
+test('console return failure reasserts the hold and informs the broker',async()=>{
+ const x=setup();x.engine.execute=async(name,args,ctx)=>{ctx.complete({hold:false,returnConsole:true});return {};};
+ x.engine.openConsole=async()=>{throw new Error('Port lost');};
+ await x.agent.message(x.offer());await x.agent.message({type:'execute',id:'op',deadline_ms:performance.now()+11000,execution_deadline_ms:performance.now()+121000});
+ await x.agent.message({type:'result_ack',id:'op',generation:'gen',quarantined:false});
+ assert.equal(x.engine.hold,true);assert.equal(x.messages.at(-1).type,'hold');
+});

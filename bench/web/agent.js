@@ -2,7 +2,7 @@
 export class Agent {
   constructor({ engine, device, token, onState = () => {}, socketFactory = url => new WebSocket(url), now = () => performance.now() }) {
     Object.assign(this, { engine, device, token, onState, socketFactory, now });
-    this.seq = 0; this.seen = new Set(); this.grantUntil = 0; this.pending = null; this.revoked = new Set();
+    this.seq = 0; this.seen = new Set(); this.grantUntil = 0; this.pending = null; this.revoked = new Set(); this.awaitingResult = null;
   }
   connect() {
     const url = new URL('/agent/v1/ws', location.href); url.protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -10,8 +10,8 @@ export class Agent {
     this.socket.onopen = () => { this.authSent = this.now(); this.send({ type: 'auth', version: 1, token: this.token }); };
     this.socket.onmessage = e => this.message(JSON.parse(e.data)).catch(() => this.onState('agent error'));
     this.socket.onclose = () => {
-      this.generation = null; this.grantUntil = 0; this.engine.trigger = null;
-      if (this.active) this.engine.setHold(true);
+      this.generation = null; this.grantUntil = 0; this.cancelTrigger();
+      if (this.active || this.awaitingResult) this.engine.setHold(true);
       this.onState('Agent disconnected; reconnect explicitly; no command is replayed');
     };
   }
@@ -30,8 +30,12 @@ export class Agent {
     this.grantUntil = this.now() + seconds * 1000;
     this.event('grant', { seconds });
   }
+  cancelTrigger() {
+    if (this.engine.cancelTrigger) this.engine.cancelTrigger();
+    else this.engine.trigger = null;
+  }
   recover() {
-    if (this.active) throw new Error('Operation is still running');
+    if (this.active || this.awaitingResult) throw new Error('Operation is still running');
     this.recoveryPending = true; this.event('recover', {});
   }
   async artifact(id, bytes) {
@@ -50,6 +54,7 @@ export class Agent {
     } else if (m.type === 'registered') {
       this.generation = m.generation; this.seq = 0; this.onState('Agent connected');
     } else if (m.type === 'offer') {
+      if (this.awaitingResult) { this.deferredOffer = m; return; }
       if (this.active || this.seen.has(m.id) || m.generation !== this.generation) return;
       // Remember offer deadline on a monotonic local clock; background throttling cannot extend it.
       this.pending = { ...m, until: m.deadline_ms - this.serverOffset - 100, received: this.now() };
@@ -71,33 +76,58 @@ export class Agent {
       const leaseLive = () => this.generation === generation && this.socket?.readyState === 1 && !this.revoked.has(op.lease) && this.now() < op.lease_deadline_ms - this.serverOffset - 100 && (!privileged || this.now() < this.grantUntil);
       // The server starts this deadline before sending execute; network delay cannot extend it.
       const live = () => leaseLive() && this.now() < executionUntil;
+      let completion;
+      const publish = message => {
+        const requiredHold = completion ? completion.hold || !live() : this.engine.hold || !live();
+        this.awaitingResult = { id: op.id, generation, requiredHold,
+          returnConsole: completion?.returnConsole === true, live };
+        this.engine.setHold(true);
+        this.send({ type: 'result', id: op.id, ...message, hold: requiredHold });
+      };
       try {
         const check = () => {
           if (!live() || this.now() >= until) throw new Error('Expired command, lost connection or local grant');
         };
         check();
         const result = await this.engine.execute(op.command, op.args, {
-          check, live, triggerLive: leaseLive, device: this.device, download: id => this.artifact(id), upload: bytes => this.artifact(null, bytes),
+          check, live, triggerLive: leaseLive, deferCompletion: true,
+          complete: value => { completion = value; }, device: this.device, download: id => this.artifact(id), upload: bytes => this.artifact(null, bytes),
         });
         if (!live()) this.engine.setHold(true);
-        this.send({ type: 'result', id: op.id, state: result?.state || 'completed', result,
-          hold: this.engine.hold, ...(result?.error ? { error: typeof result.error === 'object' ? result.error : { code: result.error_kind || 'hardware_command_failed' } } : {}) });
+        publish({ state: result?.state || 'completed', result, ...(result?.error ? { error: typeof result.error === 'object' ? result.error : { code: result.error_kind || 'hardware_command_failed' } } : {}) });
       } catch {
-        this.send({ type: 'result', id: op.id, state: 'failed', error: { code: 'hardware_command_failed' }, hold: this.engine.hold });
+        publish({ state: 'failed', error: { code: 'hardware_command_failed' } });
       } finally {
         this.active = null;
-        this.engine.persistHold(this.engine.hold);
+        this.engine.persistHold(this.awaitingResult !== null || this.engine.hold);
+      }
+    } else if (m.type === 'result_ack') {
+      const pending = this.awaitingResult;
+      if (!pending || pending.finalizing || pending.id !== m.id || m.generation !== pending.generation || m.generation !== this.generation) return;
+      pending.finalizing = true;
+      const hold = pending.requiredHold || m.quarantined !== false || !pending.live();
+      try {
+        this.engine.setHold(hold);
+        if (!hold && pending.returnConsole) await this.engine.openConsole();
+      } catch {
+        this.engine.setHold(true); this.event('hold', {});
+        this.onState('Console return failed; operator recovery required');
+      } finally {
+        this.awaitingResult = null;
+        const offer = this.deferredOffer; this.deferredOffer = null;
+        if (offer && this.generation) await this.message(offer);
       }
     } else if (m.type === 'recovered') {
       if (this.recoveryPending && m.generation === this.generation && !this.active) {
         this.engine.setHold(false); this.recoveryPending = false; this.onState('Operator recovery accepted');
       }
     } else if (m.type === 'lease_revoked') {
-      this.revoked.add(m.lease); this.engine.trigger = null;
+      this.revoked.add(m.lease); this.cancelTrigger();
     } else if (m.type === 'cancel') {
       // esptool-js cannot prove interruption. A request is observed; execution runs to an actual outcome.
       this.onState('Cancellation requested; hardware interruption is not confirmed');
     } else if (m.type === 'error') {
+      if (this.awaitingResult?.id === m.id) { this.engine.setHold(true); this.socket?.close?.(); }
       this.onState('Protocol error: ' + m.error.code);
     }
   }

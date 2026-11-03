@@ -73,3 +73,23 @@ for(const fail of [false,true]){
   await x.engine.execute('identify',{},x.context);assert.equal(identityCalls,1);
  });
 }
+
+for(const action of ['mark','reset']){
+ test(`disarm cancels a matched, delayed ${action} trigger`,async()=>{
+  const x=await setup(),events=[];let resets=0;x.engine.mode='console';
+  x.engine.event=kind=>events.push(kind);x.engine.reset=async()=>{resets++;};
+  await x.engine.execute('trigger',{data:'YQ==',action,delay_ms:20,expires_ms:1000},x.context);
+  x.engine.matchTrigger(new Uint8Array([97]));
+  await x.engine.execute('trigger',{action:'disarm'},x.context);
+  await new Promise(resolve=>setTimeout(resolve,40));
+  assert.equal(resets,0);assert.equal(events.includes('mark'),false);assert.equal(x.engine.trigger,null);
+ });
+}
+test('rearming cancels a pending action from the previous trigger',async()=>{
+ const x=await setup();let resets=0;x.engine.mode='console';x.engine.reset=async()=>{resets++;};
+ await x.engine.execute('trigger',{data:'YQ==',action:'reset',delay_ms:20,expires_ms:1000},x.context);
+ x.engine.matchTrigger(new Uint8Array([97]));
+ await x.engine.execute('trigger',{data:'Yg==',action:'reset',delay_ms:0,expires_ms:1000},x.context);
+ await new Promise(resolve=>setTimeout(resolve,40));assert.equal(resets,0);
+ x.engine.matchTrigger(new Uint8Array([98]));await new Promise(resolve=>setTimeout(resolve,5));assert.equal(resets,1);
+});
