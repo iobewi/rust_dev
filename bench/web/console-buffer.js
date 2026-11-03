@@ -24,11 +24,42 @@ export class ConsoleBuffer {
   clearDisplay() { this.displayAfter = this.sequence; }
   visible({ format = 'text', query = '', limit = 250, before = Infinity } = {}) {
     const needle = query.toLocaleLowerCase();
-    return this.events.filter(event => event.seq > this.displayAfter && event.seq <= before).map(event => ({
-      ...event, display: format === 'hex' && event.bytes.length
-        ? [...event.bytes].map(b => b.toString(16).padStart(2, '0')).join(' ')
-        : event.text.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, c => '\\x' + c.charCodeAt(0).toString(16).padStart(2, '0')),
-    })).filter(event => event.display.toLocaleLowerCase().includes(needle)).slice(-limit);
+    const escape = text => text.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g,
+      c => '\\x' + c.charCodeAt(0).toString(16).padStart(2, '0'));
+    const rows = [];
+    const emit = row => {
+      if (!row.display.toLocaleLowerCase().includes(needle)) return;
+      rows.push(row);
+      // A newline flood must not allocate one DOM/presentation record per byte.
+      if (rows.length >= limit * 2) rows.splice(0, limit);
+    };
+    let line = null, afterCR = false;
+    for (const event of this.events) {
+      if (event.seq <= this.displayAfter || event.seq > before) continue;
+      if (format === 'hex' || event.kind !== 'RX') {
+        if (line?.display) emit({ ...line, display: escape(line.display) });
+        line = null; afterCR = false;
+        emit({ seq: event.seq, at: event.at, kind: event.kind,
+          display: format === 'hex' && event.bytes.length
+            ? [...event.bytes].map(b => b.toString(16).padStart(2, '0')).join(' ')
+            : escape(event.text) });
+        continue;
+      }
+      // Serial reads are arbitrary chunks, not firmware lines. Keep the first
+      // fragment's timestamp and show unfinished lines immediately.
+      for (const char of event.text) {
+        if (afterCR) { afterCR = false; if (char === '\n') continue; }
+        line ||= { seq: event.seq, at: event.at, kind: 'RX', display: '' };
+        if (char === '\r' || char === '\n') {
+          emit({ ...line, display: escape(line.display) });
+          line = null; afterCR = char === '\r';
+        } else line.display += char;
+      }
+      // A split UTF-8 character may have bytes but no decoded text yet.
+      if (!line && !event.text && event.bytes.length) line = { seq: event.seq, at: event.at, kind: 'RX', display: '' };
+    }
+    if (line?.display) emit({ ...line, display: escape(line.display) });
+    return rows.slice(-limit);
   }
   bytes() {
     const out = new Uint8Array(this.byteLength); let offset = 0;

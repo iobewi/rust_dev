@@ -51,3 +51,35 @@ test('a paused presentation can keep a fixed cursor while capture and exports co
   assert.equal(capture.visible().map(event => event.display).join(''), 'AB');
   assert.deepEqual(capture.bytes(), new Uint8Array([65, 66]));
 });
+
+test('text lines span arbitrary USB chunks, while hex and raw exports preserve those chunks', () => {
+  const capture = new ConsoleBuffer(), encoder = new TextEncoder();
+  for (const [text, at] of [['I', 10], ['NFO - connected, address: 192', 20], ['.', 30], ['168.1.2\r', 40], ['\nINFO - O', 50], ['TA ready\n', 60]]) capture.append(encoder.encode(text), { at });
+  const lines = capture.visible();
+  assert.deepEqual(lines.map(row => row.display), ['INFO - connected, address: 192.168.1.2', 'INFO - OTA ready']);
+  assert.deepEqual(lines.map(row => row.at), [10, 50]);
+  assert.equal(capture.visible({ query: '192.168' }).length, 1);
+  assert.equal(capture.visible({ format: 'hex' }).length, 6);
+  assert.equal(new TextDecoder().decode(capture.bytes()), 'INFO - connected, address: 192.168.1.2\r\nINFO - OTA ready\n');
+});
+test('partial lines update live and pause/clear cursors do not pull in later or earlier fragments', () => {
+  const capture = new ConsoleBuffer(), encoder = new TextEncoder();
+  capture.append(encoder.encode('part')); const before = capture.sequence;
+  capture.append(encoder.encode('ial\nnext'));
+  assert.deepEqual(capture.visible({ before }).map(row => row.display), ['part']);
+  assert.deepEqual(capture.visible().map(row => row.display), ['partial', 'next']);
+  capture.clearDisplay();capture.append(encoder.encode(' new\n'));
+  assert.deepEqual(capture.visible().map(row => row.display), [' new']);
+});
+test('CR/LF across chunks, empty lines, UTF-8 and transport boundaries remain explicit', () => {
+  const capture = new ConsoleBuffer(), encoder = new TextEncoder();
+  capture.append(new Uint8Array([0xc3]), { at: 1 });capture.append(new Uint8Array([0xa9, 13]), { at: 2 });
+  capture.append(encoder.encode('\n\nnext\rfinal'), { at: 3 });
+  capture.note('SYS', 'connection interrupted', 4);capture.append(encoder.encode('new port\n'), { at: 5 });
+  assert.deepEqual(capture.visible().map(row => row.display), ['é', '', 'next', 'final', 'connection interrupted', 'new port']);
+  assert.equal(capture.visible()[0].at, 1);
+});
+test('newline floods keep a bounded tail of logical lines', () => {
+  const capture = new ConsoleBuffer();capture.append(new TextEncoder().encode('x\n'.repeat(10000)));
+  assert.equal(capture.visible({ limit: 20 }).length, 20);
+});

@@ -167,6 +167,9 @@ test('instrumentation UI connects Web Serial without API credentials, captures b
   await page.locator('#uart-log').evaluate(node=>{node.scrollTop=0;node.dispatchEvent(new Event('scroll'));});
   await page.waitForSelector('#follow',{state:'visible'});await page.click('#follow');
   await page.waitForFunction(()=>document.querySelector('#follow').hidden);
+  // Text rows follow firmware newlines, never arbitrary USB read boundaries.
+  await page.evaluate(()=>{for(const text of ['I','NFO - board connected, ip = 192','.','168.1.2\r','\n'])window.__serialPort.controller.enqueue(new TextEncoder().encode(text));});
+  await page.waitForFunction(()=>[...document.querySelectorAll('#uart-log .payload')].some(node=>node.textContent==='INFO - board connected, ip = 192.168.1.2'));
   // A narrow viewport must retain the console and put dense tables in their own horizontal scroller.
   await page.setViewportSize({width:360,height:900});assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
   // A persisted uncertain outcome survives automatic reconnect; no API work is replayed.

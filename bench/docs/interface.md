@@ -38,7 +38,7 @@ L’effacement global garde une action et une confirmation distinctes.
 
 ## Capture et affichage
 
-`ConsoleBuffer` conserve des copies des octets RX, séparées du texte affiché. Texte/hex, recherche, horodatage, pause et effacement de l’affichage ne modifient pas l’export brut. La pause fige le curseur de présentation pendant que la capture continue. Les caractères UTF-8 fragmentés sont décodés en continu ; le mode hex préserve la lecture des données binaires.
+`ConsoleBuffer` conserve des copies des octets RX, séparées du texte affiché. Texte/hex, recherche, horodatage, pause et effacement de l’affichage ne modifient pas l’export brut. La pause fige le curseur de présentation pendant que la capture continue. Les caractères UTF-8 fragmentés sont décodés en continu. En texte, les fragments USB sont assemblés jusqu’aux fins de ligne émises par le firmware (LF, CRLF ou CR), y compris lorsque CR/LF sont répartis sur plusieurs réceptions. Une ligne incomplète reste visible et se complète en place ; la recherche porte sur les lignes assemblées. L’horodatage et le numéro de séquence sont ceux du premier fragment retenu de la ligne. Les événements de transport séparent explicitement les segments ; l’affichage ne joint pas les données à travers ces événements. Le mode hex et l’export brut conservent les octets reçus sans réassemblage textuel.
 
 Le tampon de chaque carte est borné à 1 Mio / 4 096 événements. L’interface affiche les évictions locales. L’abonnement SSE reprend avec le curseur du serveur et signale les pertes de source, les événements devenus irrécupérables et les changements d’epoch. Un flux local déjà capturé n’est pas ajouté une deuxième fois par son écho serveur.
 
