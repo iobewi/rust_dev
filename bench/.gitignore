@@ -1,6 +1,5 @@
 logs/
 __pycache__/
-
-# Local secrets for the bench tools (Wi-Fi credentials for improv.py): never versioned
-.improv.env
+node_modules/
 *.env
+*tokens*.json

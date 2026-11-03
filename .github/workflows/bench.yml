@@ -1,0 +1,27 @@
+name: Generic hardware bench
+on:
+  push:
+    paths: ['bench/**', '.github/workflows/bench.yml']
+  pull_request:
+    paths: ['bench/**', '.github/workflows/bench.yml']
+permissions:
+  contents: read
+jobs:
+  software:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: bench
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: python -m pip install -r requirements.txt
+      - run: npm install --ignore-scripts
+      - run: npm test
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:browser
