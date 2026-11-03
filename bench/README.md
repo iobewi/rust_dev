@@ -29,7 +29,6 @@ from pathlib import Path
 path = Path('/tmp/bench-tokens.json')
 config = {
     secrets.token_urlsafe(32): {'id': 'operator', 'role': 'client', 'scopes': ['read', 'control', 'program']},
-    secrets.token_urlsafe(32): {'id': 'browser-local', 'role': 'agent', 'devices': ['esp32-local']},
 }
 fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
 with os.fdopen(fd, 'w') as f:
@@ -39,17 +38,17 @@ PY
 BENCH_TOKENS_FILE=/tmp/bench-tokens.json python3 bench/server/bench_server.py
 ```
 
-Le serveur écoute `127.0.0.1:8080`. Ouvrir `http://localhost:8080` sur le PC qui possède le port USB. Le bouton **Connecter un port série** ouvre Web Serial et permet d’observer la console locale sans token. Dans **Pilotage distant et accès…**, saisir le token agent, l’identifiant déclaré dans sa liste `devices` et le token client, puis ouvrir la session du banc. L’origine du serveur est automatiquement celle de la page. **Prendre le pilotage manuel** réserve la carte ; **Autoriser le pilotage distant** termine cette réservation en gardant le port ouvert. **Ces boutons passent par la même API et la même file que les clients externes.** Seuls le choix du port, l’identification initiale, la connexion, l’octroi local des droits et la récupération de sécurité sont locaux.
+Le serveur écoute `127.0.0.1:8080`. Ouvrir `http://localhost:8080` sur le PC qui possède le port USB. La page établit automatiquement une session locale, sans token à saisir. **Connecter un port série** ouvre le sélecteur Web Serial et rattache automatiquement la carte au serveur. Cliquer ensuite directement sur Identifier, Lire, Reset ou les autres commandes : le serveur prend et libère la réservation pour chaque opération, après stabilisation du retour console. **Tous ces boutons utilisent la même API et la même file que les clients externes.** Programmation et effacement conservent une confirmation explicite ; les actions locales ne créent aucun grant pour les clients distants. Le panneau avancé sert à autoriser temporairement les opérations sensibles de Claude. Les clés de la configuration ne sont plus recopiées dans la page. Cette session automatique exige un accès direct en boucle locale ; l’authentification d’une UI par le réseau n’est pas implémentée.
 
-L’identifiant de carte est un nom logique choisi par l’opérateur ; la famille et la capacité flash sont mesurées par esptool, puis revérifiées avant les opérations flash. Deux ports physiques ne doivent pas être déclarés sous deux identifiants pour une même carte.
+L’identifiant de carte est un nom logique configuré pour le banc (`esp32-local` par défaut) ; la famille et la capacité flash sont mesurées par esptool, puis revérifiées avant les opérations flash. Deux ports physiques ne doivent pas être déclarés sous deux identifiants pour une même carte.
 
-Pour programmer ou effacer : token client avec `program`, réservation, autorisation locale temporaire et `allow_destructive:true`. Les transmissions UART, BOOT, déclencheurs et requêtes HTTP locales exigent également une autorisation locale temporaire. Les tokens restent en mémoire de page ; ils ne sont pas conservés dans localStorage. Le seul état persistant du navigateur est le blocage de sécurité par identifiant de carte.
+Pour les clients externes, programmer ou effacer exige un token avec `program`, une réservation, une autorisation locale temporaire et `allow_destructive:true`. Leurs transmissions UART, BOOT, déclencheurs et requêtes HTTP exigent également un grant. Les actions de la page sur son propre agent physique utilisent une autorité limitée à chaque opération et une confirmation destructive explicite, sans ouvrir ce grant distant. Le navigateur ne conserve aucune clé API ; sa session HttpOnly est éphémère. Le blocage de sécurité par identifiant de carte reste mémorisé localement.
 
 `BENCH_HOST`, `BENCH_PORT` et `BENCH_ORIGIN` configurent l’écoute et l’origine publique exacte derrière un proxy. Pour un serveur distant, utiliser HTTPS/WSS et un transfert local sécurisé ou un proxy TLS. Web Serial exige un contexte sécurisé reconnu par le navigateur. Le serveur ne fournit pas lui-même de certificat TLS. Le moteur charge **esptool-js 0.7.0** depuis unpkg ; ce chargement exige un accès Internet et garde la même dépendance navigateur que l’ancien banc.
 
 ## Utilisation sans matériel
 
-Dans un deuxième terminal, définir `BENCH_AGENT_TOKEN` avec le token agent du fichier, puis :
+Pour cet agent simulé externe seulement, ajouter au fichier un token aléatoire de rôle `agent`, avec `devices:["esp32-local"]`, puis redémarrer le serveur. Ce token n’est pas nécessaire à la page Web. Dans un deuxième terminal, définir `BENCH_AGENT_TOKEN` avec cette clé, puis :
 
 ```sh
 python3 bench/tools/sim_agent.py --device esp32-local --grant 1800

@@ -38,6 +38,22 @@ class BrowserSessionTests(unittest.IsolatedAsyncioTestCase):
             'capabilities': ['identify', 'reset', 'flash.erase']}})
         self.generation = (await self.ws.receive_json())['generation']
 
+    async def test_client_only_config_needs_no_agent_token_for_the_local_page(self):
+        client = TestClient(TestServer(create_app({key: value for key, value in TOKENS.items() if value['role'] == 'client'})), cookie_jar=CookieJar(unsafe=True))
+        await client.start_server()
+        try:
+            headers = {'Origin': str(client.make_url('/')).rstrip('/')}
+            r = await client.post('/session/v1/open', headers=headers)
+            self.assertEqual((await r.json())['devices'], ['esp32-local'])
+            ws = await client.ws_connect('/agent/v1/ws', headers=headers)
+            await ws.send_json({'type': 'auth', 'version': 1})
+            self.assertEqual((await ws.receive_json())['type'], 'welcome')
+            await ws.send_json({'type': 'register', 'device': {'id': 'esp32-local', 'chip': 'esp32s3', 'flash_size': 4194304, 'capabilities': ['identify']}})
+            self.assertEqual((await ws.receive_json())['type'], 'registered')
+            await ws.close()
+        finally:
+            await client.close()
+
     async def test_cookie_is_http_only_and_external_bearer_credentials_remain_independent(self):
         response, session = await self.open()
         cookie = response.headers['Set-Cookie']

@@ -1,57 +1,53 @@
 # Interface d’instrumentation
 
-L’interface sert à connecter et piloter les cartes, observer le transport brut et inspecter les résultats matériels. Elle n’exécute pas les recettes propres aux projets et ne produit aucun verdict de qualification.
+La page connecte les cartes, présente le transport brut et demande les opérations au serveur. Les recettes, assertions et preuves durables restent dans les projets clients.
 
-## Deux liaisons distinctes
+## Connexion locale sans token
 
-**Connecter un port série** ouvre le sélecteur Web Serial du navigateur. Les ports déjà autorisés sont proposés par une action distincte ; après débranchement/rebranchement, le port précédemment choisi est reconnecté automatiquement si le navigateur le reconnaît parmi les ports autorisés. La puce, la capacité, le RDID et la MAC sont comparés avant tout retour console. Une autre carte exige une sélection explicite. Aucune commande interrompue n’est rejouée ; un blocage persistant est conservé, sans retour console automatique. Une déconnexion volontaire désactive cette reprise. La reconnexion peut changer le mode de démarrage, comme toute ouverture du chargeur. L’identification initiale passe par le chargeur ESP puis, si aucun blocage n’est mémorisé, revient à la console.
+En accès direct par `localhost`, `127.0.0.1` ou `::1`, la page ouvre automatiquement sa session sur le serveur. Un cookie HttpOnly, SameSite Strict, partagé par REST et WebSocket, remplace les deux champs de tokens. Le cookie ne contient aucune clé API externe et n’est pas accessible au JavaScript. La session est éphémère, expire après huit heures et disparaît au redémarrage serveur.
 
-La capture locale est accessible sans token API. Les octets restent dans un tampon temporaire borné ; aucune commande manuelle de programmation, reset, émission UART ou autre contrôle ne contourne le broker.
+Le serveur vérifie la connexion réseau de boucle locale, le Host local, l’origine exacte des mutations et du WebSocket, et refuse les requêtes de site tiers. L’ouverture automatique n’est pas disponible par un accès LAN, un proxy ou un nom DNS arbitraire. Un déploiement réseau avec authentification utilisateur n’est pas implémenté dans cette version ; aucune session privilégiée n’est accordée simplement parce que le serveur fournit la page.
 
-**Paramètres du banc…** ouvre les paramètres de session : token agent, token client, identifiant logique autorisé et éventuelles origines HTTP LAN. L’origine du serveur est celle de la page ; il n’y a pas de champ d’adresse de serveur redondant. Les paramètres se replient après ouverture de session réussie et restent accessibles par le bouton de paramètres. Les tokens restent en mémoire de page et ne sont pas enregistrés. Un navigateur peut aussi ouvrir une session de client API sans posséder lui-même le port physique.
+**Connecter un port série** reste le seul choix matériel nécessaire. Le navigateur demande sa propre permission Web Serial, identifie la carte puis ouvre la console si aucun blocage n’est mémorisé. La liaison agent au serveur s’établit automatiquement. **Paramètres du banc…** conserve l’identifiant logique autorisé et les origines HTTP LAN ; **Rétablir la liaison au serveur** sert à une reconnexion explicite après une interruption réseau.
 
-## Propriété du pilotage
+Les identifiants de cartes disponibles viennent de la configuration `devices` des agents ; en l’absence d’agent externe configuré, le serveur utilise `esp32-local`. Un client externe tel que Claude conserve son token REST indépendant et ses scopes. Le navigateur ne le reçoit pas et ne le stocke pas.
 
-- **Prendre la main** réserve exclusivement la carte sélectionnée. La réservation de quinze minutes est renouvelée automatiquement tant que la page conserve le pilotage ; sa gestion est masquée dans l’usage courant.
-- **Autoriser le pilotage distant** termine cette réservation et laisse le port Web Serial et la capture ouverts. Les clients distants doivent toujours s’authentifier et prendre leur propre réservation.
-- **Pilotée par : identifiant** indique une réservation détenue par un autre client. Le bouton normal de prise en main ne force jamais une réservation concurrente. Dans « Client bloqué », l’opérateur de l’agent physique dispose de « Libérer le pilotage bloqué… » : confirmation locale, révocation du grant, annulation des commandes en attente et libération de la réservation sans son identifiant. Le serveur refuse cette action tant qu’une exécution matérielle reste en cours ou en suspens. Elle ne lève jamais la quarantaine.
-- La famille de puce et la capacité du plan sont liées à la réservation ; un changement incohérent de cible est refusé.
-- Une réservation expirée, une nouvelle génération ou un changement d’epoch nécessite une nouvelle prise de contrôle. Les anciennes commandes ne sont jamais resoumises.
+## Commandes directes
 
-L’action manuelle sensible propose une autorisation locale au moment nécessaire, avec une durée sélectionnée (1 minute, 5 minutes par défaut, 30 minutes ou 2 heures). L’interface attend sa visibilité côté serveur avant de soumettre la commande. Le client distant utilise le panneau avancé d’autorisation ; la révocation reste visible tant que le grant est actif. Les autorisations locales temporaires sont séparées de la propriété du pilotage : avoir la réservation ne suffit pas à programmer, effacer, émettre sur UART ou armer un déclencheur privilégié.
+Il n’y a plus de bouton « Prendre la main », de renouvellement manuel ou de délégation nécessaire avant une action. Un clic sur Identifier, Lire, Reset ou une autre commande envoie une opération manuelle au serveur. Celui-ci prend atomiquement une réservation exclusive, vérifie la génération de carte, puis utilise la même file et le même agent que les clients externes.
 
-## Organisation
+La réservation est libérée après réception du résultat par le serveur et confirmation par l’agent que le traitement de l’accusé et le retour console sont terminés. Elle ne disparaît pas prématurément pendant une réouverture de port. Une commande annulée ou expirée avant départ libère sa réservation ; une issue matérielle non stabilisée conserve les protections d’exclusion et de quarantaine.
 
-La barre de session montre la carte, les liaisons USB/serveur, le mode et le détenteur du pilotage. Le panneau latéral expose l’identité matérielle, les droits et l’état de récupération.
+Les actions restent refusées si un autre client possède la carte. La page affiche son propriétaire et son activité. « Client bloqué » permet à l’opérateur physique de libérer une réservation abandonnée après confirmation, sans redémarrer le serveur ; cette action refuse un matériel encore en cours de traitement et ne lève pas la quarantaine.
 
-La console UART a un fond contrasté et une hauteur réglable par son bord inférieur. Le journal distinct de l’agent affiche les connexions, ouvertures de console/chargeur, commandes de tous ses clients, transferts, résultats et durées. Pendant les lectures, il affiche aussi la phase et les octets reçus, avec une progression bornée par bloc/paliers. En cas d’échec, il indique le type structuré du transport, la phase et les échéances restantes ; le résultat inspectable contient les compteurs détaillés. Les lectures manuelles disposent de dix minutes maximum, sans extension automatique du délai. Il est borné à 300 lignes et ne journalise ni tokens, ni arguments de commande, ni contenu UART/HTTP, ni texte arbitraire des exceptions. Le tampon UART reste potentiellement sensible.
+Un déclencheur armé conserve automatiquement sa réservation jusqu’à son expiration ou à son désarmement. La page peut le désarmer ou effectuer d’autres commandes dans cette réservation ; aucun renouvellement manuel n’est demandé. Les accès matériels restent sérialisés.
 
-La console reste visible pendant l’utilisation des onglets :
+## Une confirmation pour les actions locales sensibles
 
-- **Partitions** : table réelle, types numériques, offsets, tailles et fins exclues ; relecture par partition.
-- **Plan flash** : fichiers uploadés, adresses explicitement renseignées, tailles et empreintes. Les manifestes alimentent ce même plan et ne déclenchent pas une installation immédiate. La validation refuse les bornes invalides et les secteurs d’effacement communs. Une confirmation récapitule la carte et les régions avant soumission.
-- **Lecture mémoire** : région arbitraire, aperçu hexadécimal limité à 256 octets, taille et SHA-256. Le téléchargement est proposé seulement après vérification des octets reçus.
-- **Opérations** : commandes du client manuel, états, durée observée et résultat structuré. Les résultats des autres clients restent privés ; le propriétaire de la réservation est visible dans l’état de carte, sans exposer son identifiant de réservation.
-- **Déclencheurs et outils** : baudrate, motif UART, action, délai, expiration et requête HTTP LAN opaque.
+Le plan flash conserve une confirmation explicite de la carte, de sa génération et des régions. L’effacement global possède une confirmation distincte. Ces confirmations autorisent uniquement l’opération manuelle adressée à l’agent physique de la même session ; elles n’ouvrent aucun grant temporaire utilisable par Claude.
 
-L’effacement global garde une action et une confirmation distinctes.
+Les commandes locales UART, BOOT, HTTP et déclencheurs ne nécessitent plus un bouton préalable d’accès privilégié. Les contrôles serveur, le choix explicite de commande et les restrictions matérielles restent applicables. Une carte en quarantaine reste limitée aux commandes de vérification autorisées.
 
-## Capture et affichage
+Pour les clients externes, la réservation, le scope `program`, le consentement `allow_destructive:true` et le grant local restent nécessaires selon la commande. Le panneau avancé **Autoriser les opérations distantes sensibles** permet de choisir 1 minute, 5 minutes par défaut, 30 minutes ou 2 heures. La révocation reste visible pendant le grant. Une autorisation distante n’est jamais créée automatiquement par un clic sur une commande locale.
 
-`ConsoleBuffer` conserve des copies des octets RX, séparées du texte affiché. Texte/hex, recherche, horodatage, pause et effacement de l’affichage ne modifient pas l’export brut. La pause fige le curseur de présentation pendant que la capture continue. Les caractères UTF-8 fragmentés sont décodés en continu. En texte, les fragments USB sont assemblés jusqu’aux fins de ligne émises par le firmware (LF, CRLF ou CR), y compris lorsque CR/LF sont répartis sur plusieurs réceptions. Une ligne incomplète reste visible et se complète en place ; la recherche porte sur les lignes assemblées. L’horodatage et le numéro de séquence sont ceux du premier fragment retenu de la ligne. Les événements de transport séparent explicitement les segments ; l’affichage ne joint pas les données à travers ces événements. Le mode hex et l’export brut conservent les octets reçus sans réassemblage textuel.
+## Consoles et outils
 
-Le tampon de chaque carte est borné à 1 Mio / 4 096 événements. L’interface affiche les évictions locales. L’abonnement SSE reprend avec le curseur du serveur et signale les pertes de source, les événements devenus irrécupérables et les changements d’epoch. Un flux local déjà capturé n’est pas ajouté une deuxième fois par son écho serveur.
+La console UART contrastée et redimensionnable reste visible au-dessus des onglets Partitions, Plan flash, Lecture mémoire, Opérations et Déclencheurs/outils. Les partitions sont lues à l’adresse explicite du projet ; aucune table valide à l’adresse demandée produit un diagnostic dédié. Manifestes et binaires alimentent le même plan ; aucun fichier ne déclenche une écriture à son ajout.
 
-Le suivi du direct est automatique en bas du tampon. Remonter dans l’historique préserve la position ; un indicateur et « Reprendre le défilement » permettent de retrouver le direct.
+`ConsoleBuffer` conserve jusqu’à 1 Mio / 4 096 événements par carte. Les lignes texte suivent les fins de ligne du firmware (LF, CRLF, CR), et non les fragments USB. Une ligne partielle reste visible et se complète en direct. Horodatage et séquence correspondent au premier fragment retenu de la ligne. La recherche porte sur les lignes assemblées. Hex, pause, recherche et effacement de l’affichage ne changent pas l’export brut. Le retour au direct est explicite après consultation de l’historique.
 
-Pendant l’exécution par l’agent et jusqu’à l’accusé serveur, Screen Wake Lock demande le maintien de l’écran allumé. Le verrou est libéré au repos, à la déconnexion ou au départ de la page, et redemandé au retour visible si une opération continue. Refus et indisponibilité sont affichés sans bloquer le matériel. Cela ne garantit pas l’exécution d’un onglet masqué.
+Le journal de l’agent conserve 300 lignes : connexions, modes console/chargeur, commandes, progression, transferts, résultats et durées. Les erreurs indiquent la phase, le type de transport et les délais restants. Les nouveaux diagnostics n’exposent ni tokens, ni arguments, ni texte arbitraire d’exception. Le flux UART peut lui-même contenir des données sensibles du firmware.
 
-Les exports sont des données de transport, pas des rapports de recette. Les projets restent responsables de leur conservation durable et de leurs assertions.
+Les lectures demandent au plus dix minutes et utilisent des blocs internes d’au plus 1 Mio. Aucun bloc échoué n’est rejoué et aucun dump partiel n’est publié. Le téléchargement vérifie la taille et le SHA-256.
+
+## Reconnexion et anti-veille
+
+Après débranchement/rebranchement, seul le port précédemment choisi est repris automatiquement si le navigateur le reconnaît. Puce, capacité, RDID et MAC sont revérifiés avant retour console. Aucune opération interrompue n’est rejouée. Un blocage persistant interdit le retour console automatique ; une déconnexion volontaire désactive la reprise. Ouvrir le chargeur ou revenir à la console peut redémarrer la carte.
+
+Screen Wake Lock demande le maintien d’écran pendant l’activité de l’agent, jusqu’au traitement de l’accusé et du retour console. Il est libéré au repos, à la déconnexion ou au départ de page. La visibilité, la réacquisition et les refus du navigateur sont signalés ; cela ne garantit pas l’exécution d’un onglet masqué.
 
 ## Validation
 
-Les tests Node vérifient l’intégrité du tampon, la continuité UTF-8, les pertes, le gel d’affichage, les entrées numériques strictes, la validation des plans, le téléchargement vérifié et le réassemblage SSE. Le parcours Chromium utilise Web Serial et un chargeur ESP simulés, puis les vraies interfaces REST et WebSocket du banc : capture sans token, ouverture de session, réservation, partitions, dump, plan flash, confirmation annulée et délégation sans fermeture du port.
+Les tests serveur couvrent sessions locales, origine/Host, cookies, expiration, maintien des accès Bearer, concurrence, autorité locale limitée à son agent, confirmation destructive et libération automatique après stabilisation. Les parcours Chromium utilisent un port et un chargeur simulés, avec les vraies interfaces REST et WebSocket.
 
-La campagne matérielle rapportée sur d548dab couvre une S3 N16 par pont UART externe, avec des limites et des cas non exécutés consignés dans l’issue #2. Ces corrections sont vérifiées par tests logiciels ; elles ne valent pas requalification matérielle. L’observation de redémarrages répétés reste à investiguer : aucun correctif de reset n’est revendiqué sans reproduction.
-
-La lecture réelle de 10 Mio rapportée en échec vers 350 s sur d1dd19c n’a pas de cause démontrée. Le fractionnement des lectures et la réduction des copies corrigent des coûts observables dans le code ; les diagnostics ajoutés doivent permettre de discriminer un délai de transport, une perte de liaison, une échéance de commande et un échec d’upload. Les tests logiciels de 10 Mio ne remplacent pas la reprise matérielle ciblée.
+Les retours matériels sur les SHA antérieurs ne qualifient pas cette évolution de session. Les cas non exécutés de l’issue #2 restent ouverts, notamment programmation, autres cartes/interfaces, onglet masqué et libération effective de l’anti-veille. Les anciens resets et l’échec historique vers 350 s n’ont pas de cause isolée démontrée.

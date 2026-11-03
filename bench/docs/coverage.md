@@ -25,7 +25,7 @@
 | HTTP vers ESP sur LAN | Primitive navigateur, liste d’origines privées locales, grant, réponse opaque explicite | Liste privée testée ; politiques réseau navigateur / HTTPS restant |
 | Inventaire de binaires et sauvegardes | Inventaire des artefacts uploadés, SHA-256, sélection/réutilisation dans le plan manuel | REST testé ; dossiers de campagne et archives automatiques supprimés au profit des clients |
 | Logs / rapports de qualification | Hors banc : clients des projets uniquement ; capture temporaire bornée au transport | Aucun rapport/verdict métier centralisé |
-| Commandes manuelles et distantes | Client Web et client Python sur la même API | Tests serveur / agent ; test Chromium en CI avec moteur simulé |
+| Commandes manuelles et distantes | Session Web locale sans token, réservations automatiques et client Python sur la même API | Tests serveur / agent ; test Chromium en CI avec moteur simulé |
 | Outils de campagne OTA, modèles Rust, sonde mémoire | Retirés du banc générique ; consultables sur les branches sources | Aucun transfert automatique vers les dépôts consommateurs |
 
 Les fonctionnalités ne sont pas conservées par compatibilité d’interface : commandes renommées, transport WS et capture binaire remplacent les anciens scripts et endpoints. La reconnexion automatique ne sélectionne jamais une autre carte autorisée et ne rejoue aucune opération ; la quarantaine reste applicable et une déconnexion volontaire coupe les tentatives. Le motif exact d’octets remplace les expressions régulières exécutées par la page ; les clients restent libres d’appliquer leurs propres regex aux données.
@@ -50,3 +50,5 @@ Le banc ne conserve aucune preuve de campagne durable. Les résultats automatis�
 10. Apparence et interactions de l’UI sur écran mobile et bureau ; support Web Serial déterminé par la présence effective de `navigator.serial` et les permissions du contexte, sans exclusion arbitraire d’une famille de navigateurs.
 
 Cette session ne réalise aucun nouvel essai physique. Les retours de recette sur d548dab portent sur une S3 N16 par pont UART externe et doivent conserver leurs limites : ils ne qualifient ni les présentes corrections, ni les écritures, ni les autres interfaces/cartes. L’observation de redémarrages répétés reste à investiguer ; aucun correctif causal n’est revendiqué.
+
+La session locale automatique et la libération après `settled` sont vérifiées par tests HTTP/broker et parcours Chromium simulés. Les autorisations locales par opération ne modifient pas les grants des clients externes. Les retours matériels antérieurs ne couvrent pas ce nouveau parcours de session.

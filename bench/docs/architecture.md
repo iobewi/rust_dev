@@ -29,6 +29,7 @@ Les recettes historiques sont retirées, sans être transplantées dans d’autr
 |---|---|
 | `protocol/` | Validation des commandes, tailles, plans flash, HTTP privé et primitives binaires |
 | `server/core.py` | Modèle de cartes, réservations, opérations, artefacts et anneaux d’événements |
+| `server/ui_sessions.py` | Sessions navigateur éphémères, accès direct loopback et contrôles Host/origine |
 | `server/bench_server.py` | REST, authentification, scopes, WebSocket, SSE, contenu statique fermé |
 | `web/agent.js` | Authentification agent, génération de session, rendez-vous offer/ready/execute, contrôle du délai, transport d’événements et artefacts |
 | `web/esp-engine.js` | Web Serial, esptool, console/chargeur, identité physique, flash, UART, EN/BOOT et déclencheurs génériques |
@@ -41,7 +42,7 @@ Python est conservé. `aiohttp` apporte HTTP asynchrone, WebSocket authentifié,
 
 ## Exécution, sécurité et récupération
 
-Un token agent est lié à une liste explicite de cartes. Une carte n’a qu’une génération active. Chaque token client porte `read`, `control` et éventuellement `program`. Une réservation est liée à l’identité du client, pas à la connexion HTTP. Un client différent ne peut ni lire ses résultats, ni renouveler/libérer sa réservation.
+Pour les agents externes, un token agent est lié à une liste explicite de cartes. Une carte n’a qu’une génération active. Chaque token client porte `read`, `control` et éventuellement `program`. Une réservation est liée à l’identité du client, pas à la connexion HTTP. Un client différent ne peut ni lire ses résultats, ni renouveler/libérer sa réservation.
 
 `queued → offered → running → completed|failed|indeterminate|cancelled` est le chemin d’exécution. `queued/offered` peuvent devenir `expired` ou `cancelled` sans exécution. Le serveur marque `running` avant d’envoyer `execute` : si cette transmission est perdue, il annonce une incertitude, jamais une réussite. Aucun identifiant n’est remis en file après offre ou démarrage.
 
@@ -72,3 +73,9 @@ Le serveur ne sert aucun répertoire arbitraire, n’exécute aucune commande sy
 Seul l’agent physique authentifié peut libérer un pilotage abandonné après confirmation opérateur. Le serveur refuse cette libération tant que le matériel reste en exécution ou non stabilisé ; elle ne lève pas la quarantaine. Le maintien d’écran est une demande Screen Wake Lock pendant le travail, sans garantie d’exécution en arrière-plan.
 
 Le client manuel verrouille la sélection sur la carte réservée ; les commandes revérifient cette correspondance et utilisent la famille de puce associée à la réservation. La liste peut être actualisée sans changer la cible active.
+
+## Session de la page et pilotage sans réservation manuelle
+
+La session locale du navigateur authentifie ses appels REST et son WebSocket sans exposer une clé API. Les clients externes gardent leurs tokens et scopes. Le serveur associe l’autorité locale d’une opération à son agent physique, sans grant global. `manual-operations` réserve atomiquement la carte et réutilise le broker normal. `settled`, envoyé après traitement de l’accusé et retour console, borne la libération automatique : la carte ne devient pas disponible prématurément pendant une réouverture du port. Les déclencheurs gardent le droit nécessaire à leur durée d’armement. La page ne propose plus de prise de main/renouvellement/délégation préalables aux commandes.
+
+La session automatique vérifie réseau loopback, Host local, origine exacte des mutations et WebSocket, et cookie HttpOnly/SameSite Strict. Elle n’est pas une solution de connexion utilisateur depuis le LAN. Aucune origine réseau distante n’est implicitement privilégiée parce que le serveur sert la page.

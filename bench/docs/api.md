@@ -1,6 +1,6 @@
 # Contrat API v1
 
-Toutes les routes `/api/v1/*` exigent `Authorization: Bearer TOKEN`. Les erreurs ont la forme `{"error":{"code":"...","message":"..."}}`. HTTP 400 : schéma/digest/adresse invalide ; 401 : token absent ou invalide ; 403 : scope, propriétaire ou grant refusé ; 404 : ressource absente/expirée ; 409 : conflit d’état ; 413 : taille excessive ; 503 : stockage borné plein.
+Les clients externes utilisent `Authorization: Bearer TOKEN` pour les routes `/api/v1/*`. La page locale utilise une session navigateur HttpOnly, contrôlée par origine et connexion en boucle locale, sans token JavaScript. Un header Authorization présent est toujours vérifié et ne retombe jamais sur le cookie si son token est invalide. Les erreurs ont la forme `{"error":{"code":"...","message":"..."}}`. HTTP 400 : schéma/digest/adresse invalide ; 401 : token absent ou invalide ; 403 : scope, propriétaire ou grant refusé ; 404 : ressource absente/expirée ; 409 : conflit d’état ; 413 : taille excessive ; 503 : stockage borné plein.
 
 `read` permet les GET. `control` permet les mutations et soumissions. `program` s’ajoute pour flash.write/flash.erase. Une identité voulant consulter les résultats de ses commandes possède donc `read` et `control`.
 
@@ -14,6 +14,7 @@ Toutes les routes `/api/v1/*` exigent `Authorization: Bearer TOKEN`. Les erreurs
 | `GET /api/v1/leases/{id}` | Propriétaire | Réservation active |
 | `PATCH /api/v1/leases/{id}` | `{"ttl":900}` | Renouvellement de la réservation active |
 | `DELETE /api/v1/leases/{id}` | Propriétaire | Libération ; travail en cours = indéterminé |
+| `POST /api/v1/manual-operations` | `device`, `generation`, `command`, `args`, `ttl`, `timeout`, `allow_destructive` | 202 : réservation atomique automatique et opération ; mêmes contrôles que la file normale |
 | `POST /api/v1/operations` | Voir ci-dessous | 202 : opération asynchrone |
 | `GET /api/v1/operations/{id}` | Propriétaire | État, résultat, erreur, `cancel_requested`, éventuel `late_result` |
 | `DELETE /api/v1/operations/{id}` | Propriétaire | Annulation en attente ou demande d’annulation en cours |
@@ -120,3 +121,17 @@ Une commande `flash.read` reste une opération unique côté API et produit au p
 Les phases distinguent notamment `identify`, `flash_read`, `artifact_upload` et `artifact_download`. Les erreurs du transport sont traduites indépendamment de l’ordre de notification USB : `closed` → `serial_disconnected`, `no-response` → `serial_timeout`, `partial-packet` → `serial_partial_packet`, `invalid-packet` → `serial_invalid_packet`. Un échec HTTP d’artefact reste `artifact_transfer_failed`, et non une déconnexion USB. Les erreurs d’échéance distinguent connexion agent perdue, réservation expirée, grant expiré et délai d’exécution dépassé.
 
 Après un échec de lecture flash, la session chargeur est fermée sans retry ; une erreur de nettoyage ne remplace pas l’erreur initiale. Le verrou d’écriture Web Serial est toujours relâché si l’envoi d’un acquittement échoue. Le décodage SLIP utilise un tampon à croissance géométrique au lieu d’une allocation par octet.
+
+### Session navigateur locale et opérations manuelles
+
+`POST /session/v1/open` exige une connexion directe de boucle locale, un Host local et un Origin égal à l’origine exacte de la requête. Il crée/réutilise un cookie `bench_ui_v1` HttpOnly, SameSite Strict, Secure en HTTPS, valable huit heures au plus. Réponse sans secret : identifiant public du client de page, liste des IDs de cartes autorisés et epoch. Le serveur borne le magasin à 128 sessions éphémères. Un redémarrage invalide tous les cookies ; l’expiration ferme la liaison agent et révoque les réservations concernées. L’accès automatique n’est pas disponible depuis un proxy ou le LAN ; aucun header transféré n’est traité comme preuve d’origine locale.
+
+Le même cookie authentifie REST et le WebSocket agent. Le navigateur envoie `{"type":"auth","version":1}` sans token ; le serveur lie l’agent à cette session et à sa liste de cartes. Les agents externes continuent d’envoyer leur token dans la trame d’authentification. Toute mutation REST par cookie et tout WebSocket de session exigent l’Origin exact ; les clients externes Bearer conservent leur contrat.
+
+`manual-operations` prend une réservation exclusive de 900 s, vérifie la génération affichée et soumet l’opération dans la même file que `operations`. Un changement de génération produit `device_changed` avant départ. Si validation échoue, la nouvelle réservation est immédiatement libérée. Une réservation concurrente produit `device_reserved`, sans reprise forcée ni mise en attente implicite côté page.
+
+L’autorité locale par opération n’est accordée que lorsque le cookie de l’opérateur correspond à la session de l’agent physique de la carte. Elle ne modifie pas `grant_until`. La confirmation destructive reste `allow_destructive:true`, avec scope `program`. Les requêtes Bearer sur cette même route ne reçoivent aucune autorité locale : elles restent soumises aux grants et scopes habituels. Les champs `local_control` ou identité agent envoyés par un client sont refusés ; seul le serveur détermine `local_control` et l’ajoute à l’offre destinée à l’agent.
+
+Après `result_ack` et fin du retour console, l’agent envoie `{"type":"settled","device":"…","generation":"…","id":"…"}`. Le serveur vérifie la génération et l’existence d’un résultat effectivement reçu, refuse les doublons et libère la réservation automatique lorsque toutes ses opérations sont terminales et stabilisées. Une annulation/expiration avant départ la libère également ; un timeout matériel sans résultat reste protégé. Les réservations explicites des clients externes ne sont pas libérées par `settled`.
+
+Un déclencheur automatique conserve sa réservation jusqu’à son expiration, au plus 120 s après stabilisation de l’armement, ou à son désarmement. D’autres actions manuelles de la même session peuvent réutiliser cette réservation automatique ; les autres clients restent exclus. Le désarmement stabilisé permet sa libération. Aucun rejeu n’est ajouté.

@@ -239,6 +239,7 @@ async function attach(port, expectedIdentity = null) {
   if (engine) { try { await engine.close(); } finally { engine = null; } }
   const logicalId = $('device-id').value.trim();
   if (!logicalId) throw new Error('Identifiant de carte vide');
+  if (session && !session.devices.includes(logicalId)) throw new Error('Identifiant de carte non autorisé par la configuration du banc');
   const held = localStorage.getItem('bench.v1.hold.' + logicalId) === '1';
   const deps = await import('https://unpkg.com/esptool-js@0.7.0/bundle.js');
   const hardware = new EspEngine(port, deps, (type, event) => {
@@ -294,7 +295,7 @@ hook('disconnect', async () => {
 hook('agent-connect', connectAgent);
 hook('grant', () => { if (!agent?.generation) throw new Error('Agent local non connecté'); if (confirm(`Autoriser les opérations privilégiées sur ${localDevice.id} pendant ${$('grant-time').selectedOptions[0].textContent} ?`)) { agent.grant(Number($('grant-time').value)); renderState(); } });
 hook('revoke', () => { agent.grant(0); renderState(); });
-hook('release-control', () => { if (confirm('Libérer le pilotage abandonné et révoquer l’autorisation locale ? Une opération en cours empêchera cette action.')) agent.releaseControl(); });
+hook('release-control', () => { if (confirm('Libérer le pilotage abandonné et révoquer l’autorisation distante ? Une opération en cours empêchera cette action.')) agent.releaseControl(); });
 hook('recover', () => { if (confirm(`Après relecture et vérification de ${localDevice.id}, lever le blocage ? Cela autorisera de nouveaux resets.`)) agent.recover(); });
 
 function renderOperations() {
