@@ -41,7 +41,7 @@ test('manual UI and independent API drive the same browser Agent; binary round-t
   await page.click('[data-command="identify"]');await page.waitForFunction(()=>JSON.parse(document.querySelector('#result').textContent).state==='completed');
   const op=JSON.parse(await page.textContent('#result'));assert.equal(op.result.simulated,true);
   assert.equal(await page.locator('#devices').isDisabled(),true);
-  await page.click('#refresh');await page.waitForFunction(()=>document.querySelector('#devices').value==='board'&&document.querySelector('#devices').disabled);
+  await page.click('#refresh');await page.waitForFunction(()=>Array.isArray(JSON.parse(document.querySelector('#result').textContent).devices)&&document.querySelector('#devices').value==='board'&&document.querySelector('#devices').disabled);
   let submissions=0;page.on('request',request=>{if(request.method()==='POST'&&request.url().endsWith('/api/v1/operations'))submissions++;});
   await page.evaluate(()=>{document.querySelector('#devices').value='board-b';});
   await page.click('[data-command="reset"]');
