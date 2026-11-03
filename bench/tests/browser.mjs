@@ -161,6 +161,7 @@ test('instrumentation UI connects Web Serial without API credentials, captures b
   catch(error) { throw new Error(JSON.stringify({feedback:await page.textContent('#client-state'),journal:await page.textContent('#agent-log'),errors}),{cause:error}); }
   assert.ok((await page.textContent('#agent-log')).includes('Reconnexion de la carte'));
   // Following the tail is explicit and history selection never loses captured bytes.
+  await page.click('#format-text');
   await page.evaluate(()=>{for(let i=0;i<60;i++)window.__serialPort.controller.enqueue(new TextEncoder().encode('line '+i+'\n'));});
   await page.waitForFunction(()=>document.querySelector('#uart-log').textContent.includes('line 59'));
   await page.locator('#uart-log').evaluate(node=>{node.scrollTop=0;node.dispatchEvent(new Event('scroll'));});
