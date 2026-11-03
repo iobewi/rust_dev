@@ -79,6 +79,8 @@ async def run(url, token, device_id, grant=0, stop=None):
                 if m['type'] == 'offer':
                     pending[m['id']] = m
                     await ws.send_json({'type': 'ready', 'id': m['id']})
+                elif m['type'] == 'result_ack':
+                    await event('settled', id=m['id'])
                 elif m['type'] == 'execute':
                     op = pending.pop(m['id'], None)
                     if not op:

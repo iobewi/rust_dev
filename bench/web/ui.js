@@ -7,31 +7,31 @@ import { EspEngine } from './esp-engine.js';
 import { BenchClient } from './api-client.js';
 import { b64, unb64, manifestPlan } from './protocol.js';
 import { ConsoleBuffer } from './console-buffer.js';
-import { address, hex, flashPlan, requireTarget } from './ui-model.js';
+import { address, hex, flashPlan } from './ui-model.js';
 
 const $ = id => document.getElementById(id);
 const terminal = new Set(['completed', 'failed', 'expired', 'cancelled', 'indeterminate']);
 const safeCommands = new Set(['identify', 'partitions', 'flash.read', 'mark']);
 const actions = { read: 'flash.read', write: 'flash.write', erase: 'flash.erase', send: 'uart.write',
   configure: 'uart.configure', io0: 'io0', mark: 'mark', trigger: 'trigger', disarm: 'trigger', http: 'http.request' };
-let authorizing = false;
-let agent, engine, localDevice, portConnected = false, lease, current, working = false;
+let operationDevice;
+let agent, engine, localDevice, portConnected = false, current, working = false;
 let knownDevices = [], imagePlan = [], artifactList = [], confirmation;
 let format = 'text', paused = false, pausedAt = Infinity, renderPending = false, selectedOperation, lastConsoleKey;
 let streamController, streamGeneration = 0, refreshPromise, sessionOpened = false;
-const manualHistory = new Set();
+let session, sessionPromise;
 const captures = new Map(), cursors = new Map(), operationLog = new Map(), partitionCache = new Map();
-const api = () => new BenchClient($('client-token').value);
+const api = () => new BenchClient();
 const selected = () => $('devices').value;
 const info = id => knownDevices.find(d => d.id === (id || selected()));
 const capture = id => { if (!captures.has(id)) captures.set(id, new ConsoleBuffer()); return captures.get(id); };
 const feedback = message => { $('client-state').textContent = message; };
-const errorText = error => ({ unauthenticated: 'Accès refusé : vérifiez les tokens de session', forbidden: 'Droits API insuffisants',
+const errorText = error => ({ unauthenticated: 'Session du banc expirée : rétablissez la liaison au serveur', local_session_only: 'La session automatique nécessite un accès local direct au serveur', device_changed: 'La carte a changé : vérifiez et confirmez de nouveau la cible', forbidden: 'Droits API insuffisants',
   grant_required: 'Autorisation locale temporaire requise sur l’agent de cette carte', device_reserved: 'Carte déjà pilotée par un autre client',
   device_quarantined: 'Carte bloquée : relisez la flash avant la récupération opérateur', lease_expired: 'Pilotage expiré : reprenez la main',
   device_unavailable: 'Carte indisponible', flash_overlap: 'Les secteurs d’effacement se chevauchent' }[error.message] || diagnostic(error.message));
 const safely = fn => async () => { try { await fn(); } catch (error) {
-  if (error.message === 'lease_expired') { lease = null; confirmation = null; $('program-confirmation').hidden = true; }
+  if (['lease_expired', 'device_changed'].includes(error.message)) { confirmation = null; $('program-confirmation').hidden = true; }
   feedback(errorText(error)); renderState();
 } };
 const hook = (id, fn) => { $(id).onclick = safely(fn); };
@@ -60,6 +60,23 @@ const reconnect = new SerialReconnect({ ports: () => navigator.serial.getPorts()
     feedback(stage === 'identity_changed' ? diagnostic('physical_identity_changed') : stage === 'usb_connected' ? 'Carte reconnectée. Aucune opération rejouée.' : 'Reconnexion automatique de la carte…');
   } });
 
+async function openSession() {
+  if (session) return session;
+  if (!sessionPromise) sessionPromise = (async () => {
+    const response = await fetch('/session/v1/open', { method: 'POST', credentials: 'same-origin' });
+    if (!response.ok) throw new Error((await response.json()).error?.code || 'Session du banc indisponible');
+    session = await response.json();
+    if (!session.devices.includes($('device-id').value)) $('device-id').value = session.devices[0];
+    $('server-state').textContent = 'session locale ouverte';
+    return session;
+  })();
+  try { return await sessionPromise; } finally { sessionPromise = null; }
+}
+function selectedTarget() {
+  const d = info();
+  if (!session || !d?.connected) throw new Error('Connectez une carte au banc');
+  return { device: d.id, chip: d.chip, flash_size: d.flash_size, generation: d.generation };
+}
 function tab(name) {
   document.querySelectorAll('[data-tab]').forEach(button => button.setAttribute('aria-selected', String(button.dataset.tab === name)));
   document.querySelectorAll('.tab-panel').forEach(panel => { panel.hidden = panel.id !== 'panel-' + name; });
@@ -121,29 +138,25 @@ hook('export-events', () => { if (!selected()) throw new Error('Aucune carte sé
   events: buffer.events.map(({ bytes, ...rest }) => ({ ...rest, data: b64(bytes) })) }, null, 2)], { type: 'application/json' }), 'hardware-events.json'); });
 
 function renderDevices() {
-  const previous = lease?.device || selected();
+  const previous = operationDevice || selected();
   const devices = [...knownDevices];
   if (localDevice && !devices.some(d => d.id === localDevice.id)) devices.push({ ...localDevice, connected: portConnected, localOnly: true });
   $('devices').replaceChildren();
   for (const d of devices) { const option = document.createElement('option'); option.value = d.id; option.textContent = `${d.id} · ${d.chip}${d.connected ? '' : ' · absent'}`; $('devices').append(option); }
   $('devices').value = previous;
-  if (!selected() && !lease && devices.length) $('devices').value = localDevice?.id || devices[0].id;
+  if (!selected() && devices.length) $('devices').value = localDevice?.id || devices[0].id;
   renderState(); renderPartitions(); renderConsole();
 }
 function renderState() {
-  if (lease && lease.localUntil <= performance.now() && !working) { lease = null; confirmation = null; $('program-confirmation').hidden = true; }
   const d = info() || (localDevice?.id === selected() ? localDevice : null);
   const local = localDevice && selected() === localDevice.id;
   const blocked = d?.quarantined || local && engine?.hold;
   const ownBusy = local && (engine?.busy || agent?.active || agent?.awaitingResult);
   const capability = new Set(d?.capabilities || []);
-  const base = Boolean(lease && d?.connected && !working && !ownBusy);
+  const otherOwner = d?.reservation && d.reservation.owner !== session?.client;
+  const base = Boolean(session && info()?.connected && !working && !ownBusy && !otherOwner);
   document.querySelectorAll('[data-hardware]').forEach(button => { const command = button.dataset.command || actions[button.id]; button.disabled = !base || !capability.has(command) || Boolean(blocked && !safeCommands.has(command)); });
-  $('devices').disabled = Boolean(lease || working);
-  $('reserve').textContent = manualHistory.has(selected()) ? 'Reprendre la main' : 'Prendre la main';
-  $('reserve').hidden = Boolean(lease); $('release').hidden = !lease;
-  $('reserve').disabled = working || !info()?.connected || Boolean(d?.reservation && !lease);
-  $('release').disabled = working || Boolean(ownBusy);
+  $('devices').disabled = working;
   $('cancel').disabled = !working || !current;
   $('usb-state').textContent = portConnected ? 'connecté' : 'non connecté';
   $('device-mode').textContent = local ? engine?.mode || '—' : d?.connected ? 'Agent distant' : '—';
@@ -151,30 +164,29 @@ function renderState() {
   $('rdid-info').textContent = local && localDevice.flash_id != null ? hex(localDevice.flash_id) : '—';
   $('interface-info').textContent = local ? engine?.native ? 'USB Serial/JTAG' : 'UART externe' : 'Agent du banc';
   $('signals-info').textContent = capability.has('reset') && capability.has('io0') ? 'Disponibles' : 'Non exposés';
-  $('control-state').textContent = lease ? 'Pilotage manuel · vous' : d?.reservation ? 'Pilotée par : ' + d.reservation.owner : d?.connected && !d?.localOnly ? 'Disponible pour le pilotage distant' : 'Local · observation';
-  if (lease) $('lease-state').textContent = `Pilotage manuel : ${lease.device}`;
-  else $('lease-state').textContent = d?.reservation ? `Pilotée par : ${d.reservation.owner}` : 'Disponible pour le pilotage distant.';
+  $('control-state').textContent = working ? 'Opération manuelle en cours' : d?.reservation ? (otherOwner ? 'Pilotée par : ' + d.reservation.owner : 'Déclencheur ou opération en cours') : d?.connected && !d?.localOnly ? 'Disponible · commandes directes' : 'Local · observation';
+  $('lease-state').textContent = $('control-state').textContent;
   $('grant').disabled = !local || !agent?.generation; $('revoke').disabled = $('grant').disabled;
-  $('grant-state').textContent = local && agent?.grantUntil > performance.now() ? `Opérations sensibles autorisées : ${Math.ceil((agent.grantUntil - performance.now()) / 1000)} s` : 'Opérations sensibles : verrouillées';
+  $('grant-state').textContent = local && agent?.grantUntil > performance.now() ? `Opérations distantes autorisées : ${Math.ceil((agent.grantUntil - performance.now()) / 1000)} s` : 'Opérations distantes sensibles : verrouillées';
   $('revoke').hidden = !(local && agent?.grantUntil > performance.now());
   $('release-control').disabled = !local || !agent?.generation || Boolean(ownBusy || working) || !d?.reservation;
   activity();
   $('safety-state').textContent = local && agent?.awaitingResult ? 'Attente de l’accusé serveur' : blocked ? 'Blocage : récupération opérateur requise' : d ? 'Aucun blocage signalé' : 'Aucun état matériel connu';
   $('safety-state').classList.toggle('danger', Boolean(blocked));
   $('recover').disabled = !local || !agent?.generation || Boolean(ownBusy) || !blocked;
-  $('disconnect').disabled = !portConnected || working || Boolean(lease || ownBusy);
-  $('connect').disabled = working || Boolean(lease || portConnected);
+  $('disconnect').disabled = !portConnected || working || Boolean(ownBusy);
+  $('connect').disabled = working || Boolean(portConnected);
   $('reconnect').disabled = $('connect').disabled;
   $('footer-target').textContent = selected() ? `${selected()} · ${$('control-state').textContent}` : 'Aucune carte sélectionnée';
 }
 $('devices').onchange = () => {
-  if (lease && selected() !== lease.device) { $('devices').value = lease.device; feedback('La carte active reste liée à sa réservation.'); return; }
+  if (working && operationDevice) { $('devices').value = operationDevice; return; }
   confirmation = null; $('program-confirmation').hidden = true; $('download').replaceChildren(); $('hex-dump').textContent = 'Aucune donnée lue pour cette carte.';
   if (paused) pausedAt = capture(selected()).sequence;
   renderState(); renderPartitions(); renderConsole(); startStream();
 };
 async function refreshDevices(publish = true) {
-  if (!$('client-token').value) return;
+  if (!session) return;
   if (!refreshPromise) {
     refreshPromise = (async () => {
       const data = await api().request('devices'); knownDevices = data.devices; sessionOpened = true;
@@ -185,22 +197,22 @@ async function refreshDevices(publish = true) {
   try { const data = await request; if (publish) json(data); return data; }
   finally { if (refreshPromise === request) refreshPromise = null; }
 }
-hook('refresh', async () => { if (!$('client-token').value) { openAccess(); throw new Error('Ouvrez la session du banc pour lister les cartes'); } await refreshDevices(); });
+hook('refresh', async () => { await openSession(); await refreshDevices(); });
 
 async function startStream() {
-  const id = selected(), token = $('client-token').value;
-  if (!id || !token || !knownDevices.some(d => d.id === id)) {
+  const id = selected();
+  if (!id || !session || !knownDevices.some(d => d.id === id)) {
     streamController?.abort(); streamController = null; streamGeneration++; return;
   }
-  const key = id + ':' + token;
+  const key = id + ':' + session.client;
   if (streamController?.key === key && !streamController.signal.aborted) return;
   streamController?.abort(); const controller = new AbortController(); controller.key = key; streamController = controller;
   const generation = ++streamGeneration, cursor = cursors.get(id) || { next: 0, epoch: null };
   try {
-    for await (const batch of new BenchClient(token).events(id, cursor.next, controller.signal)) {
+    for await (const batch of api().events(id, cursor.next, controller.signal)) {
       if (controller.signal.aborted || generation !== streamGeneration) break;
       if (cursor.epoch && cursor.epoch !== batch.epoch) {
-        append('PERTE', 'Serveur redémarré : rupture de continuité', id); lease = null; confirmation = null; $('program-confirmation').hidden = true; cursor.next = 0; cursor.epoch = batch.epoch;
+        append('PERTE', 'Serveur redémarré : rupture de continuité', id); confirmation = null; $('program-confirmation').hidden = true; cursor.next = 0; cursor.epoch = batch.epoch;
         controller.abort(); streamController = null; if (selected() === id) startStream(); break;
       }
       cursor.epoch = batch.epoch;
@@ -220,7 +232,7 @@ async function startStream() {
 }
 
 async function attach(port, expectedIdentity = null) {
-  if (working || lease || agent?.active || engine?.busy || agent?.socket?.readyState === 1) throw new Error('Terminez le pilotage actif avant de changer de port');
+  if (working || agent?.active || engine?.busy || agent?.socket?.readyState === 1) throw new Error('Terminez le pilotage actif avant de changer de port');
   if (agent?.awaitingResult) engine.setHold(true);
   if (agent?.socket) { agent.socket.onclose = null; agent.socket.close(); }
   agent = null;
@@ -246,10 +258,10 @@ async function attach(port, expectedIdentity = null) {
       http_origins: $('http-origins').value.split(',').map(s => s.trim()).filter(Boolean).map(s => new URL(s).origin) };
     if (!held) await hardware.openConsole();
     portConnected = true; $('device-id').disabled = true; renderDevices(); $('devices').value = logicalId;
-    renderState(); renderConsole(); feedback('Port Web Serial connecté. Capture locale active ; ouvrez la session du banc pour le pilotage manuel ou distant.');
+    renderState(); renderConsole(); feedback('Carte connectée. Les commandes sont disponibles directement ; aucune prise de main préalable.');
     if (!expectedIdentity) reconnect.remember(port, identity);
     logAgent({ stage: 'usb_connected' });
-    if ($('agent-token').value) connectAgent();
+    if (session) connectAgent();
   } catch (error) {
     try { await hardware.close(); } catch { /* The failed port remains offline. */ }
     engine = null; localDevice = null; portConnected = false; renderState(); throw error;
@@ -257,58 +269,33 @@ async function attach(port, expectedIdentity = null) {
 }
 function connectAgent() {
   if (!engine || !localDevice || !portConnected) throw new Error('Connectez d’abord un port Web Serial');
-  if (!$('agent-token').value) { openAccess(); throw new Error('Renseignez l’accès agent pour le pilotage par API'); }
+  if (!session) throw new Error('Session locale du banc indisponible');
   if (engine.busy || agent?.active || [0, 1, 2].includes(agent?.socket?.readyState)) throw new Error('Agent déjà connecté ou matériel occupé');
   if (agent?.awaitingResult) engine.setHold(true);
-  agent = new Agent({ engine, device: localDevice, token: $('agent-token').value, onLog: logAgent, onActivity: activity, onState: state => {
+  agent = new Agent({ engine, device: localDevice, onLog: logAgent, onActivity: activity, onState: state => {
     $('agent-state').textContent = state === 'Agent connected' ? 'Agent connecté' : state.startsWith('Agent disconnected') ? 'Agent déconnecté · aucune commande rejouée' : state;
-    if (!agent?.generation && lease?.device === localDevice.id) { lease = null; confirmation = null; $('program-confirmation').hidden = true; }
+    if (!agent?.generation) { confirmation = null; $('program-confirmation').hidden = true; }
     $('server-state').textContent = agent?.generation ? 'agent connecté' : sessionOpened ? 'client connecté · agent absent' : 'agent non connecté';
     renderState();
     if (state === 'Agent connected') closeAccess();
-    if (state === 'Pilotage libéré par l’opérateur') { lease = null; refreshDevices(false).catch(error => feedback(errorText(error))); }
-    if (state === 'Agent connected' && $('client-token').value) {
+    if (state === 'Pilotage libéré par l’opérateur') { refreshDevices(false).catch(error => feedback(errorText(error))); }
+    if (state === 'Agent connected' && session) {
       (async () => { await refreshDevices(false); if (!info(localDevice.id)) await refreshDevices(false); })().catch(error => feedback(errorText(error)));
     }
   } });
   agent.connect();
 }
-hook('connect', async () => { if (!navigator.serial) throw new Error('Web Serial indisponible dans ce navigateur ou ce contexte'); await attach(await navigator.serial.requestPort()); });
-hook('reconnect', async () => { if (!navigator.serial) throw new Error('Web Serial indisponible'); const ports = await navigator.serial.getPorts(); if (ports.length !== 1) throw new Error('Choisissez explicitement le port série'); await attach(ports[0]); });
+hook('connect', async () => { if (!navigator.serial) throw new Error('Web Serial indisponible dans ce navigateur ou ce contexte'); const port = await navigator.serial.requestPort(); await openSession(); await attach(port); });
+hook('reconnect', async () => { if (!navigator.serial) throw new Error('Web Serial indisponible'); await openSession(); const ports = await navigator.serial.getPorts(); if (ports.length !== 1) throw new Error('Choisissez explicitement le port série'); await attach(ports[0]); });
 hook('disconnect', async () => {
-  if (working || lease || agent?.active || agent?.awaitingResult) throw new Error('Terminez la réservation et l’opération avant de déconnecter le port');
+  if (working || agent?.active || agent?.awaitingResult) throw new Error('Terminez la réservation et l’opération avant de déconnecter le port');
   reconnect.stop(); agent?.socket?.close(); await engine.close(); portConnected = false; $('device-id').disabled = false; renderState(); append('SYS', 'Port fermé par l’opérateur', localDevice.id);
 });
 hook('agent-connect', connectAgent);
-hook('session-open', async () => {
-  if (!$('client-token').value && !$('agent-token').value) throw new Error('Renseignez au moins un accès de session');
-  streamController?.abort(); streamController = null;
-  if (portConnected && $('agent-token').value && !agent?.generation) connectAgent();
-  if ($('client-token').value) { await refreshDevices(); closeAccess(); }
-  feedback('Session du banc ouverte sur ' + location.origin + '.');
-});
 hook('grant', () => { if (!agent?.generation) throw new Error('Agent local non connecté'); if (confirm(`Autoriser les opérations privilégiées sur ${localDevice.id} pendant ${$('grant-time').selectedOptions[0].textContent} ?`)) { agent.grant(Number($('grant-time').value)); renderState(); } });
 hook('revoke', () => { agent.grant(0); renderState(); });
 hook('release-control', () => { if (confirm('Libérer le pilotage abandonné et révoquer l’autorisation locale ? Une opération en cours empêchera cette action.')) agent.releaseControl(); });
 hook('recover', () => { if (confirm(`Après relecture et vérification de ${localDevice.id}, lever le blocage ? Cela autorisera de nouveaux resets.`)) agent.recover(); });
-
-hook('reserve', async () => {
-  if (!$('client-token').value) { openAccess(); throw new Error('Ouvrez la session du banc avant le pilotage manuel'); }
-  if (lease) throw new Error('Terminez le pilotage manuel actif avant de changer de carte');
-  const id = selected(), d = info(id);
-  if (!id || !d) throw new Error('Choisissez une carte enregistrée sur le banc');
-  const reserved = await api().request('leases', { method: 'POST', data: { device: id, ttl: 900 } });
-  lease = { ...reserved, chip: d.chip, flash_size: d.flash_size, localUntil: performance.now() + 900000 };
-  manualHistory.add(id);
-  $('devices').value = lease.device; renderState(); confirmation = null; $('program-confirmation').hidden = true;
-});
-hook('release', async () => {
-  if (working || agent?.active || agent?.awaitingResult) throw new Error('Attendez la fin de l’opération avant de changer de pilotage');
-  await api().request('leases/' + lease.id, { method: 'DELETE' }); lease = null;
-  await refreshDevices(false); feedback('Pilotage distant autorisé : carte disponible pour les clients API authentifiés.');
-});
-async function renewLease() { if (!lease || renewing || !sessionOpened || performance.now() < nextRenewal || performance.now() < lease.localUntil - 60000) return; renewing = true; nextRenewal = performance.now() + 30000; try { const target = lease; await api().request('leases/' + target.id, { method: 'PATCH', data: { ttl: 900 } }); if (lease === target) lease.localUntil = performance.now() + 900000; } catch (error) { feedback(errorText(error)); } finally { renewing = false; } }
-let renewing = false, nextRenewal = 0;
 
 function renderOperations() {
   const body = $('operations-body'); body.replaceChildren();
@@ -329,30 +316,12 @@ function recordOperation(op, started) {
   while (operationLog.size > 200) operationLog.delete(operationLog.keys().next().value);
   renderOperations(); if (!selectedOperation || selectedOperation === op.id) json(op);
 }
-const privilegedCommands = new Set(['flash.write', 'flash.erase', 'uart.write', 'io0', 'trigger', 'http.request']);
-async function authorizeIfNeeded(command, device) {
-  if (!privilegedCommands.has(command) || localDevice?.id !== device || !agent?.generation || agent.grantUntil > performance.now()) return;
-  const seconds = Number($('grant-time').value);
-  if (!confirm(`Autoriser les opérations sensibles sur ${device} pendant ${$('grant-time').selectedOptions[0].textContent} pour ${command} ?`)) throw new Error('Autorisation annulée : aucune commande envoyée');
-  agent.grant(seconds); renderState();
-  // Do not submit before the broker has received the grant on its separate WS connection.
-  const until = performance.now() + 5000;
-  while (performance.now() < until) {
-    await refreshDevices(false);
-    if (info(device)?.privileged_seconds > 0) return;
-    await new Promise(resolve => setTimeout(resolve, 100));
-  }
-  throw new Error('Autorisation non confirmée par le serveur : aucune commande envoyée');
-}
 async function submit(command, args = {}, destructive = false) {
-  const target = requireTarget(lease, selected());
-  if (working || authorizing) throw new Error('Une opération manuelle est déjà en cours');
-  authorizing = true;
-  try { await authorizeIfNeeded(command, target.device); } finally { authorizing = false; }
-  requireTarget(lease, selected());
-  working = true; current = null; renderState(); const started = performance.now(), client = api();
+  if (working) throw new Error('Une opération manuelle est déjà en cours');
+  const target = selectedTarget();
+  operationDevice = target.device; working = true; current = null; renderState(); const started = performance.now(), client = api();
   try {
-    let op = await client.request('operations', { method: 'POST', data: { lease: target.id, command, args, allow_destructive: destructive, timeout: command === 'flash.read' ? 600 : 120 } });
+    let op = await client.request('manual-operations', { method: 'POST', data: { device: target.device, generation: target.generation, command, args, allow_destructive: destructive, timeout: command === 'flash.read' ? 600 : 120 } });
     current = op.id; selectedOperation = op.id; recordOperation(op, started); renderState();
     for (;;) {
       if (terminal.has(op.state)) break;
@@ -366,7 +335,7 @@ async function submit(command, args = {}, destructive = false) {
     if (command === 'flash.read' && op.result?.artifact) await showDump(op.result.artifact, args.address, client);
     return op;
   } finally {
-    working = false; current = null;
+    working = false; operationDevice = null; current = null;
     await refreshDevices(false).catch(() => {}); renderState();
   }
 }
@@ -410,7 +379,7 @@ function renderImages() {
   }
 }
 function validatePlan() {
-  const target = requireTarget(lease, selected()), images = flashPlan(imagePlan, target.flash_size);
+  const target = selectedTarget(), images = flashPlan(imagePlan, target.flash_size);
   $('plan-state').textContent = `${images.length} images vérifiées · secteurs disjoints · aucune écriture effectuée.`;
   return { target, images };
 }
@@ -427,7 +396,7 @@ $('binary').onchange = safely(async () => {
 hook('clear-plan', () => { imagePlan = []; renderImages(); invalidatePlan(); });
 hook('validate-plan', () => validatePlan());
 hook('write', () => {
-  const { target, images } = validatePlan(); confirmation = { lease: target.id, device: target.device, chip: target.chip, images };
+  const { target, images } = validatePlan(); confirmation = { generation: target.generation, device: target.device, chip: target.chip, images };
   $('confirmation-target').textContent = `${target.device} · ${target.chip} · ${target.flash_size} octets`;
   const body = $('confirmation-regions'); body.replaceChildren();
   images.forEach((image, i) => { const row = document.createElement('tr'); for (const value of [imagePlan[i].name, hex(image.address), hex(image.address + imagePlan[i].size)]) { const cell = document.createElement('td'); cell.textContent = value; cell.className = 'mono'; row.append(cell); } body.append(row); });
@@ -435,14 +404,14 @@ hook('write', () => {
 });
 hook('cancel-write', () => { confirmation = null; $('program-confirmation').hidden = true; });
 hook('confirm-write', async () => {
-  const target = requireTarget(lease, selected());
-  if (!confirmation || confirmation.lease !== target.id || confirmation.device !== selected()) throw new Error('Confirmez à nouveau le plan pour cette réservation');
+  const target = selectedTarget();
+  if (!confirmation || confirmation.generation !== target.generation || confirmation.device !== selected()) throw new Error('La carte a changé : confirmez à nouveau le plan');
   const plan = confirmation; confirmation = null; $('program-confirmation').hidden = true;
   await submit('flash.write', { chip: plan.chip, images: plan.images, erase: false, return_console: true }, true);
 });
-hook('erase', async () => { const target = requireTarget(lease, selected()); if (confirm(`Effacer TOUTE la flash de ${target.device} (${target.chip}, ${target.flash_size} octets) ?`)) await submit('flash.erase', { chip: target.chip, return_console: false }, true); });
+hook('erase', async () => { const target = selectedTarget(); if (confirm(`Effacer TOUTE la flash de ${target.device} (${target.chip}, ${target.flash_size} octets) ?`)) await submit('flash.erase', { chip: target.chip, return_console: false }, true); });
 hook('install', async () => {
-  const target = requireTarget(lease, selected()), manifest = $('manifest').files[0]; if (!manifest) throw new Error('Choisissez un manifeste');
+  const target = selectedTarget(), manifest = $('manifest').files[0]; if (!manifest) throw new Error('Choisissez un manifeste');
   const parsed = JSON.parse(await manifest.text()), files = new Map();
   for (const file of [...$('manifest-files').files, ...$('manifest-directory').files]) {
     const path = file.webkitRelativePath ? file.webkitRelativePath.split('/').slice(1).join('/') : file.name;
@@ -484,16 +453,18 @@ navigator.serial?.addEventListener('disconnect', event => {
   engine.disconnected = true;
   if (agent?.active || agent?.awaitingResult) engine.setHold(true);
   engine.cancelTrigger(); engine.transport?.abort('closed', 'USB disconnected'); agent?.socket?.close();
-  portConnected = false; lease = null; confirmation = null; $('program-confirmation').hidden = true;
+  portConnected = false; confirmation = null; $('program-confirmation').hidden = true;
   renderState(); append('PERTE', 'Port USB déconnecté', localDevice.id); logAgent({ stage: 'usb_lost' });
   feedback('USB déconnecté. Reconnexion automatique de la même carte à son retour ; aucune opération rejouée.');
   reconnect.disconnected(port);
 });
 let refreshTimer;
 async function backgroundRefresh() {
-  if (sessionOpened && $('client-token').value) await refreshDevices(false).catch(error => { $('server-state').textContent = 'liaison interrompue'; feedback(errorText(error)); });
+  if (sessionOpened) await refreshDevices(false).catch(async error => { $('server-state').textContent = 'liaison interrompue'; feedback(errorText(error)); if (error.message === 'unauthenticated') { session = null; await openSession().catch(() => {}); } });
   refreshTimer = setTimeout(backgroundRefresh, 4000);
 }
-setInterval(() => { renderState(); renewLease(); }, 1000); backgroundRefresh();
+setInterval(renderState, 1000); backgroundRefresh();
 window.addEventListener('pagehide', () => { streamController?.abort(); clearTimeout(refreshTimer); reconnect.stop(); wake.update(false); });
 renderState(); renderConsole();
+
+openSession().then(() => refreshDevices(false)).catch(error => feedback(errorText(error)));

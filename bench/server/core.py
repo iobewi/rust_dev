@@ -91,6 +91,7 @@ class Broker:
                     self.device(op['device'])['quarantined'] = True
                 else:
                     op['state'], op['error'] = 'expired', {'code': 'command_expired'}
+        self.release_automatic()
         # Retain outcomes for one hour, never evict active or unsettled operations.
         for key, op in list(self.operations.items()):
             if op['state'] in TERMINAL and now - op['created'] > 3600 and not op.get('unsettled'):
@@ -137,6 +138,35 @@ class Broker:
                     op['state'] = 'cancelled'
                 op['error'] = {'code': reason}
 
+    def release_automatic(self):
+        for lease in list(self.leases.values()):
+            if not lease['active'] or not lease.get('automatic') or lease.get('keep_until', 0) > self.clock():
+                continue
+            ops = [op for op in self.operations.values() if op['lease'] == lease['id']]
+            if ops and all(op['state'] in TERMINAL and not op['unsettled'] and
+                           (not op['requires_settle'] or op['settled']) for op in ops):
+                self.release(lease['id'], lease['owner'])
+
+    def manual(self, owner, scopes, body, local_agent=None):
+        self.sweep()
+        require(isinstance(body, dict) and not body.keys() - {'device', 'generation', 'command', 'args', 'ttl', 'timeout', 'allow_destructive'})
+        d = self.device(body.get('device'))
+        require(body.get('generation') == d['generation'], 'device_changed', 'Device changed; confirm the target again', 409)
+        lease = next((x for x in self.leases.values() if x['active'] and x['device'] == d['id']), None)
+        require(not lease or lease['owner'] == owner and lease.get('automatic'), 'device_reserved', 'Device already reserved', 409)
+        created = lease is None
+        if created:
+            lease = self.leases[self.reserve(d['id'], owner, 900)['id']]
+            lease['automatic'] = True
+        else:
+            lease['until'] = self.clock() + 900
+        try:
+            return self.submit(owner, scopes, {k: v for k, v in body.items() if k not in {'device', 'generation'}} | {'lease': lease['id']}, local_agent)
+        except Exception:
+            if created:
+                self.release(lease['id'], owner)
+            raise
+
     def artifact(self, data, expected):
         require(0 < len(data) <= MAX_ARTIFACT, 'artifact_size', 'Invalid artifact size', 413)
         digest = hashlib.sha256(data).hexdigest()
@@ -147,7 +177,7 @@ class Broker:
         self.artifact_bytes += len(data)
         return {k: v for k, v in a.items() if k != 'data'}
 
-    def submit(self, owner, scopes, body):
+    def submit(self, owner, scopes, body, local_agent=None):
         self.sweep()
         require(isinstance(body, dict) and not (body.keys() - {'lease', 'command', 'args', 'ttl', 'timeout', 'allow_destructive'}))
         lease = self.lease(body.get('lease'), owner)
@@ -158,7 +188,8 @@ class Broker:
         name, args = body.get('command'), body.get('args', {})
         require('control' in scopes, 'forbidden', 'Control permission required', 403)
         validate_command(name, args, d, self.artifacts)
-        if name in PRIVILEGED:
+        local_control = local_agent is not None and local_agent == d['agent']
+        if name in PRIVILEGED and not local_control:
             require(d['grant_until'] > self.clock(), 'grant_required', 'Local operator grant required', 403)
         if name in PROGRAM:
             require('program' in scopes, 'program_permission_required', 'Programming permission required', 403)
@@ -170,7 +201,7 @@ class Broker:
         op = {'id': key, 'owner': owner, 'lease': lease['id'], 'device': d['id'], 'generation': d['generation'],
               'command': name, 'args': copy.deepcopy(args), 'state': 'queued', 'created': self.clock(),
               'deadline': self.clock() + ttl, 'timeout': timeout, 'error': None, 'result': None,
-              'cancel_requested': False, 'unsettled': False,
+              'cancel_requested': False, 'unsettled': False, 'local_control': local_control, 'requires_settle': False, 'settled': False,
               'artifact_ids': [i['artifact'] for i in args.get('images', [])]}
         self.operations[key] = op
         return self.operation(key, owner)
@@ -196,7 +227,7 @@ class Broker:
                     continue
                 op['state'] = 'offered'
                 return {'type': 'offer', 'id': op['id'], 'device': device, 'generation': d['generation'],
-                        'command': op['command'], 'args': op['args'], 'lease': op['lease'],
+                        'command': op['command'], 'args': op['args'], 'lease': op['lease'], 'local_control': op['local_control'],
                         'lease_deadline_ms': self.leases[op['lease']]['until'] * 1000,
                         'deadline_ms': op['deadline'] * 1000, 'remaining_ms': max(0, (op['deadline'] - self.clock()) * 1000),
                         'timeout_ms': op['timeout'] * 1000}
@@ -212,10 +243,10 @@ class Broker:
                 'device_quarantined', 'Device requires recovery', 409)
         require(op['state'] == 'offered', 'not_executable', 'Command no longer executable', 409)
         self.lease(op['lease'], op['owner'])
-        if op['command'] in PRIVILEGED:
+        if op['command'] in PRIVILEGED and not op['local_control']:
             require(d['grant_until'] > self.clock(), 'grant_required', 'Grant expired', 403)
         op['start_remaining_ms'] = max(0, (op['deadline'] - self.clock()) * 1000)
-        op['state'], op['unsettled'] = 'running', True
+        op['state'], op['unsettled'], op['requires_settle'] = 'running', True, True
         op['deadline'] = self.clock() + op['timeout']
         return {'type': 'execute', 'id': key, 'remaining_ms': op['start_remaining_ms'],
                 'deadline_ms': self.clock() * 1000 + op['start_remaining_ms'],
@@ -277,14 +308,25 @@ class Broker:
         require(d['agent'] == agent and d['connected'] and message.get('generation') == d['generation'],
                 'stale_agent', 'Invalid agent device', 409)
         kind = message.get('type')
-        if kind == 'grant':
+        if kind == 'settled':
+            op = self.operations.get(message.get('id'))
+            require(op is not None and op['device'] == d['id'] and op['generation'] == d['generation'] and
+                    op['state'] in TERMINAL and not op['unsettled'] and op['requires_settle'] and not op['settled'],
+                    'not_settleable', 'No acknowledged result to settle', 409)
+            op['settled'] = True
+            if op['command'] == 'trigger' and op['state'] == 'completed':
+                self.leases[op['lease']]['keep_until'] = (self.clock() + op['args']['expires_ms'] / 1000
+                    if op['args'].get('action') != 'disarm' else 0)
+            self.release_automatic()
+        elif kind == 'grant':
             seconds = number(message.get('seconds'), 0, 14400)
             d['grant_until'] = self.clock() + seconds
             self.event(d['id'], 'grant', {'seconds': seconds})
         elif kind == 'release_control':
             # Only the authenticated physical agent can release abandoned control.
             # Refuse while hardware or its result is unsettled, including timed-out work.
-            require(not any(o['device'] == d['id'] and (o['unsettled'] or o['state'] == 'running')
+            require(not any(o['device'] == d['id'] and (o['unsettled'] or o['state'] == 'running' or
+                    self.leases[o['lease']].get('automatic') and o['requires_settle'] and not o['settled'])
                             for o in self.operations.values()),
                     'still_running', 'Wait for hardware completion before releasing control', 409)
             d['grant_until'] = 0

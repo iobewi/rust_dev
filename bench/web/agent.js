@@ -15,7 +15,7 @@ export class Agent {
     this.log('connection');
     const url = new URL('/agent/v1/ws', location.href); url.protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
     this.socket = this.socketFactory(url);
-    this.socket.onopen = () => { this.authSent = this.now(); this.send({ type: 'auth', version: 1, token: this.token }); };
+    this.socket.onopen = () => { this.authSent = this.now(); this.send({ type: 'auth', version: 1, ...(this.token ? { token: this.token } : {}) }); };
     this.socket.onmessage = e => this.message(JSON.parse(e.data)).catch(() => this.onState('agent error'));
     this.socket.onclose = () => {
       this.generation = null; this.grantUntil = 0; this.cancelTrigger();
@@ -53,7 +53,7 @@ export class Agent {
     const phase = id ? 'artifact_download' : 'artifact_upload';
     try {
       const response = await fetch('/api/v1/artifacts' + (id ? '/' + id : ''), {
-        method: id ? 'GET' : 'POST', headers: { Authorization: 'Bearer ' + this.token,
+        method: id ? 'GET' : 'POST', headers: { ...(this.token ? { Authorization: 'Bearer ' + this.token } : {}),
           ...(bytes ? { 'X-SHA256': await sha256(bytes) } : {}) }, ...(bytes ? { body: bytes } : {}),
       });
       if (!response.ok) throw new HardwareError('artifact_transfer_failed', { phase, http_status: response.status });
@@ -86,6 +86,9 @@ export class Agent {
       const until = Math.min(op.until, m.deadline_ms - this.serverOffset - 100);
       const executionUntil = m.execution_deadline_ms - this.serverOffset - 100;
       if (this.now() >= until) {
+        const generation = this.generation, requiredHold = this.engine.hold;
+        this.awaitingResult = { id: op.id, generation, requiredHold, returnConsole: false, live: () => this.generation === generation };
+        this.engine.setHold(true); this.activity();
         this.send({ type: 'result', id: op.id, state: 'cancelled', error: { code: 'expired_before_execution' } }); return;
       }
       this.active = op; this.log('execute', { id: op.id, command: op.command }); this.activity();
@@ -93,7 +96,7 @@ export class Agent {
       // Persist before touching the port; a page crash must require operator review.
       this.engine.persistHold(true);
       const generation = this.generation;
-      const privileged = ['flash.write', 'flash.erase', 'uart.write', 'io0', 'trigger', 'http.request'].includes(op.command);
+      const privileged = ['flash.write', 'flash.erase', 'uart.write', 'io0', 'trigger', 'http.request'].includes(op.command) && !op.local_control;
       const leaseLive = () => this.generation === generation && this.socket?.readyState === 1 && !this.revoked.has(op.lease) && this.now() < op.lease_deadline_ms - this.serverOffset - 100 && (!privileged || this.now() < this.grantUntil);
       // The server starts this deadline before sending execute; network delay cannot extend it.
       const live = () => leaseLive() && this.now() < executionUntil;
@@ -147,7 +150,7 @@ export class Agent {
         this.engine.setHold(true); this.event('hold', {});
         this.onState('Console return failed; operator recovery required');
       } finally {
-        this.awaitingResult = null; this.log('acknowledged', { id: m.id, state: m.state }); this.activity();
+        this.awaitingResult = null; this.send({ type: 'settled', device: this.device.id, generation: this.generation, id: m.id }); this.log('acknowledged', { id: m.id, state: m.state }); this.activity();
         const offer = this.deferredOffer; this.deferredOffer = null;
         if (offer && this.generation) await this.message(offer);
       }

@@ -60,6 +60,69 @@ class CoreTests(unittest.TestCase):
             self.assertEqual(context.exception.code, code)
         self.assertEqual(self.b.operations, {})
 
+    def test_manual_operation_reserves_and_waits_for_agent_settlement_before_release(self):
+        self.b.release(self.lease['id'], 'alice')
+        op = self.b.manual('page', ['read', 'control'], {'device': 'board', 'generation': self.generation, 'command': 'identify'})
+        self.assertIsNotNone(self.b.view(self.b.device('board'))['reservation'])
+        self.b.offer('board'); self.b.commit('agent', op['id'])
+        self.b.finish('agent', {'id': op['id'], 'state': 'completed'})
+        self.b.sweep()
+        with self.assertRaises(Fault): self.b.reserve('board', 'bob', 10)
+        self.b.agent_event('agent', {'type': 'settled', 'device': 'board', 'generation': self.generation, 'id': op['id']})
+        self.assertIsNone(self.b.view(self.b.device('board'))['reservation'])
+        self.assertTrue(self.b.reserve('board', 'bob', 10))
+        with self.assertRaises(Fault):
+            self.b.agent_event('agent', {'type': 'settled', 'device': 'board', 'generation': self.generation, 'id': op['id']})
+
+    def test_manual_local_permission_is_bound_to_physical_agent_and_does_not_grant_remote_clients(self):
+        self.b.release(self.lease['id'], 'alice'); self.b.device('board')['grant_until'] = 0
+        body = {'device': 'board', 'generation': self.generation, 'command': 'flash.erase', 'args': {'chip': 'esp32s3'}, 'allow_destructive': True}
+        for local_agent in [None, 'other-agent']:
+            with self.assertRaises(Fault) as error: self.b.manual('page', ['control', 'program'], body, local_agent)
+            self.assertEqual(error.exception.code, 'grant_required')
+            self.assertIsNone(self.b.view(self.b.device('board'))['reservation'])
+        op = self.b.manual('page', ['control', 'program'], body, 'agent')
+        self.assertTrue(op['local_control']); self.assertEqual(self.b.device('board')['grant_until'], 0)
+        self.assertTrue(self.b.offer('board')['local_control'])
+        self.assertEqual(self.b.commit('agent', op['id'])['type'], 'execute')
+
+    def test_manual_stale_generation_and_missing_consent_never_leave_a_reservation(self):
+        self.b.release(self.lease['id'], 'alice')
+        body = {'device': 'board', 'generation': 'stale', 'command': 'identify'}
+        with self.assertRaises(Fault) as error: self.b.manual('page', ['control'], body)
+        self.assertEqual(error.exception.code, 'device_changed')
+        body.update(generation=self.generation, command='flash.erase', args={'chip': 'esp32s3'})
+        with self.assertRaises(Fault) as error: self.b.manual('page', ['control', 'program'], body, 'agent')
+        self.assertEqual(error.exception.code, 'destructive_consent_required')
+        self.assertIsNone(self.b.view(self.b.device('board'))['reservation'])
+
+    def test_automatic_queued_expiry_releases_but_running_timeout_keeps_uncertainty(self):
+        self.b.release(self.lease['id'], 'alice')
+        body = {'device': 'board', 'generation': self.generation, 'command': 'identify', 'ttl': 1, 'timeout': 1}
+        op = self.b.manual('page', ['control'], body); self.now += 2; self.b.sweep()
+        self.assertEqual(self.b.operations[op['id']]['state'], 'expired')
+        self.assertIsNone(self.b.view(self.b.device('board'))['reservation'])
+        op = self.b.manual('page', ['control'], body); self.b.offer('board'); self.b.commit('agent', op['id'])
+        self.now += 2; self.b.sweep()
+        self.assertTrue(self.b.device('board')['quarantined'])
+        self.assertIsNotNone(self.b.view(self.b.device('board'))['reservation'])
+        with self.assertRaises(Fault):
+            self.b.agent_event('agent', {'type': 'settled', 'device': 'board', 'generation': self.generation, 'id': op['id']})
+
+    def test_automatic_trigger_keeps_control_until_disarm_or_expiry(self):
+        self.b.release(self.lease['id'], 'alice'); self.b.device('board')['capabilities'].append('trigger')
+        self.b.device('board')['grant_until'] = 0
+        body = {'device': 'board', 'generation': self.generation, 'command': 'trigger',
+                'args': {'action': 'mark', 'data': 'YQ==', 'expires_ms': 1000}}
+        op = self.b.manual('page', ['control'], body, 'agent')
+        self.b.offer('board'); self.b.commit('agent', op['id']); self.b.finish('agent', {'id': op['id'], 'state': 'completed'})
+        self.b.agent_event('agent', {'type': 'settled', 'device': 'board', 'generation': self.generation, 'id': op['id']})
+        self.assertIsNotNone(self.b.view(self.b.device('board'))['reservation'])
+        disarm = self.b.manual('page', ['control'], {**body, 'args': {'action': 'disarm'}}, 'agent')
+        self.b.offer('board'); self.b.commit('agent', disarm['id']); self.b.finish('agent', {'id': disarm['id'], 'state': 'completed'})
+        self.b.agent_event('agent', {'type': 'settled', 'device': 'board', 'generation': self.generation, 'id': disarm['id']})
+        self.assertIsNone(self.b.view(self.b.device('board'))['reservation'])
+
     def test_exclusive_and_owner(self):
         with self.assertRaises(Fault): self.b.reserve('board', 'bob', 10)
         with self.assertRaises(Fault): self.b.lease(self.lease['id'], 'bob')

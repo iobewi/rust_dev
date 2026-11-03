@@ -6,7 +6,7 @@ import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 const { chromium }=createRequire(import.meta.url)('playwright');
 
-test('manual UI and independent API drive the same browser Agent; binary round-trip and disconnect',async()=>{
+test('automatic manual operations and independent API share exclusion across two browser agents',async()=>{
  const proc=spawn('python3',['tests/browser_fixture.py'],{cwd:new URL('..',import.meta.url),stdio:['ignore','pipe','pipe']});
  let stderr='';proc.stderr.on('data',b=>stderr+=b);
  const lines=createInterface({input:proc.stdout});
@@ -19,7 +19,7 @@ test('manual UI and independent API drive the same browser Agent; binary round-t
    const {Agent}=await import('/agent.js');
    const flash=new Uint8Array(4194304).fill(255);
    const engine={hold:false,persistHold(){},setHold(v){this.hold=v;},async execute(name,args,ctx){
-    ctx.check();
+    ctx.check();if(name==='identify'&&window.blockIdentify)await new Promise(resolve=>{window.releaseIdentify=resolve;});
     if(name==='flash.write'){for(const i of args.images)flash.set(await ctx.download(i.artifact),i.address);return {written:true};}
     if(name==='flash.read')return {artifact:await ctx.upload(flash.slice(args.address,args.address+args.size))};
     if(name==='reset')window.testAgent.event('uart',{data:'AP8NCg==',at:Date.now()});
@@ -36,29 +36,22 @@ test('manual UI and independent API drive the same browser Agent; binary round-t
    window.secondAgent.connect();
   });
   await page.waitForFunction(()=>window.secondAgent?.generation);
-  await page.click('#access-toggle');await page.fill('#client-token','client-alice-123456789');await page.click('#refresh');
-  await page.waitForSelector('#devices option',{state:'attached'});await page.click('#reserve');await page.waitForFunction(()=>document.querySelector('#lease-state').textContent.includes('Pilotage manuel'));
-  await page.click('[data-command="identify"]');await page.waitForFunction(()=>JSON.parse(document.querySelector('#result').textContent).state==='completed');
-  await page.waitForFunction(()=>!document.querySelector('[data-command="reset"]').disabled);
-  const op=JSON.parse(await page.textContent('#result'));assert.equal(op.result.simulated,true);
+  await page.waitForFunction(()=>document.querySelector('#devices').options.length===2);
+  assert.equal(await page.locator('#client-token').count(),0);assert.equal(await page.locator('#reserve').count(),0);
+  await page.selectOption('#devices','board');await page.evaluate(()=>{window.blockIdentify=true;});
+  await page.click('[data-command="identify"]');await page.waitForFunction(()=>typeof window.releaseIdentify==='function');
   assert.equal(await page.locator('#devices').isDisabled(),true);
-  await page.click('#refresh');await page.waitForFunction(()=>Array.isArray(JSON.parse(document.querySelector('#result').textContent).devices)&&document.querySelector('#devices').value==='board'&&document.querySelector('#devices').disabled);
-  let submissions=0;page.on('request',request=>{if(request.method()==='POST'&&request.url().endsWith('/api/v1/operations'))submissions++;});
-  await page.evaluate(()=>{document.querySelector('#devices').value='board-b';document.querySelector('[data-command="reset"]').click();});
-  await page.waitForFunction(()=>document.querySelector('#client-state').textContent.includes('diffère'));
-  assert.equal(submissions,0);
-  page.on('dialog',dialog=>dialog.accept());
-  await page.click('#tab-flash');await page.click('#write');await page.waitForFunction(()=>document.querySelector('#client-state').textContent.includes('diffère'));
-  assert.equal(submissions,0);
-  await page.evaluate(()=>{document.querySelector('#devices').value='board';});
-  await page.click('#release');await page.waitForFunction(()=>document.querySelector('#lease-state').textContent==='Disponible pour le pilotage distant.');
-  assert.equal(await page.locator('#devices').isDisabled(),false);
-  await page.selectOption('#devices','board-b');await page.click('#reserve');
-  await page.waitForFunction(()=>document.querySelector('#lease-state').textContent.includes('board-b'));
-  await page.click('[data-command="reset"]');
+  await page.evaluate(()=>{document.querySelector('#devices').value='board-b';});await page.click('#refresh');
+  await page.waitForFunction(()=>document.querySelector('#devices').value==='board');
+  await page.evaluate(()=>{window.releaseIdentify();window.blockIdentify=false;});
+  await page.waitForFunction(()=>JSON.parse(document.querySelector('#result').textContent).state==='completed');
+  assert.equal(JSON.parse(await page.textContent('#result')).device,'board');
+  await page.waitForFunction(async()=>{const r=await fetch('/api/v1/devices');return (await r.json()).devices.find(d=>d.id==='board').reservation===null;});
+  await page.waitForFunction(()=>!document.querySelector('#devices').disabled);
+  await page.selectOption('#devices','board-b');await page.click('[data-command="reset"]');
   await page.waitForFunction(()=>{const op=JSON.parse(document.querySelector('#result').textContent);return op.state==='completed'&&op.device==='board-b';});
   assert.equal(JSON.parse(await page.textContent('#result')).result.board,'board-b');
-  await page.click('#release');await page.waitForFunction(()=>document.querySelector('#lease-state').textContent==='Disponible pour le pilotage distant.');
+  await page.waitForFunction(async()=>{const r=await fetch('/api/v1/devices');return (await r.json()).devices.find(d=>d.id==='board-b').reservation===null;});
   await page.evaluate(()=>window.testAgent.grant(60));
   const auth={Authorization:'Bearer client-alice-123456789'};
   async function api(path,method='GET',body){const r=await fetch(url+'/api/v1/'+path,{method,headers:{...auth,'Content-Type':'application/json'},...(body?{body:JSON.stringify(body)}:{})});assert.ok(r.ok,await r.clone().text());return r.json();}
@@ -82,7 +75,7 @@ test('manual UI and independent API drive the same browser Agent; binary round-t
  }finally{await browser?.close();proc.kill('SIGTERM');lines.close();}
 });
 
-test('instrumentation UI connects Web Serial without API credentials, captures binary and then opens authenticated manual control', async () => {
+test('local browser session connects Web Serial and drives automatic per-operation control without tokens', async () => {
  const { readFile } = await import('node:fs/promises');
  const proc=spawn('python3',['tests/browser_fixture.py'],{cwd:new URL('..',import.meta.url),stdio:['ignore','pipe','pipe']});
  let stderr='';proc.stderr.on('data',b=>stderr+=b);const lines=createInterface({input:proc.stdout});let browser;
@@ -102,12 +95,12 @@ test('instrumentation UI connects Web Serial without API credentials, captures b
    Object.defineProperty(navigator,'serial',{value:serial,configurable:true});
   });
   await page.goto(url);assert.equal(await page.locator('#access-panel').isVisible(),false);
-  await page.click('#access-toggle');await page.fill('#device-id','board');await page.click('#access-toggle');
+  await page.waitForFunction(()=>document.querySelector('#device-id').value==='board');
   await page.click('#connect');await page.waitForFunction(()=>document.querySelector('#usb-state').textContent==='connecté'||!document.querySelector('#client-state').textContent.startsWith('Connectez un port série'));
   assert.equal(await page.textContent('#usb-state'),'connecté',JSON.stringify({feedback:await page.textContent('#client-state'),errors}));
   await page.waitForFunction(()=>document.querySelector('#uart-log').textContent.includes('READY'));
-  assert.equal(await page.textContent('#server-state'),'session non ouverte');
-  assert.equal(await page.locator('[data-command="reset"]').isDisabled(),true);
+  await page.waitForFunction(()=>document.querySelector('#agent-state').textContent==='Agent connecté');
+  await page.waitForFunction(()=>!document.querySelector('[data-command="reset"]').disabled);
   await page.click('#format-hex');await page.waitForFunction(()=>document.querySelector('#uart-log').textContent.includes('00 ff'));
   await page.click('#pause');const frozen=await page.textContent('#uart-log');
   await page.evaluate(()=>window.__serialPort.controller.enqueue(new Uint8Array([42,43])));
@@ -115,12 +108,9 @@ test('instrumentation UI connects Web Serial without API credentials, captures b
   await page.click('#pause');await page.waitForFunction(()=>document.querySelector('#uart-log').textContent.includes('2a 2b'));
   await page.click('#clear-display');const downloading=page.waitForEvent('download');await page.click('#export');
   const download=await downloading;assert.deepEqual(new Uint8Array(await readFile(await download.path())),new Uint8Array([82,69,65,68,89,13,10,0,255,42,43]));
-  await page.click('#access-toggle');await page.fill('#agent-token','agent-secret-12345678');await page.fill('#client-token','client-alice-123456789');
-  await page.click('#session-open');await page.waitForFunction(()=>document.querySelector('#agent-state').textContent==='Agent connecté');
-  await page.waitForFunction(()=>!document.querySelector('#reserve').disabled);
+  assert.equal(await page.locator('#agent-token').count(),0);assert.equal(await page.locator('#client-token').count(),0);
+  assert.equal(await page.locator('#reserve').count(),0);
   assert.equal(await page.locator('#access-panel').isVisible(),false);
-  await page.click('#reserve');await page.waitForFunction(()=>document.querySelector('#control-state').textContent==='Pilotage manuel · vous');
-  assert.equal(await page.textContent('#release'),'Autoriser le pilotage distant');
   await page.click('#tab-partitions');await page.click('[data-command="partitions"]');
   await page.waitForFunction(()=>document.querySelector('#partitions-body').textContent.includes('factory'));
   await page.waitForFunction(()=>!document.querySelector('#read').disabled);
@@ -144,14 +134,15 @@ test('instrumentation UI connects Web Serial without API credentials, captures b
   await page.click('#write');await page.waitForSelector('#program-confirmation');assert.ok((await page.textContent('#confirmation-target')).includes('board'));
   assert.ok((await page.textContent('#confirmation-regions')).includes('0x00020004'));
   await page.click('#cancel-write');assert.equal(await page.locator('#program-confirmation').isVisible(),false);
-  // Authorization is requested at the action, not as an extra prerequisite panel.
-  await page.fill('#uart','00 ff');page.once('dialog',dialog=>dialog.accept());await page.click('#send');
+  // Local UART TX uses only this operation's authority; it must not open a remote grant.
+  await page.waitForFunction(()=>!document.querySelector('#send').disabled);
+  await page.fill('#uart','00 ff');await page.click('#send');
   await page.waitForFunction(()=>{const op=JSON.parse(document.querySelector('#result').textContent);return op.command==='uart.write'&&op.state==='completed';});
-  await page.waitForSelector('#revoke',{state:'visible'});await page.click('#revoke');
-  await page.waitForFunction(()=>document.querySelector('#revoke').hidden);
-  await page.waitForFunction(()=>!document.querySelector('#release').disabled);await page.click('#release');
-  await page.waitForFunction(()=>document.querySelector('#control-state').textContent==='Disponible pour le pilotage distant');
-  assert.equal(await page.textContent('#usb-state'),'connecté');assert.equal(await page.locator('[data-command="reset"]').isDisabled(),true);
+  await page.waitForFunction(async()=>{const r=await fetch('/api/v1/devices');return (await r.json()).devices[0].reservation===null;});
+  assert.equal(await page.locator('#revoke').isVisible(),false);
+  const localState=await page.evaluate(async()=>{const r=await fetch('/api/v1/devices');return (await r.json()).devices[0];});
+  assert.equal(localState.privileged_seconds,0);
+  assert.equal(await page.textContent('#usb-state'),'connecté');
   // Physical agent can release an orphan reservation without restarting the server.
   const orphan=await fetch(url+'/api/v1/leases',{method:'POST',headers:{Authorization:'Bearer client-bob-1234567890','Content-Type':'application/json'},body:JSON.stringify({device:'board',ttl:60})});
   assert.equal(orphan.status,201);
