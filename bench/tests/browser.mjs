@@ -37,7 +37,7 @@ test('manual UI and independent API drive the same browser Agent; binary round-t
   });
   await page.waitForFunction(()=>window.secondAgent?.generation);
   await page.click('#access-toggle');await page.fill('#client-token','client-alice-123456789');await page.click('#refresh');
-  await page.waitForSelector('#devices option',{state:'attached'});await page.click('#reserve');await page.waitForFunction(()=>document.querySelector('#lease-state').textContent.includes('Réservation'));
+  await page.waitForSelector('#devices option',{state:'attached'});await page.click('#reserve');await page.waitForFunction(()=>document.querySelector('#lease-state').textContent.includes('Pilotage manuel'));
   await page.click('[data-command="identify"]');await page.waitForFunction(()=>JSON.parse(document.querySelector('#result').textContent).state==='completed');
   await page.waitForFunction(()=>!document.querySelector('[data-command="reset"]').disabled);
   const op=JSON.parse(await page.textContent('#result'));assert.equal(op.result.simulated,true);
@@ -96,7 +96,9 @@ test('instrumentation UI connects Web Serial without API credentials, captures b
    const port={readable:null,writable:null,controller:null,signals:[],getInfo:()=>({usbVendorId:0x1a86}),
     async open(){if(this.readable)throw new Error('Port already open');this.readable=new ReadableStream({start:controller=>{this.controller=controller;controller.enqueue(new Uint8Array([82,69,65,68,89,13,10,0,255]));}});this.writable=new WritableStream();},
     async close(){try{this.controller?.close();}catch{}this.readable=null;this.writable=null;},async setSignals(value){this.signals.push(value);}};
-   serial.requestPort=async()=>port;serial.getPorts=async()=>[port];window.__serialPort=port;
+   serial.requestPort=async()=>port;serial.getPorts=async()=>[port];window.__serialPort=port;window.__serial=serial;
+   window.__wakeRequests=0;window.__wakeReleases=0;
+   Object.defineProperty(navigator,'wakeLock',{value:{request:async()=>{window.__wakeRequests++;const lock=new EventTarget();lock.release=async()=>{window.__wakeReleases++;lock.dispatchEvent(new Event('release'));};return lock;}},configurable:true});
    Object.defineProperty(navigator,'serial',{value:serial,configurable:true});
   });
   await page.goto(url);assert.equal(await page.locator('#access-panel').isVisible(),false);
@@ -113,13 +115,16 @@ test('instrumentation UI connects Web Serial without API credentials, captures b
   await page.click('#clear-display');const downloading=page.waitForEvent('download');await page.click('#export');
   const download=await downloading;assert.deepEqual(new Uint8Array(await readFile(await download.path())),new Uint8Array([82,69,65,68,89,13,10,0,255,42,43]));
   await page.click('#access-toggle');await page.fill('#agent-token','agent-secret-12345678');await page.fill('#client-token','client-alice-123456789');
-  await page.click('#session-open');await page.waitForFunction(()=>document.querySelector('#agent-state').textContent==='Agent connected');
+  await page.click('#session-open');await page.waitForFunction(()=>document.querySelector('#agent-state').textContent==='Agent connecté');
   await page.waitForFunction(()=>!document.querySelector('#reserve').disabled);
+  assert.equal(await page.locator('#access-panel').isVisible(),false);
   await page.click('#reserve');await page.waitForFunction(()=>document.querySelector('#control-state').textContent==='Pilotage manuel · vous');
   assert.equal(await page.textContent('#release'),'Autoriser le pilotage distant');
   await page.click('#tab-partitions');await page.click('[data-command="partitions"]');
   await page.waitForFunction(()=>document.querySelector('#partitions-body').textContent.includes('factory'));
   await page.waitForFunction(()=>!document.querySelector('#read').disabled);
+  await page.waitForFunction(()=>window.__wakeRequests>0&&window.__wakeReleases>0);
+  assert.ok((await page.textContent('#agent-log')).includes('partitions'));
   await page.click('#tab-memory');await page.fill('#address','0x10000');await page.fill('#size','64');await page.click('#read');
   await page.waitForFunction(()=>document.querySelector('#dump-state').textContent.includes('64 octets'));
   assert.ok((await page.textContent('#hex-dump')).includes('ff ff'));
@@ -132,6 +137,28 @@ test('instrumentation UI connects Web Serial without API credentials, captures b
   await page.waitForFunction(()=>!document.querySelector('#release').disabled);await page.click('#release');
   await page.waitForFunction(()=>document.querySelector('#control-state').textContent==='Disponible pour le pilotage distant');
   assert.equal(await page.textContent('#usb-state'),'connecté');assert.equal(await page.locator('[data-command="reset"]').isDisabled(),true);
+  // Physical agent can release an orphan reservation without restarting the server.
+  const orphan=await fetch(url+'/api/v1/leases',{method:'POST',headers:{Authorization:'Bearer client-bob-1234567890','Content-Type':'application/json'},body:JSON.stringify({device:'board',ttl:60})});
+  assert.equal(orphan.status,201);
+  await page.waitForFunction(()=>!document.querySelector('#release-control').disabled);
+  await page.locator('#release-control').evaluate(node=>{node.closest('details').open=true;});
+  page.once('dialog',dialog=>dialog.accept());await page.click('#release-control');
+  await page.waitForFunction(()=>document.querySelector('#agent-log').textContent.includes('Pilotage libéré'));
+  const released=await fetch(url+'/api/v1/devices',{headers:{Authorization:'Bearer client-alice-123456789'}});
+  assert.equal((await released.json()).devices.find(d=>d.id==='board').reservation,null);
+  // USB return reconnects only the selected port, with a fresh agent generation.
+  const generation=await page.evaluate(async()=>{const r=await fetch('/api/v1/devices',{headers:{Authorization:'Bearer client-alice-123456789'}});return (await r.json()).devices[0].generation;});
+  await page.evaluate(async()=>{const port=window.__serialPort;port.controller.error(new DOMException('Unplugged','NetworkError'));await port.close();const event=new Event('disconnect');Object.defineProperty(event,'port',{value:port});window.__serial.dispatchEvent(event);});
+  await page.waitForFunction(()=>document.querySelector('#usb-state').textContent==='non connecté');
+  await page.waitForFunction(async old=>{const r=await fetch('/api/v1/devices',{headers:{Authorization:'Bearer client-alice-123456789'}});const d=(await r.json()).devices[0];return d.connected&&d.generation!==old;},generation);
+  assert.equal(await page.textContent('#usb-state'),'connecté');
+  assert.ok((await page.textContent('#agent-log')).includes('Reconnexion de la carte'));
+  // Following the tail is explicit and history selection never loses captured bytes.
+  await page.evaluate(()=>{for(let i=0;i<60;i++)window.__serialPort.controller.enqueue(new TextEncoder().encode('line '+i+'\n'));});
+  await page.waitForFunction(()=>document.querySelector('#uart-log').textContent.includes('line 59'));
+  await page.locator('#uart-log').evaluate(node=>{node.scrollTop=0;node.dispatchEvent(new Event('scroll'));});
+  await page.waitForSelector('#follow',{state:'visible'});await page.click('#follow');
+  await page.waitForFunction(()=>document.querySelector('#follow').hidden);
   // A narrow viewport must retain the console and put dense tables in their own horizontal scroller.
   await page.setViewportSize({width:360,height:900});assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
   assert.deepEqual(errors,[]);

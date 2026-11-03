@@ -161,8 +161,8 @@ class Broker:
         if name in PRIVILEGED:
             require(d['grant_until'] > self.clock(), 'grant_required', 'Local operator grant required', 403)
         if name in PROGRAM:
-            require('program' in scopes and body.get('allow_destructive') is True,
-                    'destructive_not_authorized', 'Explicit programming permission and consent required', 403)
+            require('program' in scopes, 'program_permission_required', 'Programming permission required', 403)
+            require(body.get('allow_destructive') is True, 'destructive_consent_required', 'Explicit programming consent required', 403)
         require(len(self.operations) < 4096, 'capacity', 'Operation store full', 503)
         ttl, timeout = body.get('ttl', 30), body.get('timeout', 120)
         number(ttl, 0.1, 120); number(timeout, 0.1, 600)
@@ -281,6 +281,17 @@ class Broker:
             seconds = number(message.get('seconds'), 0, 14400)
             d['grant_until'] = self.clock() + seconds
             self.event(d['id'], 'grant', {'seconds': seconds})
+        elif kind == 'release_control':
+            # Only the authenticated physical agent can release abandoned control.
+            # Refuse while hardware or its result is unsettled, including timed-out work.
+            require(not any(o['device'] == d['id'] and (o['unsettled'] or o['state'] == 'running')
+                            for o in self.operations.values()),
+                    'still_running', 'Wait for hardware completion before releasing control', 409)
+            d['grant_until'] = 0
+            for lease in list(self.leases.values()):
+                if lease['device'] == d['id'] and lease['active']:
+                    self.release(lease['id'], lease['owner'], 'operator_released')
+            self.event(d['id'], 'control_released', {})
         elif kind == 'hold':
             d['quarantined'] = True
             self.event(d['id'], 'quarantined', {})

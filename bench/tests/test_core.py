@@ -25,6 +25,41 @@ class CoreTests(unittest.TestCase):
     def start(self, **opts):
         op = self.submit(**opts); self.b.offer('board'); self.b.commit('agent', op['id']); return op
 
+    def test_operator_release_cancels_queue_and_revokes_grant(self):
+        queued = self.submit()
+        self.b.agent_event('agent', {'type': 'release_control', 'device': 'board', 'generation': self.generation})
+        self.assertIsNone(self.b.view(self.b.device('board'))['reservation'])
+        self.assertEqual(self.b.devices['board']['grant_until'], 0)
+        self.assertEqual(self.b.operations[queued['id']]['state'], 'cancelled')
+        self.assertFalse(self.b.device('board')['quarantined'])
+        self.assertTrue(self.b.reserve('board', 'bob', 10))
+
+    def test_operator_release_refuses_unsettled_execution_including_timeout(self):
+        self.start(timeout=1)
+        for expired in [False, True]:
+            if expired:
+                self.now += 2
+                self.b.sweep()
+            with self.assertRaises(Fault) as context:
+                self.b.agent_event('agent', {'type': 'release_control', 'device': 'board', 'generation': self.generation})
+            self.assertEqual(context.exception.code, 'still_running')
+        self.assertTrue(self.b.device('board')['quarantined'])
+
+    def test_stale_or_other_agent_cannot_release_control(self):
+        for agent, generation in [('other', self.generation), ('agent', 'stale')]:
+            with self.assertRaises(Fault):
+                self.b.agent_event(agent, {'type': 'release_control', 'device': 'board', 'generation': generation})
+        self.assertIsNotNone(self.b.view(self.b.device('board'))['reservation'])
+
+    def test_program_scope_and_consent_are_distinct_and_never_queue_work(self):
+        body = {'lease': self.lease['id'], 'command': 'flash.erase', 'args': {'chip': 'esp32s3'}}
+        for scopes, consent, code in [(['control'], True, 'program_permission_required'),
+                                       (['control', 'program'], False, 'destructive_consent_required')]:
+            with self.assertRaises(Fault) as context:
+                self.b.submit('alice', scopes, {**body, 'allow_destructive': consent})
+            self.assertEqual(context.exception.code, code)
+        self.assertEqual(self.b.operations, {})
+
     def test_exclusive_and_owner(self):
         with self.assertRaises(Fault): self.b.reserve('board', 'bob', 10)
         with self.assertRaises(Fault): self.b.lease(self.lease['id'], 'bob')

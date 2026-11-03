@@ -180,3 +180,17 @@ test('console return failure reasserts the hold and informs the broker',async()=
  await x.agent.message({type:'result_ack',id:'op',generation:'gen',quarantined:false});
  assert.equal(x.engine.hold,true);assert.equal(x.messages.at(-1).type,'hold');
 });
+
+test('agent publishes safe diagnostics and activity until acknowledgement',async()=>{
+ const { HardwareError }=await import('../web/hardware-errors.js');const x=setup(),logs=[],activity=[];
+ x.agent.onLog=e=>logs.push(e);x.agent.onActivity=v=>activity.push(v);
+ x.engine.execute=async()=>{throw new HardwareError('console_required');};
+ await x.agent.message(x.offer());await x.agent.message({type:'execute',id:'op',deadline_ms:performance.now()+11000,execution_deadline_ms:performance.now()+121000});
+ assert.equal(x.messages.at(-1).error.code,'console_required');assert.equal(logs.at(-1).command,'identify');assert.equal(activity[0],true);
+ await x.agent.message({type:'result_ack',id:'op',generation:'gen',quarantined:false});assert.equal(activity.at(-1),false);
+});
+test('local release refuses active work and does not clear a safety hold',()=>{
+ const x=setup();x.engine.hold=true;x.agent.active={};assert.throws(()=>x.agent.releaseControl());
+ x.agent.active=null;x.agent.releaseControl();assert.equal(x.engine.hold,true);assert.equal(x.agent.grantUntil<=performance.now(),true);
+ assert.equal(x.messages.at(-1).type,'release_control');
+});

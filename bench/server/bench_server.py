@@ -213,8 +213,8 @@ async def websocket(request):
                     await ws.send_json(b.finish(identity['id'], message))
                 else:
                     b.agent_event(identity['id'], message)
-                    if kind == 'recover':
-                        await ws.send_json({'type': 'recovered', 'device': message['device'], 'generation': message['generation']})
+                    if kind in {'recover', 'release_control'}:
+                        await ws.send_json({'type': 'recovered' if kind == 'recover' else 'control_released', 'device': message['device'], 'generation': message['generation']})
             except (Fault, ValueError, KeyError, TypeError) as e:
                 await ws.send_json({'type': 'error', 'id': message.get('id') if isinstance(message, dict) else None,
                                     'error': {'code': getattr(e, 'code', 'invalid_message')}})

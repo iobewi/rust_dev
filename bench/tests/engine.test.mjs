@@ -93,3 +93,8 @@ test('rearming cancels a pending action from the previous trigger',async()=>{
  await new Promise(resolve=>setTimeout(resolve,40));assert.equal(resets,0);
  x.engine.matchTrigger(new Uint8Array([98]));await new Promise(resolve=>setTimeout(resolve,5));assert.equal(resets,1);
 });
+
+test('partition failure identifies the address problem without exposing raw flash bytes',async()=>{
+ const x=await setup();x.loader.readFlash=async()=>new Uint8Array(0xc00).fill(255);
+ await assert.rejects(x.engine.execute('partitions',{address:0x8000},x.context),e=>e.code==='partition_table_invalid');
+});

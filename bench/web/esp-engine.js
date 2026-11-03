@@ -1,4 +1,5 @@
 // Hardware only: no DOM, REST, project readiness rules or verdicts.
+import { HardwareError } from './hardware-errors.js';
 import { makeBenchTransport } from './bench-transport.js';
 import { runWrite, Tracer } from './flash-op.js';
 import { b64, unb64, family, region, validateImages, partitions, sha256 } from './protocol.js';
@@ -23,8 +24,9 @@ export class EspEngine {
     return this.native ? caps : [...caps, 'reset', 'io0'];
   }
   async openConsole() {
-    if (this.hold) throw new Error('Operator recovery required before opening console');
+    if (this.hold) throw new HardwareError('operator_recovery_required');
     if (this.mode === 'console') return;
+    this.event('transport', { detail: 'opening console' });
     if (this.transport) { await this.transport.disconnect(); this.transport = null; this.loader = null; }
     await this.port.open({ baudRate: this.baudrate });
     await this.port.setSignals({ dataTerminalReady: false, requestToSend: false });
@@ -60,6 +62,7 @@ export class EspEngine {
   async openLoader() {
     if (this.loader) return this.loader;
     await this.closeConsole();
+    this.event('transport', { detail: 'opening loader' });
     const { ESPLoader, Transport, ESPError } = this.deps;
     const { BenchTransport } = makeBenchTransport(Transport, ESPError);
     this.transport = new BenchTransport(this.port, false);
@@ -78,8 +81,8 @@ export class EspEngine {
     return { chip, flash_size: 2 ** code, flash_id: id, mac: await l.chip.readMac(l) };
   }
   async reset() {
-    if (this.native) throw new Error('Native USB has no EN line');
-    if (this.mode !== 'console') throw new Error('Reset requires console mode');
+    if (this.native) throw new HardwareError('external_uart_required');
+    if (this.mode !== 'console') throw new HardwareError('console_required');
     await this.port.setSignals({ dataTerminalReady: false, requestToSend: true });
     try { await sleep(100); } finally { await this.port.setSignals({ dataTerminalReady: false, requestToSend: false }); }
   }
@@ -142,7 +145,8 @@ export class EspEngine {
       if (command === 'console') { await this.openConsole(); return { mode: this.mode }; }
       if (command === 'reset') { await this.reset(); return { reset: true }; }
       if (command === 'io0') {
-        if (this.native || this.mode !== 'console') throw new Error('IO0 requires external UART console');
+        if (this.native) throw new HardwareError('external_uart_required');
+        if (this.mode !== 'console') throw new HardwareError('console_required');
         await this.port.setSignals({ dataTerminalReady: true, requestToSend: false });
         try { await sleep(args.duration_ms); } finally { await this.port.setSignals({ dataTerminalReady: false, requestToSend: false }); }
         return { duration_ms: args.duration_ms };
@@ -152,7 +156,7 @@ export class EspEngine {
         await this.openConsole(); return { baudrate: this.baudrate };
       }
       if (command === 'uart.write') {
-        if (this.mode !== 'console') throw new Error('UART console is not open');
+        if (this.mode !== 'console') throw new HardwareError('console_required');
         const writer = this.port.writable.getWriter();
         try { await writer.write(unb64(args.data)); } finally { writer.releaseLock(); }
         return { sent: unb64(args.data).length };
@@ -170,14 +174,16 @@ export class EspEngine {
       const physical = await this.identity(), l = this.loader;
       if (command.startsWith('flash.') || command === 'partitions') {
         if (args.chip && args.chip !== physical.chip) throw new Error('Physical chip mismatch');
-        if (physical.chip !== context.device.chip || physical.flash_size !== context.device.flash_size) throw new Error('Device identity changed');
+        if (physical.chip !== context.device.chip || physical.flash_size !== context.device.flash_size) throw new HardwareError('physical_identity_changed');
       }
       context.check();
       let result;
       if (command === 'identify') result = physical;
       else if (command === 'partitions') {
         region(args.address ?? 0x8000, 0xc00, physical.flash_size);
-        result = { partitions: partitions(await l.readFlash(args.address ?? 0x8000, 0xc00), physical.flash_size) };
+        const bytes = await l.readFlash(args.address ?? 0x8000, 0xc00);
+        try { result = { partitions: partitions(bytes, physical.flash_size) }; if (!result.partitions.length) throw new Error('Empty table'); }
+        catch { throw new HardwareError('partition_table_invalid'); }
       } else if (command === 'flash.read') {
         region(args.address, args.size, physical.flash_size);
         const data = await l.readFlash(args.address, args.size);

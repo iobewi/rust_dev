@@ -1,3 +1,7 @@
+import { HardwareError, diagnostic } from './hardware-errors.js';
+import { WorkWakeLock } from './wake-lock.js';
+import { SerialReconnect } from './serial-reconnect.js';
+import { AgentJournal } from './agent-journal.js';
 import { Agent } from './agent.js';
 import { EspEngine } from './esp-engine.js';
 import { BenchClient } from './api-client.js';
@@ -10,6 +14,7 @@ const terminal = new Set(['completed', 'failed', 'expired', 'cancelled', 'indete
 const safeCommands = new Set(['identify', 'partitions', 'flash.read', 'mark']);
 const actions = { read: 'flash.read', write: 'flash.write', erase: 'flash.erase', send: 'uart.write',
   configure: 'uart.configure', io0: 'io0', mark: 'mark', trigger: 'trigger', disarm: 'trigger', http: 'http.request' };
+let authorizing = false;
 let agent, engine, localDevice, portConnected = false, lease, current, working = false;
 let knownDevices = [], imagePlan = [], artifactList = [], confirmation;
 let format = 'text', paused = false, pausedAt = Infinity, renderPending = false, selectedOperation, lastConsoleKey;
@@ -23,8 +28,8 @@ const capture = id => { if (!captures.has(id)) captures.set(id, new ConsoleBuffe
 const feedback = message => { $('client-state').textContent = message; };
 const errorText = error => ({ unauthenticated: 'Accès refusé : vérifiez les tokens de session', forbidden: 'Droits API insuffisants',
   grant_required: 'Autorisation locale temporaire requise sur l’agent de cette carte', device_reserved: 'Carte déjà pilotée par un autre client',
-  device_quarantined: 'Carte bloquée : relisez la flash avant la récupération opérateur', lease_expired: 'Réservation expirée',
-  device_unavailable: 'Carte indisponible', flash_overlap: 'Les secteurs d’effacement se chevauchent' }[error.message] || error.message);
+  device_quarantined: 'Carte bloquée : relisez la flash avant la récupération opérateur', lease_expired: 'Pilotage expiré : reprenez la main',
+  device_unavailable: 'Carte indisponible', flash_overlap: 'Les secteurs d’effacement se chevauchent' }[error.message] || diagnostic(error.message));
 const safely = fn => async () => { try { await fn(); } catch (error) {
   if (error.message === 'lease_expired') { lease = null; confirmation = null; $('program-confirmation').hidden = true; }
   feedback(errorText(error)); renderState();
@@ -33,11 +38,34 @@ const hook = (id, fn) => { $(id).onclick = safely(fn); };
 const json = value => { $('result').textContent = JSON.stringify(value, null, 2); };
 $('server-origin').textContent = location.origin;
 
+const journal = new AgentJournal();
+function logAgent(event) {
+  journal.append(event);
+  const body = $('agent-log'), follow = body.scrollHeight - body.clientHeight - body.scrollTop < 30;
+  body.replaceChildren();
+  for (const row of journal.rows) {
+    const line = document.createElement('div'); line.className = 'journal-row';
+    const time = document.createElement('time'); time.textContent = new Date(row.at).toLocaleTimeString('fr-FR', { hour12: false });
+    const text = document.createElement('span'); text.textContent = row.text; line.append(time, text); body.append(line);
+  }
+  if (follow) body.scrollTop = body.scrollHeight;
+}
+hook('agent-log-clear', () => { journal.rows = []; $('agent-log').replaceChildren(); });
+hook('agent-log-toggle', () => { const open = $('agent-log').hidden; $('agent-log').hidden = !open; $('agent-log-toggle').textContent = open ? 'Réduire' : 'Développer'; $('agent-log-toggle').setAttribute('aria-expanded', String(open)); });
+const wake = new WorkWakeLock({ wakeLock: navigator.wakeLock, visible: () => document.visibilityState === 'visible', onState: state => { $('wake-state').textContent = state; } });
+const activity = () => wake.update(Boolean(portConnected && (engine?.busy || agent?.active || agent?.awaitingResult)));
+document.addEventListener('visibilitychange', () => wake.update(wake.active, true));
+const reconnect = new SerialReconnect({ ports: () => navigator.serial.getPorts(), idle: () => !working && !engine?.busy && !agent?.active && agent?.socket?.readyState !== 1,
+  attach: (port, identity) => attach(port, identity), state: stage => { logAgent({ stage });
+    feedback(stage === 'identity_changed' ? diagnostic('physical_identity_changed') : stage === 'usb_connected' ? 'Carte reconnectée. Aucune opération rejouée.' : 'Reconnexion automatique de la carte…');
+  } });
+
 function tab(name) {
   document.querySelectorAll('[data-tab]').forEach(button => button.setAttribute('aria-selected', String(button.dataset.tab === name)));
   document.querySelectorAll('.tab-panel').forEach(panel => { panel.hidden = panel.id !== 'panel-' + name; });
 }
 document.querySelectorAll('[data-tab]').forEach(button => { button.onclick = () => tab(button.dataset.tab); });
+function closeAccess() { $('access-panel').hidden = true; $('access-toggle').setAttribute('aria-expanded', 'false'); }
 function openAccess() { $('access-panel').hidden = false; $('access-toggle').setAttribute('aria-expanded', 'true'); }
 hook('access-toggle', () => { const open = $('access-panel').hidden; $('access-panel').hidden = !open; $('access-toggle').setAttribute('aria-expanded', String(open)); });
 
@@ -49,7 +77,7 @@ function receive(bytes, id, at) { capture(id).append(bytes, { at }); scheduleCon
 function scheduleConsole() {
   if (renderPending || paused) return;
   renderPending = true;
-  requestAnimationFrame(() => { renderPending = false; if (!paused) renderConsole(); });
+  requestAnimationFrame(() => { renderPending = false; if (!paused) renderConsole(); followState(); });
 }
 function renderConsole() {
   const id = selected(), body = $('uart-log');
@@ -73,12 +101,19 @@ function renderConsole() {
     body.append(row);
   }
   if (!body.children.length) { const empty = document.createElement('div'); empty.className = 'console-empty'; empty.textContent = 'Aucune entrée affichée. La capture brute est conservée.'; body.append(empty); }
-  body.scrollTop = follow ? body.scrollHeight : previousScroll;
+  body.scrollTop = follow ? body.scrollHeight : previousScroll; followState();
 }
+function followState() {
+  const body = $('uart-log'), following = body.scrollHeight - body.clientHeight - body.scrollTop < 30;
+  $('follow-state').textContent = paused ? 'Affichage en pause · capture active' : following ? 'Suivi du direct' : 'Lecture de l’historique · capture active';
+  $('follow').hidden = !paused && following;
+}
+$('uart-log').addEventListener('scroll', followState);
+hook('follow', () => { paused = false; pausedAt = Infinity; $('pause').textContent = 'Pause affichage'; renderConsole(); $('uart-log').scrollTop = $('uart-log').scrollHeight; followState(); });
 hook('format-text', () => { format = 'text'; $('format-text').setAttribute('aria-pressed', 'true'); $('format-hex').setAttribute('aria-pressed', 'false'); renderConsole(); });
 hook('format-hex', () => { format = 'hex'; $('format-text').setAttribute('aria-pressed', 'false'); $('format-hex').setAttribute('aria-pressed', 'true'); renderConsole(); });
 $('console-search').oninput = renderConsole; $('timestamps').onchange = renderConsole;
-hook('pause', () => { paused = !paused; pausedAt = paused && selected() ? capture(selected()).sequence : Infinity; $('pause').textContent = paused ? 'Reprendre l’affichage' : 'Pause affichage'; if (!paused) renderConsole(); });
+hook('pause', () => { paused = !paused; pausedAt = paused && selected() ? capture(selected()).sequence : Infinity; $('pause').textContent = paused ? 'Reprendre l’affichage' : 'Pause affichage'; if (!paused) renderConsole(); followState(); });
 hook('clear-display', () => { if (selected()) capture(selected()).clearDisplay(); renderConsole(); feedback('Affichage effacé ; les octets capturés sont conservés.'); });
 function save(blob, filename) { const url = URL.createObjectURL(blob), link = document.createElement('a'); link.href = url; link.download = filename; link.click(); setTimeout(() => URL.revokeObjectURL(url), 30000); }
 hook('export', () => { if (!selected()) throw new Error('Aucune carte sélectionnée'); save(new Blob([capture(selected()).bytes()], { type: 'application/octet-stream' }), 'uart-buffer.bin'); });
@@ -105,8 +140,8 @@ function renderState() {
   const base = Boolean(lease && d?.connected && !working && !ownBusy);
   document.querySelectorAll('[data-hardware]').forEach(button => { const command = button.dataset.command || actions[button.id]; button.disabled = !base || !capability.has(command) || Boolean(blocked && !safeCommands.has(command)); });
   $('devices').disabled = Boolean(lease || working);
-  $('reserve').textContent = manualHistory.has(selected()) ? 'Reprendre le pilotage manuel' : 'Prendre le pilotage manuel';
-  $('reserve').hidden = Boolean(lease); $('release').hidden = !lease; $('renew').hidden = !lease;
+  $('reserve').textContent = manualHistory.has(selected()) ? 'Reprendre la main' : 'Prendre la main';
+  $('reserve').hidden = Boolean(lease); $('release').hidden = !lease;
   $('reserve').disabled = working || !info()?.connected || Boolean(d?.reservation && !lease);
   $('release').disabled = working || Boolean(ownBusy); $('renew').disabled = working;
   $('cancel').disabled = !working || !current;
@@ -118,10 +153,13 @@ function renderState() {
   $('signals-info').textContent = capability.has('reset') && capability.has('io0') ? 'Disponibles' : 'Non exposés';
   const remaining = lease ? Math.max(0, Math.ceil((lease.localUntil - performance.now()) / 1000)) : 0;
   $('control-state').textContent = lease ? 'Pilotage manuel · vous' : d?.reservation ? 'Pilotée par : ' + d.reservation.owner : d?.connected && !d?.localOnly ? 'Disponible pour le pilotage distant' : 'Local · observation';
-  if (lease) $('lease-state').textContent = `Réservation : ${lease.device} · ${remaining} s restantes`;
+  if (lease) $('lease-state').textContent = `Pilotage manuel : ${lease.device}`;
   else $('lease-state').textContent = d?.reservation ? `Pilotée par : ${d.reservation.owner}` : 'Disponible pour le pilotage distant.';
   $('grant').disabled = !local || !agent?.generation; $('revoke').disabled = $('grant').disabled;
-  $('grant-state').textContent = local && agent?.grantUntil > performance.now() ? `Accès privilégié : ${Math.ceil((agent.grantUntil - performance.now()) / 1000)} s restantes` : 'Accès privilégié : verrouillé';
+  $('grant-state').textContent = local && agent?.grantUntil > performance.now() ? `Opérations sensibles autorisées : ${Math.ceil((agent.grantUntil - performance.now()) / 1000)} s` : 'Opérations sensibles : verrouillées';
+  $('revoke').hidden = !(local && agent?.grantUntil > performance.now());
+  $('release-control').disabled = !local || !agent?.generation || Boolean(ownBusy || working) || !d?.reservation;
+  activity();
   $('safety-state').textContent = local && agent?.awaitingResult ? 'Attente de l’accusé serveur' : blocked ? 'Blocage : récupération opérateur requise' : d ? 'Aucun blocage signalé' : 'Aucun état matériel connu';
   $('safety-state').classList.toggle('danger', Boolean(blocked));
   $('recover').disabled = !local || !agent?.generation || Boolean(ownBusy) || !blocked;
@@ -163,7 +201,7 @@ async function startStream() {
     for await (const batch of new BenchClient(token).events(id, cursor.next, controller.signal)) {
       if (controller.signal.aborted || generation !== streamGeneration) break;
       if (cursor.epoch && cursor.epoch !== batch.epoch) {
-        append('PERTE', 'Serveur redémarré : rupture de continuité', id); cursor.next = 0; cursor.epoch = batch.epoch;
+        append('PERTE', 'Serveur redémarré : rupture de continuité', id); lease = null; confirmation = null; $('program-confirmation').hidden = true; cursor.next = 0; cursor.epoch = batch.epoch;
         controller.abort(); streamController = null; if (selected() === id) startStream(); break;
       }
       cursor.epoch = batch.epoch;
@@ -182,9 +220,10 @@ async function startStream() {
   }
 }
 
-async function attach(port) {
+async function attach(port, expectedIdentity = null) {
   if (working || lease || agent?.active || engine?.busy || agent?.socket?.readyState === 1) throw new Error('Terminez le pilotage actif avant de changer de port');
   if (agent?.awaitingResult) engine.setHold(true);
+  if (agent?.socket) { agent.socket.onclose = null; agent.socket.close(); }
   agent = null;
   if (engine) { try { await engine.close(); } finally { engine = null; } }
   const logicalId = $('device-id').value.trim();
@@ -194,16 +233,23 @@ async function attach(port) {
   const hardware = new EspEngine(port, deps, (type, event) => {
     agent?.event(type, event);
     if (type === 'uart') receive(unb64(event.data), logicalId, event.at);
-    else if (type === 'transport') append('SYS', event.detail, logicalId);
+    else if (type === 'transport') {
+      append('SYS', event.detail, logicalId);
+      if (event.detail === 'opening console') logAgent({ stage: 'console' });
+      if (event.detail === 'opening loader') logAgent({ stage: 'loader' });
+    }
   }, hold => localStorage.setItem('bench.v1.hold.' + logicalId, hold ? '1' : '0'));
   hardware.hold = held; engine = hardware;
   try {
     const identity = await hardware.identity();
+    if (expectedIdentity && ['chip', 'flash_size', 'flash_id', 'mac'].some(key => identity[key] !== expectedIdentity[key])) throw new HardwareError('physical_identity_changed');
     localDevice = { id: logicalId, ...identity, capabilities: hardware.capabilities(), connected: true, localOnly: true,
       http_origins: $('http-origins').value.split(',').map(s => s.trim()).filter(Boolean).map(s => new URL(s).origin) };
     if (!held) await hardware.openConsole();
     portConnected = true; $('device-id').disabled = true; renderDevices(); $('devices').value = logicalId;
     renderState(); renderConsole(); feedback('Port Web Serial connecté. Capture locale active ; ouvrez la session du banc pour le pilotage manuel ou distant.');
+    if (!expectedIdentity) reconnect.remember(port, identity);
+    logAgent({ stage: 'usb_connected' });
     if ($('agent-token').value) connectAgent();
   } catch (error) {
     try { await hardware.close(); } catch { /* The failed port remains offline. */ }
@@ -213,12 +259,15 @@ async function attach(port) {
 function connectAgent() {
   if (!engine || !localDevice || !portConnected) throw new Error('Connectez d’abord un port Web Serial');
   if (!$('agent-token').value) { openAccess(); throw new Error('Renseignez l’accès agent pour le pilotage par API'); }
-  if (engine.busy || agent?.active || agent?.awaitingResult || agent?.socket?.readyState === 1) throw new Error('Agent déjà connecté ou matériel occupé');
-  agent = new Agent({ engine, device: localDevice, token: $('agent-token').value, onState: state => {
-    $('agent-state').textContent = state;
+  if (engine.busy || agent?.active || [0, 1, 2].includes(agent?.socket?.readyState)) throw new Error('Agent déjà connecté ou matériel occupé');
+  if (agent?.awaitingResult) engine.setHold(true);
+  agent = new Agent({ engine, device: localDevice, token: $('agent-token').value, onLog: logAgent, onActivity: activity, onState: state => {
+    $('agent-state').textContent = state === 'Agent connected' ? 'Agent connecté' : state.startsWith('Agent disconnected') ? 'Agent déconnecté · aucune commande rejouée' : state;
     if (!agent?.generation && lease?.device === localDevice.id) { lease = null; confirmation = null; $('program-confirmation').hidden = true; }
     $('server-state').textContent = agent?.generation ? 'agent connecté' : sessionOpened ? 'client connecté · agent absent' : 'agent non connecté';
     renderState();
+    if (state === 'Agent connected') closeAccess();
+    if (state === 'Pilotage libéré par l’opérateur') { lease = null; refreshDevices(false).catch(error => feedback(errorText(error))); }
     if (state === 'Agent connected' && $('client-token').value) {
       (async () => { await refreshDevices(false); if (!info(localDevice.id)) await refreshDevices(false); })().catch(error => feedback(errorText(error)));
     }
@@ -229,18 +278,19 @@ hook('connect', async () => { if (!navigator.serial) throw new Error('Web Serial
 hook('reconnect', async () => { if (!navigator.serial) throw new Error('Web Serial indisponible'); const ports = await navigator.serial.getPorts(); if (ports.length !== 1) throw new Error('Choisissez explicitement le port série'); await attach(ports[0]); });
 hook('disconnect', async () => {
   if (working || lease || agent?.active || agent?.awaitingResult) throw new Error('Terminez la réservation et l’opération avant de déconnecter le port');
-  agent?.socket?.close(); await engine.close(); portConnected = false; $('device-id').disabled = false; renderState(); append('SYS', 'Port fermé par l’opérateur', localDevice.id);
+  reconnect.stop(); agent?.socket?.close(); await engine.close(); portConnected = false; $('device-id').disabled = false; renderState(); append('SYS', 'Port fermé par l’opérateur', localDevice.id);
 });
 hook('agent-connect', connectAgent);
 hook('session-open', async () => {
   if (!$('client-token').value && !$('agent-token').value) throw new Error('Renseignez au moins un accès de session');
   streamController?.abort(); streamController = null;
   if (portConnected && $('agent-token').value && !agent?.generation) connectAgent();
-  if ($('client-token').value) await refreshDevices();
+  if ($('client-token').value) { await refreshDevices(); closeAccess(); }
   feedback('Session du banc ouverte sur ' + location.origin + '.');
 });
 hook('grant', () => { if (!agent?.generation) throw new Error('Agent local non connecté'); if (confirm(`Autoriser les opérations privilégiées sur ${localDevice.id} pendant ${$('grant-time').selectedOptions[0].textContent} ?`)) { agent.grant(Number($('grant-time').value)); renderState(); } });
 hook('revoke', () => { agent.grant(0); renderState(); });
+hook('release-control', () => { if (confirm('Libérer le pilotage abandonné et révoquer l’autorisation locale ? Une opération en cours empêchera cette action.')) agent.releaseControl(); });
 hook('recover', () => { if (confirm(`Après relecture et vérification de ${localDevice.id}, lever le blocage ? Cela autorisera de nouveaux resets.`)) agent.recover(); });
 
 hook('reserve', async () => {
@@ -258,7 +308,8 @@ hook('release', async () => {
   await api().request('leases/' + lease.id, { method: 'DELETE' }); lease = null;
   await refreshDevices(false); feedback('Pilotage distant autorisé : carte disponible pour les clients API authentifiés.');
 });
-hook('renew', async () => { const target = requireTarget(lease, selected()); await api().request('leases/' + target.id, { method: 'PATCH', data: { ttl: 900 } }); lease.localUntil = performance.now() + 900000; renderState(); });
+async function renewLease() { if (!lease || renewing || !sessionOpened || performance.now() < nextRenewal || performance.now() < lease.localUntil - 60000) return; renewing = true; nextRenewal = performance.now() + 30000; try { const target = lease; await api().request('leases/' + target.id, { method: 'PATCH', data: { ttl: 900 } }); if (lease === target) lease.localUntil = performance.now() + 900000; } catch (error) { feedback(errorText(error)); } finally { renewing = false; } }
+let renewing = false, nextRenewal = 0;
 
 function renderOperations() {
   const body = $('operations-body'); body.replaceChildren();
@@ -279,9 +330,27 @@ function recordOperation(op, started) {
   while (operationLog.size > 200) operationLog.delete(operationLog.keys().next().value);
   renderOperations(); if (!selectedOperation || selectedOperation === op.id) json(op);
 }
+const privilegedCommands = new Set(['flash.write', 'flash.erase', 'uart.write', 'io0', 'trigger', 'http.request']);
+async function authorizeIfNeeded(command, device) {
+  if (!privilegedCommands.has(command) || localDevice?.id !== device || !agent?.generation || agent.grantUntil > performance.now()) return;
+  const seconds = Number($('grant-time').value);
+  if (!confirm(`Autoriser les opérations sensibles sur ${device} pendant ${$('grant-time').selectedOptions[0].textContent} pour ${command} ?`)) throw new Error('Autorisation annulée : aucune commande envoyée');
+  agent.grant(seconds); renderState();
+  // Do not submit before the broker has received the grant on its separate WS connection.
+  const until = performance.now() + 5000;
+  while (performance.now() < until) {
+    await refreshDevices(false);
+    if (info(device)?.privileged_seconds > 0) return;
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  throw new Error('Autorisation non confirmée par le serveur : aucune commande envoyée');
+}
 async function submit(command, args = {}, destructive = false) {
   const target = requireTarget(lease, selected());
-  if (working) throw new Error('Une opération manuelle est déjà en cours');
+  if (working || authorizing) throw new Error('Une opération manuelle est déjà en cours');
+  authorizing = true;
+  try { await authorizeIfNeeded(command, target.device); } finally { authorizing = false; }
+  requireTarget(lease, selected());
   working = true; current = null; renderState(); const started = performance.now(), client = api();
   try {
     let op = await client.request('operations', { method: 'POST', data: { lease: target.id, command, args, allow_destructive: destructive } });
@@ -291,7 +360,7 @@ async function submit(command, args = {}, destructive = false) {
       await new Promise(resolve => setTimeout(resolve, 250));
       op = await client.request('operations/' + op.id); recordOperation(op, started);
     }
-    if (op.state !== 'completed') { feedback(`Opération ${op.state} : ${op.error?.code || 'inspectez le résultat'}`); tab('operations'); return op; }
+    if (op.state !== 'completed') { feedback(`Opération ${op.state} : ${diagnostic(op.error?.code || 'inspectez le résultat')}`); tab('operations'); return op; }
     feedback(`${command} : terminé sur ${target.device}`);
     if (command === 'partitions' && op.result?.partitions) { partitionCache.set(target.device, op.result.partitions); renderPartitions(); }
     if (command === 'identify' && op.result?.chip) { const d = info(target.device); if (d) Object.assign(d, op.result); renderState(); }
@@ -411,16 +480,21 @@ hook('http', () => submit('http.request', { url: $('http-url').value, method: 'G
 hook('events', async () => { const data = await api().request('devices/' + encodeURIComponent(selected()) + '/events'); json(data); tab('operations'); });
 
 navigator.serial?.addEventListener('disconnect', event => {
-  if (event.target !== engine?.port) return;
+  const port = event.port || event.target;
+  if (!portConnected || port !== engine?.port) return;
+  engine.disconnected = true;
   if (agent?.active || agent?.awaitingResult) engine.setHold(true);
-  engine.cancelTrigger(); engine.transport?.abort('closed', 'USB disconnected'); agent?.socket?.close(); portConnected = false;
-  renderState(); append('PERTE', 'Port USB déconnecté', localDevice.id); feedback('USB déconnecté. Reconnexion explicite requise.');
+  engine.cancelTrigger(); engine.transport?.abort('closed', 'USB disconnected'); agent?.socket?.close();
+  portConnected = false; lease = null; confirmation = null; $('program-confirmation').hidden = true;
+  renderState(); append('PERTE', 'Port USB déconnecté', localDevice.id); logAgent({ stage: 'usb_lost' });
+  feedback('USB déconnecté. Reconnexion automatique de la même carte à son retour ; aucune opération rejouée.');
+  reconnect.disconnected(port);
 });
 let refreshTimer;
 async function backgroundRefresh() {
   if (sessionOpened && $('client-token').value) await refreshDevices(false).catch(error => { $('server-state').textContent = 'liaison interrompue'; feedback(errorText(error)); });
   refreshTimer = setTimeout(backgroundRefresh, 4000);
 }
-setInterval(renderState, 1000); backgroundRefresh();
-window.addEventListener('pagehide', () => { streamController?.abort(); clearTimeout(refreshTimer); });
+setInterval(() => { renderState(); renewLease(); }, 1000); backgroundRefresh();
+window.addEventListener('pagehide', () => { streamController?.abort(); clearTimeout(refreshTimer); reconnect.stop(); wake.update(false); });
 renderState(); renderConsole();

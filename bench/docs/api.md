@@ -45,7 +45,7 @@ Les agents utilisent REST seulement pour uploader les dumps et télécharger les
 }
 ```
 
-`ttl` borne le délai de départ (0,1 à 120 s). `timeout` borne l’attente du résultat après autorisation de départ (0,1 à 600 s). Le TTL ne sert pas à couper une programmation démarrée. L’agent contrôle aussi l’échéance d’exécution du serveur : après expiration, une opération flash en cours peut se terminer, mais le blocage reste actif et aucun retour console automatique ne redémarre la carte. La réservation dure de 1 à 3 600 s. Aucun retry automatique : après une réponse de soumission perdue, inspecter l’état du banc et ne pas renvoyer aveuglément une écriture. La réservation reste exclusive même si le client HTTP disparaît, jusqu’à libération ou expiration.
+`ttl` borne le délai de départ (0,1 à 120 s). `timeout` borne l’attente du résultat après autorisation de départ (0,1 à 600 s). Le TTL ne sert pas à couper une programmation démarrée. L’agent contrôle aussi l’échéance d’exécution du serveur : après expiration, une opération flash en cours peut se terminer, mais le blocage reste actif et aucun retour console automatique ne redémarre la carte. La réservation dure de 1 à 3 600 s. Aucun retry automatique : après une réponse de soumission perdue, inspecter l’état du banc et ne pas renvoyer aveuglément une écriture. La réservation reste exclusive même si le client HTTP disparaît, jusqu’à libération, expiration ou libération explicite par l’opérateur de l’agent physique (voir `release_control`).
 
 | Commande | Arguments | Grant local temporaire |
 |---|---|---|
@@ -102,3 +102,11 @@ Une trame `error` refuse une transition : elle n’autorise aucune exécution. L
 Événements agent : `uart` (`seq`, `data`, `at`), `mark/transport/trigger` (`detail` ≤256 caractères), `grant` (`seconds` 0–14 400 ; zéro révoque) et `hold` (blocage de sécurité après incident), `recover` (levée opérateur du blocage, refusée tant qu’une exécution reste en suspens). Un grant ne peut venir que de l’agent authentifié ; l’UI réelle exige une confirmation locale.
 
 Corps JSON REST et trames WS : 64 Kio maximum ; chunk UART : 16 Kio maximum. Les octets secrets d’émission UART et corps HTTP ne sont pas inclus dans les diagnostics d’opération. Les résultats et le flux UART brut restent accessibles aux clients autorisés : les projets doivent les traiter comme potentiellement sensibles.
+
+### Diagnostics et libération opérateur
+
+Les refus de programmation distinguent `program_permission_required` (scope `program` absent) et `destructive_consent_required` (`allow_destructive:true` absent). Le contrôle du grant reste indépendant et intervient avant ces deux refus.
+
+Les erreurs matérielles connues utilisent des codes sans texte brut : `serial_disconnected`, `console_required`, `external_uart_required`, `partition_table_invalid`, `physical_identity_changed`, `operator_recovery_required`. Une table vide/vierge à l’adresse demandée est refusée ; il n’y a aucune recherche ni écriture automatique à une autre adresse. Les erreurs inconnues restent `hardware_command_failed`.
+
+L’agent physique authentifié peut envoyer `{"type":"release_control","device":"…","generation":"…"}`. Le serveur refuse (`still_running`) toute exécution encore en cours ou non stabilisée, y compris après timeout ; sinon il révoque le grant et termine toutes les réservations actives de cette carte, en annulant le travail encore en attente. Réponse : `control_released` avec `device` et `generation`, sans identifiant privé de réservation. Cette action n’existe pas sur l’API REST client et ne lève aucune quarantaine. Le contrôle de génération interdit une demande par un ancien agent. Les déclencheurs sont désarmés localement avant demande et à réception des révocations.
