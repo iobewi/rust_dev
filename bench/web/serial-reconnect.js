@@ -1,6 +1,6 @@
 // Retry only the exact previously selected SerialPort, never a VID/PID match.
 export class SerialReconnect {
-  constructor({ ports, attach, idle, state = () => {}, schedule = setTimeout, cancel = clearTimeout }) {
+  constructor({ ports, attach, idle, state = () => {}, schedule = (fn, ms) => setTimeout(fn, ms), cancel = timer => clearTimeout(timer) }) {
     Object.assign(this, { ports, attach, idle, state, schedule, cancel }); this.version = 0;
   }
   remember(port, identity) { this.stop(); this.port = port; this.identity = identity; }
