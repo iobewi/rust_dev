@@ -24,7 +24,7 @@ L’action manuelle sensible propose une autorisation locale au moment nécessai
 
 La barre de session montre la carte, les liaisons USB/serveur, le mode et le détenteur du pilotage. Le panneau latéral expose l’identité matérielle, les droits et l’état de récupération.
 
-La console UART a un fond contrasté et une hauteur réglable par son bord inférieur. Le journal distinct de l’agent affiche les connexions, ouvertures de console/chargeur, commandes de tous ses clients, transferts, résultats et durées. Il est borné à 300 lignes et ne journalise ni tokens, ni arguments de commande, ni contenu UART/HTTP, ni texte arbitraire des exceptions. Le tampon UART reste potentiellement sensible.
+La console UART a un fond contrasté et une hauteur réglable par son bord inférieur. Le journal distinct de l’agent affiche les connexions, ouvertures de console/chargeur, commandes de tous ses clients, transferts, résultats et durées. Pendant les lectures, il affiche aussi la phase et les octets reçus, avec une progression bornée par bloc/paliers. En cas d’échec, il indique le type structuré du transport, la phase et les échéances restantes ; le résultat inspectable contient les compteurs détaillés. Les lectures manuelles disposent de dix minutes maximum, sans extension automatique du délai. Il est borné à 300 lignes et ne journalise ni tokens, ni arguments de commande, ni contenu UART/HTTP, ni texte arbitraire des exceptions. Le tampon UART reste potentiellement sensible.
 
 La console reste visible pendant l’utilisation des onglets :
 
@@ -53,3 +53,5 @@ Les exports sont des données de transport, pas des rapports de recette. Les pro
 Les tests Node vérifient l’intégrité du tampon, la continuité UTF-8, les pertes, le gel d’affichage, les entrées numériques strictes, la validation des plans, le téléchargement vérifié et le réassemblage SSE. Le parcours Chromium utilise Web Serial et un chargeur ESP simulés, puis les vraies interfaces REST et WebSocket du banc : capture sans token, ouverture de session, réservation, partitions, dump, plan flash, confirmation annulée et délégation sans fermeture du port.
 
 La campagne matérielle rapportée sur d548dab couvre une S3 N16 par pont UART externe, avec des limites et des cas non exécutés consignés dans l’issue #2. Ces corrections sont vérifiées par tests logiciels ; elles ne valent pas requalification matérielle. L’observation de redémarrages répétés reste à investiguer : aucun correctif de reset n’est revendiqué sans reproduction.
+
+La lecture réelle de 10 Mio rapportée en échec vers 350 s sur d1dd19c n’a pas de cause démontrée. Le fractionnement des lectures et la réduction des copies corrigent des coûts observables dans le code ; les diagnostics ajoutés doivent permettre de discriminer un délai de transport, une perte de liaison, une échéance de commande et un échec d’upload. Les tests logiciels de 10 Mio ne remplacent pas la reprise matérielle ciblée.

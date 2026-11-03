@@ -10,13 +10,15 @@ export class ESPLoader {
   constructor({ transport }) { this.transport = transport; this.chip = { readMac: async () => '00:00:00:00:00:00' }; }
   async main() { await this.transport.connect(); return 'ESP32-S3'; }
   async readFlashId() { return 0x164068; }
-  async readFlash(address, size) {
+  async readFlash(address, size, onPacketReceived) {
+    if (globalThis.__readFault) throw Object.assign(new Error('fixture private transport detail'), { name: 'SerialFault', kind: globalThis.__readFault });
     const bytes = new Uint8Array(size).fill(255);
     if (address === 0x8000 && size >= 64) {
       const view = new DataView(bytes.buffer); view.setUint16(0, 0x50aa, true); bytes[2] = 0; bytes[3] = 0;
       view.setUint32(4, 0x10000, true); view.setUint32(8, 0x20000, true);
       bytes.fill(0, 12, 32); bytes.set(new TextEncoder().encode('factory'), 12);
     }
+    onPacketReceived?.(bytes, bytes.length, size);
     return bytes;
   }
 }

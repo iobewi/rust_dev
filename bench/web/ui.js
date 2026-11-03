@@ -352,7 +352,7 @@ async function submit(command, args = {}, destructive = false) {
   requireTarget(lease, selected());
   working = true; current = null; renderState(); const started = performance.now(), client = api();
   try {
-    let op = await client.request('operations', { method: 'POST', data: { lease: target.id, command, args, allow_destructive: destructive } });
+    let op = await client.request('operations', { method: 'POST', data: { lease: target.id, command, args, allow_destructive: destructive, timeout: command === 'flash.read' ? 600 : 120 } });
     current = op.id; selectedOperation = op.id; recordOperation(op, started); renderState();
     for (;;) {
       if (terminal.has(op.state)) break;

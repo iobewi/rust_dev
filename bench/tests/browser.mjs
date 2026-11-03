@@ -129,6 +129,15 @@ test('instrumentation UI connects Web Serial without API credentials, captures b
   await page.click('#tab-memory');await page.fill('#address','0x10000');await page.fill('#size','64');await page.click('#read');
   await page.waitForFunction(()=>document.querySelector('#dump-state').textContent.includes('64 octets'));
   assert.ok((await page.textContent('#hex-dump')).includes('ff ff'));
+  // A loader SerialFault must survive engine cleanup, WS, broker and UI translation.
+  await page.evaluate(()=>{window.__readFault='closed';});await page.click('#read');
+  await page.waitForFunction(()=>{const op=JSON.parse(document.querySelector('#result').textContent);return op.state==='failed'&&op.error?.code==='serial_disconnected';});
+  assert.equal(JSON.parse(await page.textContent('#result')).error.phase,'flash_read');
+  assert.ok((await page.textContent('#client-state')).includes('Port série déconnecté'));
+  await page.waitForFunction(()=>!document.querySelector('[data-command="console"]').disabled);
+  await page.evaluate(()=>{window.__readFault=null;});await page.click('[data-command="console"]');
+  await page.waitForFunction(()=>{const op=JSON.parse(document.querySelector('#result').textContent);return op.command==='console'&&op.state==='completed';});
+
   await page.click('#tab-flash');await page.setInputFiles('#binary',{name:'sample.bin',mimeType:'application/octet-stream',buffer:Buffer.from([1,2,3,4])});
   await page.waitForSelector('#images-body input');await page.locator('#images-body input').fill('0x20000');
   await page.click('#validate-plan');await page.waitForFunction(()=>document.querySelector('#plan-state').textContent.includes('images vérifiées'));

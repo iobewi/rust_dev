@@ -1,4 +1,4 @@
-import { hardwareError } from './hardware-errors.js';
+import { HardwareError, hardwareError } from './hardware-errors.js';
 // Authenticated WebSocket executor; it owns no UI and never replays a hardware operation.
 export class Agent {
   constructor({ engine, device, token, onState = () => {}, onLog = () => {}, onActivity = () => {}, socketFactory = url => new WebSocket(url), now = () => performance.now() }) {
@@ -50,14 +50,23 @@ export class Agent {
   }
   async artifact(id, bytes) {
     const { sha256 } = await import('./protocol.js');
-    const response = await fetch('/api/v1/artifacts' + (id ? '/' + id : ''), {
-      method: id ? 'GET' : 'POST', headers: { Authorization: 'Bearer ' + this.token,
-        ...(bytes ? { 'X-SHA256': await sha256(bytes) } : {}) }, ...(bytes ? { body: bytes } : {}),
-    });
-    if (!response.ok) { this.log('transfer_failed'); throw new Error('Artifact transfer failed'); }
-    if (id) { const data = new Uint8Array(await response.arrayBuffer()); this.log('download', { bytes: data.length }); return data; }
-    this.log('upload', { bytes: bytes.length }); return response.json();
+    const phase = id ? 'artifact_download' : 'artifact_upload';
+    try {
+      const response = await fetch('/api/v1/artifacts' + (id ? '/' + id : ''), {
+        method: id ? 'GET' : 'POST', headers: { Authorization: 'Bearer ' + this.token,
+          ...(bytes ? { 'X-SHA256': await sha256(bytes) } : {}) }, ...(bytes ? { body: bytes } : {}),
+      });
+      if (!response.ok) throw new HardwareError('artifact_transfer_failed', { phase, http_status: response.status });
+      if (id) { const data = new Uint8Array(await response.arrayBuffer()); this.log('download', { bytes: data.length }); return data; }
+      const result = await response.json(); this.log('upload', { bytes: bytes.length }); return result;
+    } catch (error) {
+      this.log('transfer_failed');
+      if (error instanceof HardwareError) throw error;
+      const failure = hardwareError(error, false, { phase });
+      throw Object.assign(new HardwareError(failure.code, failure), { name: failure.error_type });
+    }
   }
+
   async message(m) {
     if (m.type === 'welcome') {
       this.serverOffset = m.server_ms - this.authSent;
@@ -88,28 +97,40 @@ export class Agent {
       const leaseLive = () => this.generation === generation && this.socket?.readyState === 1 && !this.revoked.has(op.lease) && this.now() < op.lease_deadline_ms - this.serverOffset - 100 && (!privileged || this.now() < this.grantUntil);
       // The server starts this deadline before sending execute; network delay cannot extend it.
       const live = () => leaseLive() && this.now() < executionUntil;
+      const timing = () => ({ elapsed_ms: this.now() - started,
+        start_remaining_ms: Math.max(0, until - this.now()), execution_remaining_ms: Math.max(0, executionUntil - this.now()),
+        lease_remaining_ms: Math.max(0, op.lease_deadline_ms - this.serverOffset - 100 - this.now()),
+        ...(privileged ? { grant_remaining_ms: Math.max(0, this.grantUntil - this.now()) } : {}),
+        visibility: typeof document === 'undefined' ? 'unavailable' : document.visibilityState });
+      const checkLive = () => {
+        if (this.generation !== generation || this.socket?.readyState !== 1) throw new HardwareError('agent_disconnected');
+        if (this.revoked.has(op.lease) || this.now() >= op.lease_deadline_ms - this.serverOffset - 100) throw new HardwareError('reservation_expired');
+        if (privileged && this.now() >= this.grantUntil) throw new HardwareError('grant_expired');
+        if (this.now() >= executionUntil) throw new HardwareError('execution_deadline_exceeded');
+      };
       let completion;
       const publish = message => {
         const requiredHold = completion ? completion.hold || !live() : this.engine.hold || !live();
         this.awaitingResult = { id: op.id, generation, requiredHold,
           returnConsole: completion?.returnConsole === true, live };
         this.engine.setHold(true);
-        this.log('result', { id: op.id, command: op.command, state: message.state, code: message.error?.code, duration_ms: Math.round(this.now() - started) });
+        this.log('result', { id: op.id, command: op.command, state: message.state, code: message.error?.code, duration_ms: Math.round(this.now() - started), detail: message.error });
         this.send({ type: 'result', id: op.id, ...message, hold: requiredHold });
       };
       try {
         const check = () => {
-          if (!live() || this.now() >= until) throw new Error('Expired command, lost connection or local grant');
+          checkLive();
+          if (this.now() >= until) throw new HardwareError('command_start_expired');
         };
         check();
         const result = await this.engine.execute(op.command, op.args, {
-          check, live, triggerLive: leaseLive, deferCompletion: true,
+          check, checkLive, report: detail => this.log('progress', { id: op.id, command: op.command, detail }), live, triggerLive: leaseLive, deferCompletion: true,
           complete: value => { completion = value; }, device: this.device, download: id => this.artifact(id), upload: bytes => this.artifact(null, bytes),
         });
         if (!live()) this.engine.setHold(true);
         publish({ state: result?.state || 'completed', result, ...(result?.error ? { error: typeof result.error === 'object' ? result.error : { code: result.error_kind || 'hardware_command_failed' } } : {}) });
       } catch (error) {
-        publish({ state: 'failed', error: hardwareError(error, this.engine.disconnected) });
+        publish({ state: 'failed', error: hardwareError(error, this.engine.disconnected, { ...this.engine.diagnostics?.(), ...timing() }) });
       } finally {
         this.active = null; this.activity();
         this.engine.persistHold(this.awaitingResult !== null || this.engine.hold);

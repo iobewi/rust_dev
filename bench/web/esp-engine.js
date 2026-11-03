@@ -1,5 +1,5 @@
 // Hardware only: no DOM, REST, project readiness rules or verdicts.
-import { HardwareError } from './hardware-errors.js';
+import { HardwareError, hardwareError } from './hardware-errors.js';
 import { makeBenchTransport } from './bench-transport.js';
 import { runWrite, Tracer } from './flash-op.js';
 import { b64, unb64, family, region, validateImages, partitions, sha256 } from './protocol.js';
@@ -11,7 +11,42 @@ export class EspEngine {
     this.native = port.getInfo().usbVendorId === 0x303a;
     this.mode = 'off'; this.reader = null; this.loader = null; this.baudrate = 115200;
     this.flashBaud = 460800; this.hold = false; this.trigger = null; this.tail = new Uint8Array();
-    this.trace = new Tracer(); this.busy = false;
+    this.trace = new Tracer(); this.busy = false; this.phase = 'prepare'; this.readProgress = {};
+  }
+  diagnostics() {
+    const stats = this.transport?.stats || this.lastTransportStats || {};
+    const base = this.transport === this.baselineTransport ? this.serialBaseline || {} : {};
+    return { phase: this.phase, ...this.readProgress,
+      serial_reads: Math.max(0, (stats.reads || 0) - (base.reads || 0)),
+      serial_bytes: Math.max(0, (stats.bytesIn || 0) - (base.bytesIn || 0)),
+      serial_timeouts: Math.max(0, (stats.timeouts || 0) - (base.timeouts || 0)), ...this.lastRead };
+  }
+  setPhase(phase, context) { this.phase = phase; context.report?.(this.diagnostics()); }
+  async readFlash(loader, address, size, context) {
+    // Keep esptool-js's cumulative append limited to 1 MiB per command. No retry:
+    // every block is read once and only a complete region becomes an artifact.
+    const data = new Uint8Array(size), blockLimit = 1024 * 1024;
+    let nextReport = 0;
+    const check = () => {
+      if (context.checkLive) context.checkLive();
+      else if (context.live && !context.live()) throw new HardwareError('execution_deadline_exceeded');
+    };
+    for (let offset = 0; offset < size; offset += blockLimit) {
+      check();
+      const blockSize = Math.min(blockLimit, size - offset);
+      this.readProgress = { received_bytes: offset, expected_bytes: size, block_address: address + offset, block_size: blockSize };
+      const block = await loader.readFlash(address + offset, blockSize, (_packet, received) => {
+        check();
+        if (Number.isSafeInteger(received) && received >= 0 && received <= blockSize) this.readProgress.received_bytes = offset + received;
+        if (this.readProgress.received_bytes >= nextReport) {
+          context.report?.(this.diagnostics()); nextReport = this.readProgress.received_bytes + 256 * 1024;
+        }
+      });
+      if (!(block instanceof Uint8Array) || block.length !== blockSize) throw new HardwareError('short_flash_read');
+      data.set(block, offset); this.readProgress.received_bytes = offset + blockSize;
+      context.report?.(this.diagnostics()); check();
+    }
+    return data;
   }
   setHold(value) { this.hold = value; this.persistHold(value); }
   cancelTrigger() {
@@ -66,11 +101,15 @@ export class EspEngine {
     const { ESPLoader, Transport, ESPError } = this.deps;
     const { BenchTransport } = makeBenchTransport(Transport, ESPError);
     this.transport = new BenchTransport(this.port, false);
-    this.transport.onEvent = (name, detail) => this.trace.ev(name, detail);
+    this.transport.onEvent = (name, detail) => {
+      this.trace.ev(name, detail); this.lastTransportStats = this.transport?.stats;
+      if (name === 'read-start') this.lastRead = { silence_limit_ms: detail.timeout };
+      if (name === 'read-end') this.lastRead = { ...this.lastRead, last_read_ms: detail.ms, last_packet_bytes: detail.bytes };
+    };
     const terminal = { clean() {}, write() {}, writeLine: () => {} };
     this.loader = new ESPLoader({ transport: this.transport, baudrate: this.flashBaud, terminal });
     try { this.chipDescription = await this.loader.main(); this.mode = 'loader'; }
-    catch (e) { await this.close(); throw e; }
+    catch (e) { try { await this.close(); } catch { /* Preserve the original serial failure. */ } throw e; }
     return this.loader;
   }
   async identity() {
@@ -115,10 +154,11 @@ export class EspEngine {
   async execute(command, args, context) {
     if (this.busy) throw new Error('Device is busy');
     if (this.hold && !['identify', 'partitions', 'flash.read', 'flash.write', 'flash.erase', 'mark'].includes(command)) throw new Error('Operator recovery required');
-    this.busy = true;
+    this.busy = true; this.phase = 'prepare'; this.readProgress = {}; this.lastRead = {};
+    this.baselineTransport = this.transport; this.serialBaseline = { ...this.transport?.stats };
     let destructive = false;
     try {
-      context.check();
+      context.check(); this.setPhase('control', context);
       if (command === 'mark') { this.event('mark', { detail: args.label }); return { label: args.label }; }
       if (command === 'trigger') {
         if (args.action === 'disarm') { this.cancelTrigger(); return { armed: false }; }
@@ -142,7 +182,7 @@ export class EspEngine {
           return { response: 'opaque', http_status: 'unknown', verified: false };
         } finally { clearTimeout(timer); }
       }
-      if (command === 'console') { await this.openConsole(); return { mode: this.mode }; }
+      if (command === 'console') { this.setPhase('console', context); await this.openConsole(); return { mode: this.mode }; }
       if (command === 'reset') { await this.reset(); return { reset: true }; }
       if (command === 'io0') {
         if (this.native) throw new HardwareError('external_uart_required');
@@ -164,13 +204,15 @@ export class EspEngine {
       // Download and verify all firmware bytes before changing the boot state.
       const images = [];
       if (command === 'flash.write') {
+        this.setPhase('artifact_download', context);
         for (const i of args.images) {
           const data = await context.download(i.artifact);
-          if (await sha256(data) !== i.sha256) throw new Error('Artifact SHA-256 mismatch');
+          if (await sha256(data) !== i.sha256) throw new HardwareError('artifact_integrity_failed');
           images.push({ ...i, data });
         }
       }
       context.check();
+      this.setPhase('identify', context);
       const physical = await this.identity(), l = this.loader;
       if (command.startsWith('flash.') || command === 'partitions') {
         if (args.chip && args.chip !== physical.chip) throw new Error('Physical chip mismatch');
@@ -181,22 +223,26 @@ export class EspEngine {
       if (command === 'identify') result = physical;
       else if (command === 'partitions') {
         region(args.address ?? 0x8000, 0xc00, physical.flash_size);
-        const bytes = await l.readFlash(args.address ?? 0x8000, 0xc00);
+        this.setPhase('flash_read', context);
+        const bytes = await this.readFlash(l, args.address ?? 0x8000, 0xc00, context);
         try { result = { partitions: partitions(bytes, physical.flash_size) }; if (!result.partitions.length) throw new Error('Empty table'); }
         catch { throw new HardwareError('partition_table_invalid'); }
       } else if (command === 'flash.read') {
         region(args.address, args.size, physical.flash_size);
-        const data = await l.readFlash(args.address, args.size);
-        if (data.length !== args.size) throw new Error('Short flash read');
+        this.setPhase('flash_read', context);
+        const data = await this.readFlash(l, args.address, args.size, context);
+        this.setPhase('artifact_upload', context);
         result = { artifact: await context.upload(data), address: args.address };
       } else if (command === 'flash.write') {
         validateImages(images, physical.flash_size); context.check();
+        this.setPhase('flash_write', context);
         destructive = true; this.setHold(true);
         result = await runWrite(l, images.map(i => ({ data: i.data, addr: i.address, path: i.artifact, sha: i.sha256 })),
           { erase: args.erase === true, tracer: this.trace });
         if (!result.ok) return { ...result, hold: true };
         if (context.live() && !context.deferCompletion) this.setHold(false);
       } else if (command === 'flash.erase') {
+        this.setPhase('flash_erase', context);
         context.check(); destructive = true; this.setHold(true);
         await l.eraseFlash(); result = { erased: true };
         if (context.live() && !context.deferCompletion) this.setHold(false);
@@ -208,7 +254,11 @@ export class EspEngine {
       return result;
     } catch (e) {
       if (destructive) { this.setHold(true); return { state: 'indeterminate', hold: true, error: { code: 'hardware_outcome_unknown' }, trace: this.trace.snapshot().slice(-60) }; }
-      throw e;
+      // Capture the original phase and transport failure before cleanup closes
+      // the port. Cleanup errors must not replace the useful diagnostic.
+      const failure = hardwareError(e, this.disconnected, this.diagnostics());
+      if (this.phase === 'flash_read') { try { await this.close(); } catch { /* Original failure wins. */ } }
+      throw Object.assign(new HardwareError(failure.code, failure), { name: failure.error_type, kind: failure.transport_kind });
     } finally { this.busy = false; }
   }
 }
