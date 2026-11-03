@@ -5,7 +5,7 @@
 | Capacité historique | Nouvelle implémentation | Vérification logicielle / matériel restant |
 |---|---|---|
 | Choisir un port Web Serial | `ui.attach`, `EspEngine` | Sélection physique et permission à valider |
-| Retrouver un port autorisé / reconnexion | Bouton dédié + reconnexion agent explicite ; aucune ancienne commande rejouée | Anti-rejeu simulé ; débrancher/rebrancher réel à qualifier |
+| Retrouver un port autorisé / reconnexion | Bouton dédié + reconnexion automatique du même port et de la même identité ; aucun rejeu, blocage persistant conservé | Reconnexion automatique et blocage testés dans Chromium avec port simulé ; reprise réelle du correctif à qualifier |
 | UART externe et USB Serial/JTAG | Capacités distinctes, EN/BOOT refusés au natif, esptool conserve sa stratégie USB | Refus natif testés ; S3/C3 et renumérotation USB à qualifier |
 | Capture continue, timestamps | Événements UART binaires numérotés, timestamp source et serveur ; SSE / curseur REST | Chunks binaires, pertes source/anneau testés ; débit réel restant |
 | Identification puce/flash/MAC | Mesure esptool avant enregistrement, revérification avant flash | Contrat et mocks ; RDID/MAC réels restant |
@@ -16,11 +16,11 @@
 | SHA-256 et vérification | Upload serveur + contrôle agent ; MD5 du chargeur conservé ; relecture indépendante à la demande | Intégrité tous octets et classification MD5 testées ; vérification réelle restante |
 | Effacement explicite | `flash.erase` ou `erase:true` dans une programmation | Permission + grant + consentement testés ; effacement réel restant |
 | Reset EN, BOOT tenu bas | Primitives distinctes, UART externe et console uniquement | Refus natif et quarantaine testés ; durées/signaux réels restant |
-| Console ↔ chargeur / retour automatique | Moteur indépendant ; réouverture sans reset supplémentaire, sauf blocage | Gardes testées ; capture boot ROM réelle restante |
+| Console ↔ chargeur / retour automatique | Moteur indépendant ; réouverture annoncée pouvant redémarrer la carte, sauf blocage | Gardes testées ; capture boot ROM réelle restante |
 | UART binaire TX/RX | Base64 sans décodage serveur ; pas de payload TX en diagnostics | Intégrité et autorisations testées ; Improv/protocole applicatif appartient au client |
 | Repères, déclencheurs conditionnels | `mark`, motif d’octets à usage unique `trigger` avec TTL/délai, `disarm` | Déclencheurs sans regex métier ; anti-collision et expiration à compléter sur matériel |
 | Auto-reset Wi-Fi / `OTA ready` | Règles retirées ; les clients interprètent les événements et demandent leurs actions | Aucun scénario produit intégré au cœur |
-| Accès complet temporaire | Grant opérateur 30 min / 2 h / 4 h, révocation, bornes côté agent + serveur | Révocation entre offre et départ testée ; ergonomie physique restante |
+| Accès complet temporaire | Grant opérateur 1 min / 5 min (défaut) / 30 min / 2 h, révocation, bornes côté agent + serveur | Révocation entre offre et départ testée ; ergonomie physique restante |
 | File, échéance, résultats | Offer/ready/execute, pas de rejeu, états asynchrones, quarantaine, annulation distincte | Tests concurrence, expirations et pertes de connexion |
 | HTTP vers ESP sur LAN | Primitive navigateur, liste d’origines privées locales, grant, réponse opaque explicite | Liste privée testée ; politiques réseau navigateur / HTTPS restant |
 | Inventaire de binaires et sauvegardes | Inventaire des artefacts uploadés, SHA-256, sélection/réutilisation dans le plan manuel | REST testé ; dossiers de campagne et archives automatiques supprimés au profit des clients |
@@ -28,7 +28,7 @@
 | Commandes manuelles et distantes | Client Web et client Python sur la même API | Tests serveur / agent ; test Chromium en CI avec moteur simulé |
 | Outils de campagne OTA, modèles Rust, sonde mémoire | Retirés du banc générique ; consultables sur les branches sources | Aucun transfert automatique vers les dépôts consommateurs |
 
-Les fonctionnalités ne sont pas conservées par compatibilité d’interface : commandes renommées, transport WS et capture binaire remplacent les anciens scripts et endpoints. La reconnexion est explicite pour éviter toute réouverture du port qui redémarrerait une carte au mauvais moment. Le motif exact d’octets remplace les expressions régulières exécutées par la page ; les clients restent libres d’appliquer leurs propres regex aux données.
+Les fonctionnalités ne sont pas conservées par compatibilité d’interface : commandes renommées, transport WS et capture binaire remplacent les anciens scripts et endpoints. La reconnexion automatique ne sélectionne jamais une autre carte autorisée et ne rejoue aucune opération ; la quarantaine reste applicable et une déconnexion volontaire coupe les tentatives. Le motif exact d’octets remplace les expressions régulières exécutées par la page ; les clients restent libres d’appliquer leurs propres regex aux données.
 
 ## Ce qui est validé sans matériel
 
@@ -49,4 +49,4 @@ Le banc ne conserve aucune preuve de campagne durable. Les résultats automatis�
 9. HTTP LAN sur les navigateurs retenus : accès réseau local, contenu mixte, redirections refusées et résultat opaque explicitement non vérifié.
 10. Apparence et interactions de l’UI sur écran mobile et bureau ; support Web Serial déterminé par la présence effective de `navigator.serial` et les permissions du contexte, sans exclusion arbitraire d’une famille de navigateurs.
 
-Aucune de ces étapes physiques n’a été exécutée pendant ce chantier.
+Cette session ne réalise aucun nouvel essai physique. Les retours de recette sur d548dab portent sur une S3 N16 par pont UART externe et doivent conserver leurs limites : ils ne qualifient ni les présentes corrections, ni les écritures, ni les autres interfaces/cartes. L’observation de redémarrages répétés reste à investiguer ; aucun correctif causal n’est revendiqué.

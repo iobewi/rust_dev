@@ -157,7 +157,8 @@ test('instrumentation UI connects Web Serial without API credentials, captures b
   await page.evaluate(async()=>{const port=window.__serialPort;port.controller.error(new DOMException('Unplugged','NetworkError'));await port.close();const event=new Event('disconnect');Object.defineProperty(event,'port',{value:port});window.__serial.dispatchEvent(event);});
   await page.waitForFunction(()=>document.querySelector('#usb-state').textContent==='non connecté');
   await page.waitForFunction(async old=>{const r=await fetch('/api/v1/devices',{headers:{Authorization:'Bearer client-alice-123456789'}});const d=(await r.json()).devices[0];return d.connected&&d.generation!==old;},generation);
-  assert.equal(await page.textContent('#usb-state'),'connecté');
+  try { await page.waitForFunction(()=>document.querySelector('#usb-state').textContent==='connecté'); }
+  catch(error) { throw new Error(JSON.stringify({feedback:await page.textContent('#client-state'),journal:await page.textContent('#agent-log'),errors}),{cause:error}); }
   assert.ok((await page.textContent('#agent-log')).includes('Reconnexion de la carte'));
   // Following the tail is explicit and history selection never loses captured bytes.
   await page.evaluate(()=>{for(let i=0;i<60;i++)window.__serialPort.controller.enqueue(new TextEncoder().encode('line '+i+'\n'));});

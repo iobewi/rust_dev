@@ -65,8 +65,10 @@ Le serveur ne sert aucun répertoire arbitraire, n’exécute aucune commande sy
 - Identité de carte logique associée par l’opérateur ; absence de preuve cryptographique d’identité du matériel.
 - Les captures ont un historique borné : `lost`, `source_lost`, `epoch` et les déconnexions permettent de détecter les lacunes, pas de récupérer des octets déjà perdus. Les clients doivent s’abonner et stocker leurs preuves.
 - Pas d’arrêt forcé garanti d’un effacement ou d’une programmation ; quarantaine et récupération explicites.
-- Pas d’auto-reconnexion USB ou réseau qui pourrait redémarrer une carte sans décision de l’opérateur. Retrouver un port déjà autorisé ne réexécute aucune ancienne commande.
+- Reconnexion USB automatique limitée au port préalablement choisi et à la même identité physique, sans rejeu de commande. La déconnexion volontaire désactive cette reprise. Un blocage persistant interdit le retour console automatique ; la liaison serveur seule se reconnecte explicitement. Toute ouverture du chargeur ou de la console peut redémarrer la carte.
 - Le retour console ouvre le port et peut réinitialiser la carte ; l’absence de reset supplémentaire et la capture depuis la ROM restent à qualifier physiquement.
 - Dépendance navigateur externe esptool-js 0.7.0 ; les particularités S3/C3 et les modes USB doivent être validés sur cartes réelles.
+
+Seul l’agent physique authentifié peut libérer un pilotage abandonné après confirmation opérateur. Le serveur refuse cette libération tant que le matériel reste en exécution ou non stabilisé ; elle ne lève pas la quarantaine. Le maintien d’écran est une demande Screen Wake Lock pendant le travail, sans garantie d’exécution en arrière-plan.
 
 Le client manuel verrouille la sélection sur la carte réservée ; les commandes revérifient cette correspondance et utilisent la famille de puce associée à la réservation. La liste peut être actualisée sans changer la cible active.
