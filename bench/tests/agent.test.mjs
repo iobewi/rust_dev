@@ -45,7 +45,7 @@ test('UART backpressure drops are observable in the source sequence',()=>{
  x.agent.event('uart',{data:'AA=='});x.agent.socket.bufferedAmount=0;x.agent.event('uart',{data:'AA=='});
  assert.deepEqual(x.messages.map(m=>m.seq),[1,3]);
 });
-test('engine never resets native USB using EN or IO0',async()=>{
+test('engine never resets an unidentified native USB port or exposes IO0',async()=>{
  const engine=new EspEngine({getInfo:()=>({usbVendorId:0x303a})},{},()=>{});
  assert.equal(engine.capabilities().includes('reset'),false);
  await assert.rejects(engine.reset());

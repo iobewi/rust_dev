@@ -51,7 +51,7 @@ Les agents utilisent REST seulement pour uploader les dumps et télécharger les
 | Commande | Arguments | Grant local temporaire |
 |---|---|---|
 | `identify` | `{}` | Non |
-| `reset` | `{}` ; console externe EN seulement | Non |
+| `reset` | `{}` ; en console, EN sur pont UART ou reset interne USB Serial/JTAG 303a:1001 | Non |
 | `console` | `{}` | Non |
 | `partitions` | `address` défaut 0x8000, `return_console` | Non |
 | `flash.read` | `address`, `size`, `return_console` ; résultat contient `artifact` | Non |
@@ -139,3 +139,26 @@ Un déclencheur automatique conserve sa réservation jusqu’à son expiration, 
 ### Redirection locale de session
 
 `create_app(..., origin="http://localhost:8080", ui_forward_peers=["172.18.0.1/32"])` configure le même contrôle que les variables d’environnement `BENCH_ORIGIN` et `BENCH_UI_FORWARD_PEERS`. Le pair réel doit correspondre à une adresse/CIDR autorisé. L’origine des mutations et du WebSocket doit être exactement celle configurée ; les en-têtes proxy et le Host interne réécrit ne la remplacent jamais. En HTTPS public, le cookie est Secure même si le relais parle HTTP au backend. Une configuration sans origine explicite, avec une origine non loopback, des credentials ou un chemin est refusée au démarrage. Ces règles s’appliquent au bootstrap, aux appels REST par cookie et à l’authentification WebSocket ; les clients Bearer gardent leur contrat.
+
+### Reset interne USB Serial/JTAG
+
+La capacité `reset` est annoncée pour un pont UART externe et pour le contrôleur
+USB Serial/JTAG identifié par VID:PID `303a:1001`. Elle n’est pas déduite du seul VID
+Espressif : un port OTG/CDC ou non identifié ne l’annonce pas. `io0` reste réservé au
+pont UART externe. Les déclencheurs reset emploient la même méthode bornée et le
+même verrou matériel ; aucun reset n’est exécuté en mode chargeur ou en quarantaine.
+
+En console USB Serial/JTAG, le moteur utilise le contrôle CDC RTS avec DTR relâché :
+assertion 200 ms, relâchement, attente 200 ms. Il ne pilote pas la broche EN et ne
+force pas IO0. Le port de capture reste ouvert. Une erreur est remontée sans retry ;
+le relâchement est tenté même si l’assertion échoue. Le résultat `reset:true` signifie
+que la séquence a été envoyée, `method` vaut `usb_serial_jtag` ou `en`, et
+`boot_verified:false` interdit de conclure que le firmware a effectivement démarré.
+
+Espressif distingue ce reset des cœurs d’un reset système : les strappings ne sont
+pas rééchantillonnés. Une entrée manuelle en téléchargement peut donc nécessiter un
+reset physique ; aucun watchdog de secours ni accès registre implicite n’est ajouté.
+Si le contrôleur disparaît du bus, aucune commande USB ne peut le réinitialiser.
+Sources : [modes de reset Espressif](https://docs.espressif.com/projects/esptool/en/latest/esp32s3/esptool/advanced-options.html)
+et [séquence hard_reset Espressif](https://github.com/espressif/esp-pylib/blob/master/esp_pylib/serial_reset.py).
+Cette méthode doit encore être qualifiée sur la carte et le navigateur réels.

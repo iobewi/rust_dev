@@ -84,7 +84,8 @@ test('automatic manual operations and independent API share exclusion across two
  }finally{await browser?.close();proc.kill('SIGTERM');lines.close();}
 });
 
-test('local browser session connects Web Serial and drives automatic per-operation control without tokens', async () => {
+for (const usbJtag of [false,true]) {
+test(`local browser session and direct control over ${usbJtag?'USB Serial/JTAG':'UART bridge'} without tokens`, async () => {
  const { readFile } = await import('node:fs/promises');
  const proc=spawn('python3',['tests/browser_fixture.py'],{cwd:new URL('..',import.meta.url),stdio:['ignore','pipe','pipe']});
  let stderr='';proc.stderr.on('data',b=>stderr+=b);const lines=createInterface({input:proc.stdout});let browser;
@@ -93,16 +94,16 @@ test('local browser session connects Web Serial and drives automatic per-operati
   browser=await chromium.launch({headless:true,executablePath:chromium.executablePath(),args:['--no-sandbox']});
   const page=await browser.newPage({viewport:{width:1280,height:1000}}),errors=[];page.on('pageerror',e=>errors.push(e.message));
   await page.route('https://unpkg.com/esptool-js@0.7.0/bundle.js',route=>route.fulfill({contentType:'application/javascript',headers:{'Access-Control-Allow-Origin':'*'},path:new URL('serial-loader-fixture.js',import.meta.url).pathname}));
-  await page.addInitScript(()=>{
+  await page.addInitScript(usbJtag=>{
    const serial=new EventTarget();
-   const port={readable:null,writable:null,controller:null,signals:[],getInfo:()=>({usbVendorId:0x1a86}),
+   const port={readable:null,writable:null,controller:null,signals:[],getInfo:()=>usbJtag?{usbVendorId:0x303a,usbProductId:0x1001}:{usbVendorId:0x1a86},
     async open(){if(this.readable)throw new Error('Port already open');this.readable=new ReadableStream({start:controller=>{this.controller=controller;controller.enqueue(new Uint8Array([82,69,65,68,89,13,10,0,255]));}});this.writable=new WritableStream();},
     async close(){try{this.controller?.close();}catch{}this.readable=null;this.writable=null;},async setSignals(value){this.signals.push(value);}};
    window.__portAuthorized=false;window.__chooserCount=0;serial.requestPort=async()=>{window.__chooserCount++;window.__portAuthorized=true;return port;};serial.getPorts=async()=>window.__portAuthorized?[port]:[];window.__serialPort=port;window.__serial=serial;
    window.__wakeRequests=0;window.__wakeReleases=0;
    Object.defineProperty(navigator,'wakeLock',{value:{request:async()=>{window.__wakeRequests++;const lock=new EventTarget();lock.release=async()=>{window.__wakeReleases++;lock.dispatchEvent(new Event('release'));};return lock;}},configurable:true});
    Object.defineProperty(navigator,'serial',{value:serial,configurable:true});
-  });
+  },usbJtag);
   await page.goto(url);assert.equal(await page.locator('#access-panel').isVisible(),false);
   await page.waitForFunction(()=>document.querySelector('#device-id').value==='board');
   assert.equal(await page.locator('#card-details').isVisible(),false);
@@ -117,6 +118,15 @@ test('local browser session connects Web Serial and drives automatic per-operati
   await page.waitForFunction(()=>document.querySelector('#agent-state').textContent==='Agent connecté');
   await page.waitForFunction(()=>!document.querySelector('[data-command="reset"]').disabled);
   assert.equal(await page.locator('[data-command=console]').isDisabled(),true);
+  assert.equal(await page.textContent('#reset-device'),usbJtag?'Reset USB':'Reset EN');
+  assert.equal(await page.textContent('#signals-info'),usbJtag?'Non exposés':'Disponibles');
+  assert.equal(await page.locator('#io0').isDisabled(),usbJtag);
+  assert.equal(await page.locator('#card-mode-actions #reset-device').count(),usbJtag?1:0);
+  await page.click('#reset-device');
+  await page.waitForFunction(()=>{const op=JSON.parse(document.querySelector('#result').textContent);return op.command==='reset'&&op.state==='completed';});
+  const resetResult=JSON.parse(await page.textContent('#result')).result;
+  assert.equal(resetResult.method,usbJtag?'usb_serial_jtag':'en');assert.equal(resetResult.boot_verified,false);
+
   await closeStatus(page);
   assert.equal(await page.textContent('#usb-toggle'),'Déconnecter');
   assert.equal(await page.locator('#connect,#disconnect,#reconnect,[data-status=usb]').count(),0);
@@ -196,6 +206,7 @@ test('local browser session connects Web Serial and drives automatic per-operati
     if(!response.ok)throw new Error('Loader setup rejected: '+response.status);
   });
   await page.waitForFunction(()=>document.querySelector('#device-mode').textContent==='loader'&&!document.querySelector('[data-command="console"]').disabled);
+  assert.equal(await page.locator('#reset-device').isDisabled(),true);
   await openStatus(page,'card');await page.click('[data-command="console"]');
   await page.waitForFunction(()=>{const op=JSON.parse(document.querySelector('#result').textContent);return op.command==='console'&&op.state==='completed';});
   await page.waitForFunction(()=>document.querySelector('#device-mode').textContent==='console');
@@ -334,6 +345,7 @@ test('local browser session connects Web Serial and drives automatic per-operati
   assert.deepEqual(errors,[]);
  } finally {await browser?.close();proc.kill('SIGTERM');lines.close();}
 });
+}
 
 test('automatic browser session and manual API work through a real HTTP and WebSocket port forward',async()=>{
  const proc=spawn('python3',['tests/browser_fixture.py','--forwarded'],{cwd:new URL('..',import.meta.url),stdio:['ignore','pipe','pipe']});
