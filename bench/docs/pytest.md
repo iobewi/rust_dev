@@ -1,5 +1,10 @@
 # Recettes matérielles avec pytest
 
+La [campagne de qualification v2](qualification-v2.md) fournit des recettes de
+lecture seule avec refus précis, référence vérifiée et preuves automatiques pour
+les deux clients, les interruptions et le nettoyage. Elle doit être rejouée sur
+matériel ; les verdicts de la campagne historique restent attachés à ses fichiers.
+
 Le moteur de recette est pytest. Le composant `bench/python` fournit un client API v1
 sans dépendance d’exécution et un petit plugin pytest optionnel. Il ne possède pas le
 port série : le navigateur reste l’agent matériel et le serveur conserve l’exclusion,

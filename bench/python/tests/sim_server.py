@@ -10,6 +10,7 @@ from tools.sim_agent import run
 
 TOKENS = {
     "pytest-client-test-token": {"id": "pytest", "role": "client", "scopes": ["read", "control", "program"]},
+    "pytest-second-test-token": {"id": "second", "role": "client", "scopes": ["read", "control"]},
     "pytest-reader-test-token": {"id": "reader", "role": "client", "scopes": ["read"]},
     "pytest-agent-test-token": {"id": "agent", "role": "agent", "devices": ["board"]},
 }
