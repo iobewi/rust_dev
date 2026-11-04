@@ -105,8 +105,14 @@ test('local browser session connects Web Serial and drives automatic per-operati
   });
   await page.goto(url);assert.equal(await page.locator('#access-panel').isVisible(),false);
   await page.waitForFunction(()=>document.querySelector('#device-id').value==='board');
+  assert.equal(await page.locator('#card-details').isVisible(),false);
+  assert.equal(await page.locator('#status-label-card').isVisible(),false);
+  assert.equal(await page.locator('.device-panel #usb-toggle').isVisible(),true);
   await page.click('#usb-toggle');await page.waitForFunction(()=>document.querySelector('#usb-state').textContent==='connecté'||!document.querySelector('#client-state').textContent.startsWith('Connectez un port série'));
   assert.equal(await page.textContent('#usb-state'),'connecté',JSON.stringify({feedback:await page.textContent('#client-state'),errors}));
+  assert.equal(await page.locator('#card-details').isVisible(),true);
+  const usbTop=await page.locator('.usb-group').evaluate(node=>node.getBoundingClientRect().top), cardTop=await page.locator('#status-card').evaluate(node=>node.getBoundingClientRect().top);
+  assert.ok(usbTop<cardTop);
   await page.waitForFunction(()=>document.querySelector('#uart-log').textContent.includes('READY'));
   await page.waitForFunction(()=>document.querySelector('#agent-state').textContent==='Agent connecté');
   await page.waitForFunction(()=>!document.querySelector('[data-command="reset"]').disabled);
@@ -234,6 +240,7 @@ test('local browser session connects Web Serial and drives automatic per-operati
   const generation=await page.evaluate(async()=>{const r=await fetch('/api/v1/devices',{headers:{Authorization:'Bearer client-alice-123456789'}});return (await r.json()).devices[0].generation;});
   await page.evaluate(async()=>{const port=window.__serialPort;port.controller.error(new DOMException('Unplugged','NetworkError'));await port.close();const event=new Event('disconnect');Object.defineProperty(event,'port',{value:port});window.__serial.dispatchEvent(event);});
   await page.waitForFunction(()=>document.querySelector('#usb-state').textContent==='non connecté');
+  assert.equal(await page.locator('#card-details').isVisible(),false);
   await page.waitForFunction(async old=>{const r=await fetch('/api/v1/devices',{headers:{Authorization:'Bearer client-alice-123456789'}});const d=(await r.json()).devices[0];return d.connected&&d.generation!==old;},generation);
   try { await page.waitForFunction(()=>document.querySelector('#usb-state').textContent==='connecté'); }
   catch(error) { throw new Error(JSON.stringify({feedback:await page.textContent('#client-state'),journal:await page.textContent('#agent-log'),errors}),{cause:error}); }
@@ -305,10 +312,13 @@ test('local browser session connects Web Serial and drives automatic per-operati
   await page.waitForFunction(()=>!document.querySelector('#usb-toggle').disabled);
   await page.click('#usb-toggle');
   await page.waitForFunction(()=>document.querySelector('#usb-state').textContent==='non connecté'&&document.querySelector('#usb-toggle').textContent==='Connecter');
+  assert.equal(await page.locator('#card-details').isVisible(),false);
+  assert.equal(await page.locator('#status-label-card').isVisible(),false);
   await page.waitForTimeout(1700);assert.equal(await page.textContent('#usb-state'),'non connecté');
   await page.click('#usb-toggle');
   await page.waitForFunction(()=>document.querySelector('#usb-state').textContent==='connecté'&&!document.querySelector('#usb-toggle').disabled);
   assert.equal(await page.textContent('#usb-toggle'),'Déconnecter');assert.equal(await page.evaluate(()=>window.__chooserCount),1);
+  assert.equal(await page.locator('#card-details').isVisible(),true);
   // A persisted uncertain outcome survives automatic reconnect; no API work is replayed.
   let replayed=0;page.on('request',r=>{if(r.method()==='POST'&&r.url().endsWith('/api/v1/operations'))replayed++;});
   await page.evaluate(async()=>{localStorage.setItem('bench.v1.hold.board','1');const port=window.__serialPort;port.controller.error(new DOMException('Unplugged','NetworkError'));await port.close();const e=new Event('disconnect');Object.defineProperty(e,'port',{value:port});window.__serial.dispatchEvent(e);});
