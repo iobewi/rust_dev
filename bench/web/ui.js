@@ -277,17 +277,16 @@ function renderState() {
   $('devices').disabled = working || usbBusy || Boolean(reconnect.running);
   $('cancel').disabled = !working || !current;
   $('usb-state').textContent = portConnected ? 'connecté' : 'non connecté';
-  $('device-mode').textContent = local ? engine?.mode || '—' : d?.connected ? 'Agent distant' : '—';
+  $('card-commands').dataset.mode = local ? engine?.mode || 'off' : 'remote';
   $('chip-info').textContent = d?.chip || '—'; $('flash-info').textContent = d?.flash_size ? `${hex(d.flash_size)} · ${d.flash_size} octets` : '—';
   $('rdid-info').textContent = local && localDevice.flash_id != null ? hex(localDevice.flash_id) : '—';
   $('interface-info').textContent = local ? engine?.usbSerialJtag ? 'USB Serial/JTAG' : engine?.native ? 'USB natif (OTG ou non identifié)' : 'UART externe' : 'Agent du banc';
-  $('signals-info').textContent = capability.has('reset') && capability.has('io0') ? 'Disponibles' : 'Non exposés';
   const resetButton = $('reset-device'), usbReset = local && engine?.usbSerialJtag;
-  resetButton.hidden = Boolean(local && engine?.native && !usbReset);
+  $('card-reset-actions').hidden = !capability.has('reset');
+  resetButton.hidden = !capability.has('reset');
+  $('card-boot-actions').hidden = !capability.has('io0');
   resetButton.textContent = usbReset ? 'Reset USB' : local ? 'Reset EN' : 'Redémarrer';
   resetButton.title = usbReset ? 'Redémarre via le contrôleur USB Serial/JTAG, sans piloter EN ou IO0.' : 'Redémarre par EN, en mode console avec un pont UART externe.';
-  const resetSlot = $(usbReset ? 'card-mode-actions' : 'card-reset-signals');
-  if (resetButton.parentElement !== resetSlot) resetSlot.append(resetButton);
 
   $('control-state').textContent = working ? 'Opération manuelle en cours' : d?.reservation ? (otherOwner ? 'Pilotée par : ' + d.reservation.owner : 'Déclencheur ou opération en cours') : d?.connected && !d?.localOnly ? 'Disponible · commandes directes' : 'Local · observation';
   $('grant').disabled = !local || !agent?.generation; $('revoke').disabled = $('grant').disabled;
