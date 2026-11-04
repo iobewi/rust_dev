@@ -14,6 +14,9 @@ def pytest_addoption(parser):
     group.addoption("--bench-reference-sha256", help="Previously verified full reference SHA-256")
     group.addoption("--bench-interactive", action="store_true", help="Enable coordinated USB gestures")
     group.addoption("--bench-deliberate-failure", action="store_true", help="Enable intentionally failing M4")
+    group.addoption("--bench-c3-table-address", type=lambda value: int(value, 0),
+                    help="Known C3 partition table address; otherwise probe 0x8000 and 0x10000 read-only")
+    group.addoption("--bench-c3-reset", action="store_true", help="Enable the C3 reset and ROM capture test")
 
 
 @pytest.fixture
@@ -71,3 +74,15 @@ def physical_gesture(pytestconfig):
 def intentional_failure(pytestconfig):
     if not pytestconfig.getoption("--bench-deliberate-failure"):
         pytest.skip("M4 is intentionally red; enable --bench-deliberate-failure explicitly")
+
+
+@pytest.fixture
+def c3_table_addresses(pytestconfig):
+    address = pytestconfig.getoption("--bench-c3-table-address")
+    return [address] if address is not None else [0x8000, 0x10000]
+
+
+@pytest.fixture
+def c3_reset_enabled(pytestconfig):
+    if not pytestconfig.getoption("--bench-c3-reset"):
+        pytest.skip("C3 reset needs explicit --bench-c3-reset")

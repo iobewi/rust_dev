@@ -1,5 +1,9 @@
 # Campagne de qualification v2 — lecture seule
 
+Le [lot C3](qualification-c3.md) dispose d'un fichier dédié : sélectionnez explicitement
+`test_c3.py` sur C3 ou `test_read_only.py` sur S3. Ne lancez pas le dossier entier
+avec `--bench` sur une seule famille : les assertions de famille sont strictes.
+
 Cette campagne renforce les recettes privées de la première qualification de la
 PR #4. Les fichiers historiques et leurs verdicts ne sont pas modifiés. Un PASS
 historique n'est pas une exécution de cette version. Les lots M3 et M7 de l'ancienne
