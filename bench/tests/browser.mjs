@@ -228,7 +228,9 @@ test('local browser session connects Web Serial and drives automatic per-operati
     assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
     const bounds=await page.locator('#status-panel-'+name).boundingBox();assert.ok(bounds.x>=0&&bounds.x+bounds.width<=360);
   }
-  // Native auto-popovers dismiss on an outside click without changing capture or hardware state.
+  // The header stays visible outside the open panel, including on narrow screens.
+  await page.click('.app-header h1');
+  assert.equal(await page.locator('#status-panel-wake').isVisible(),false);
   await page.click('#workspace-tab-operations');
   assert.equal(await page.locator('#status-panel-wake').isVisible(),false);
   assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
