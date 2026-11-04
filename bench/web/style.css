@@ -63,3 +63,5 @@
 .card-group{min-width:0;width:100%;border-top:1px solid var(--line);padding-top:10px}
 .card-group h3{font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);margin:0 0 8px}
 .card-group>p{margin:0 0 8px}.card-group>button{width:100%;margin-top:8px}.card-group>.row{margin-top:10px;gap:8px}.card-group>.row button{flex:1}
+
+.usb-state-line{display:flex;align-items:center;gap:8px}.usb-state-line[data-tone=positive] .status-icon{color:var(--positive)}.usb-state-line[data-tone=active] .status-icon{color:var(--accent)}
