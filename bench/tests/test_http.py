@@ -46,6 +46,18 @@ class HttpTests(unittest.IsolatedAsyncioTestCase):
         r=await self.client.post('/api/v1/leases',json={'device':'board','ttl':60},headers=headers)
         return r,await r.json()
 
+    async def test_physical_agent_can_release_control_without_exposing_lease_id(self):
+        ws = await self.agent()
+        _, lease = await self.reserve(BOB)
+        await ws.send_json({'type': 'release_control', 'device': 'board', 'generation': self.generation})
+        reply = await ws.receive_json()
+        self.assertEqual(reply['type'], 'control_released')
+        self.assertNotIn('lease', reply)
+        r = await self.client.get('/api/v1/devices', headers=ALICE)
+        self.assertIsNone((await r.json())['devices'][0]['reservation'])
+        r, _ = await self.reserve(ALICE)
+        self.assertEqual(r.status, 201)
+
     async def test_authentication_origin_and_static_boundaries(self):
         for path in ['/api/v1/devices','/api/v1/artifacts/nope']:
             r=await self.client.get(path);self.assertEqual(r.status,401)

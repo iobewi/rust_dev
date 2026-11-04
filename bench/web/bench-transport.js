@@ -64,6 +64,19 @@ export function makeBenchTransport(Transport, ESPError, env = {}) {
     }
     async disconnect() { this.abort("closed", "port fermé par disconnect()"); return super.disconnect(); }
 
+    // esptool-js 0.7.0 does not release the writer when an ACK write fails.
+    // In particular USB loss during flash reading must not leave the port locked.
+    async write(data) {
+      this._init();
+      if (this._closed || !this.device?.writable) throw new SerialFault('closed', 'serial output unavailable');
+      const writer = this.device.writable.getWriter();
+      try { await writer.write(this.slipWriter(data)); }
+      catch (error) {
+        if (error?.name === 'NetworkError') { this.abort('closed', 'serial write interrupted'); throw new SerialFault('closed', 'serial write interrupted'); }
+        throw error;
+      } finally { writer.releaseLock(); }
+    }
+
     _waitData(ms) {
       return new Promise((resolve) => {
         const done = () => { clearT(timer); this._waiters.delete(done); resolve(); };
@@ -78,7 +91,11 @@ export function makeBenchTransport(Transport, ESPError, env = {}) {
       const t0 = now();
       this.stats.reads++;
       this._ev("read-start", { timeout });
-      let partial = null, escaping = false, deadline = t0 + timeout, got = 0;
+      let partial = null, length = 0, escaping = false, deadline = t0 + timeout, got = 0;
+      const append = byte => {
+        if (length === partial.length) { const grown = new Uint8Array(Math.max(256, length * 2)); grown.set(partial); partial = grown; }
+        partial[length++] = byte;
+      };
       const finish = (outcome) => { this.stats.readMs += now() - t0; this._ev("read-end", { outcome, ms: now() - t0, bytes: got }); };
       for (;;) {
         const chunk = this._take();
@@ -107,21 +124,22 @@ export function makeBenchTransport(Transport, ESPError, env = {}) {
               finish("invalid-packet");
               throw new SerialFault("invalid-packet", `paquet invalide (octet 0x${byte.toString(16)} au lieu du délimiteur) : bruit possible`);
             }
-            partial = new Uint8Array(0);
+            partial = new Uint8Array(256); length = 0;
           } else if (escaping) {
             escaping = false;
-            if (byte === this.SLIP_ESC_END) partial = this.appendArray(partial, new Uint8Array([this.SLIP_END]));
-            else if (byte === this.SLIP_ESC_ESC) partial = this.appendArray(partial, new Uint8Array([this.SLIP_ESC]));
+            if (byte === this.SLIP_ESC_END) append(this.SLIP_END);
+            else if (byte === this.SLIP_ESC_ESC) append(this.SLIP_ESC);
             else { finish("invalid-packet"); throw new SerialFault("invalid-packet", `séquence SLIP invalide (0xdb, 0x${byte.toString(16)})`); }
           } else if (byte === this.SLIP_ESC) escaping = true;
           else if (byte === this.SLIP_END) {
             if (i + 1 < chunk.length) this._buf = this.appendArray(chunk.slice(i + 1), this._buf || EMPTY);
             finish("packet");
-            return partial;
-          } else partial = this.appendArray(partial, new Uint8Array([byte]));
+            return partial.slice(0, length);
+          } else append(byte);
         }
       }
     }
   }
   return { BenchTransport, SerialFault };
 }
+

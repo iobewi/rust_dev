@@ -1,6 +1,6 @@
 # Contrat API v1
 
-Toutes les routes `/api/v1/*` exigent `Authorization: Bearer TOKEN`. Les erreurs ont la forme `{"error":{"code":"...","message":"..."}}`. HTTP 400 : schéma/digest/adresse invalide ; 401 : token absent ou invalide ; 403 : scope, propriétaire ou grant refusé ; 404 : ressource absente/expirée ; 409 : conflit d’état ; 413 : taille excessive ; 503 : stockage borné plein.
+Les clients externes utilisent `Authorization: Bearer TOKEN` pour les routes `/api/v1/*`. La page locale utilise une session navigateur HttpOnly, contrôlée par origine et connexion locale directe ou relais local explicitement déclaré, sans token JavaScript. Un header Authorization présent est toujours vérifié et ne retombe jamais sur le cookie si son token est invalide. Les erreurs ont la forme `{"error":{"code":"...","message":"..."}}`. HTTP 400 : schéma/digest/adresse invalide ; 401 : token absent ou invalide ; 403 : scope, propriétaire ou grant refusé ; 404 : ressource absente/expirée ; 409 : conflit d’état ; 413 : taille excessive ; 503 : stockage borné plein.
 
 `read` permet les GET. `control` permet les mutations et soumissions. `program` s’ajoute pour flash.write/flash.erase. Une identité voulant consulter les résultats de ses commandes possède donc `read` et `control`.
 
@@ -9,11 +9,12 @@ Toutes les routes `/api/v1/*` exigent `Authorization: Bearer TOKEN`. Les erreurs
 | Méthode et chemin | Entrée | Sortie |
 |---|---|---|
 | `GET /health` | Public | `status`, version du protocole, `epoch` |
-| `GET /api/v1/devices` | — | `devices`, `agents` connectés ; carte : id, famille, capacité, capacités, génération, connexion, quarantaine, durée restante du grant |
+| `GET /api/v1/devices` | — | `devices`, `agents` connectés ; carte : id, famille, capacité, capacités, génération, connexion, quarantaine, durée restante du grant, réservation publique (`owner`, `remaining_seconds`) sans identifiant de réservation |
 | `POST /api/v1/leases` | `{"device":"esp32-local","ttl":900}` | 201 : `id`, `device`, `owner`, `until`, `active` |
 | `GET /api/v1/leases/{id}` | Propriétaire | Réservation active |
 | `PATCH /api/v1/leases/{id}` | `{"ttl":900}` | Renouvellement de la réservation active |
 | `DELETE /api/v1/leases/{id}` | Propriétaire | Libération ; travail en cours = indéterminé |
+| `POST /api/v1/manual-operations` | `device`, `generation`, `command`, `args`, `ttl`, `timeout`, `allow_destructive` | 202 : réservation atomique automatique et opération ; mêmes contrôles que la file normale |
 | `POST /api/v1/operations` | Voir ci-dessous | 202 : opération asynchrone |
 | `GET /api/v1/operations/{id}` | Propriétaire | État, résultat, erreur, `cancel_requested`, éventuel `late_result` |
 | `DELETE /api/v1/operations/{id}` | Propriétaire | Annulation en attente ou demande d’annulation en cours |
@@ -45,12 +46,12 @@ Les agents utilisent REST seulement pour uploader les dumps et télécharger les
 }
 ```
 
-`ttl` borne le délai de départ (0,1 à 120 s). `timeout` borne l’attente du résultat après autorisation de départ (0,1 à 600 s). Le TTL ne sert pas à couper une programmation démarrée. L’agent contrôle aussi l’échéance d’exécution du serveur : après expiration, une opération flash en cours peut se terminer, mais le blocage reste actif et aucun retour console automatique ne redémarre la carte. La réservation dure de 1 à 3 600 s. Aucun retry automatique : après une réponse de soumission perdue, inspecter l’état du banc et ne pas renvoyer aveuglément une écriture. La réservation reste exclusive même si le client HTTP disparaît, jusqu’à libération ou expiration.
+`ttl` borne le délai de départ (0,1 à 120 s). `timeout` borne l’attente du résultat après autorisation de départ (0,1 à 600 s). Le TTL ne sert pas à couper une programmation démarrée. L’agent contrôle aussi l’échéance d’exécution du serveur : après expiration, une opération flash en cours peut se terminer, mais le blocage reste actif et aucun retour console automatique ne redémarre la carte. La réservation dure de 1 à 3 600 s. Aucun retry automatique : après une réponse de soumission perdue, inspecter l’état du banc et ne pas renvoyer aveuglément une écriture. La réservation reste exclusive même si le client HTTP disparaît, jusqu’à libération, expiration ou libération explicite par l’opérateur de l’agent physique (voir `release_control`).
 
 | Commande | Arguments | Grant local temporaire |
 |---|---|---|
 | `identify` | `{}` | Non |
-| `reset` | `{}` ; console externe EN seulement | Non |
+| `reset` | `{}` ; en console, EN sur pont UART ou reset interne USB Serial/JTAG 303a:1001 | Non |
 | `console` | `{}` | Non |
 | `partitions` | `address` défaut 0x8000, `return_console` | Non |
 | `flash.read` | `address`, `size`, `return_console` ; résultat contient `artifact` | Non |
@@ -102,3 +103,62 @@ Une trame `error` refuse une transition : elle n’autorise aucune exécution. L
 Événements agent : `uart` (`seq`, `data`, `at`), `mark/transport/trigger` (`detail` ≤256 caractères), `grant` (`seconds` 0–14 400 ; zéro révoque) et `hold` (blocage de sécurité après incident), `recover` (levée opérateur du blocage, refusée tant qu’une exécution reste en suspens). Un grant ne peut venir que de l’agent authentifié ; l’UI réelle exige une confirmation locale.
 
 Corps JSON REST et trames WS : 64 Kio maximum ; chunk UART : 16 Kio maximum. Les octets secrets d’émission UART et corps HTTP ne sont pas inclus dans les diagnostics d’opération. Les résultats et le flux UART brut restent accessibles aux clients autorisés : les projets doivent les traiter comme potentiellement sensibles.
+
+### Diagnostics et libération opérateur
+
+Les refus de programmation distinguent `program_permission_required` (scope `program` absent) et `destructive_consent_required` (`allow_destructive:true` absent). Le contrôle du grant reste indépendant et intervient avant ces deux refus.
+
+Les erreurs matérielles connues utilisent des codes sans texte brut : `serial_disconnected`, `console_required`, `external_uart_required`, `partition_table_invalid`, `physical_identity_changed`, `operator_recovery_required`. Une table vide/vierge à l’adresse demandée est refusée ; il n’y a aucune recherche ni écriture automatique à une autre adresse. Les erreurs inconnues restent `hardware_command_failed`.
+
+L’agent physique authentifié peut envoyer `{"type":"release_control","device":"…","generation":"…"}`. Le serveur refuse (`still_running`) toute exécution encore en cours ou non stabilisée, y compris après timeout ; sinon il révoque le grant et termine toutes les réservations actives de cette carte, en annulant le travail encore en attente. Réponse : `control_released` avec `device` et `generation`, sans identifiant privé de réservation. Cette action n’existe pas sur l’API REST client et ne lève aucune quarantaine. Le contrôle de génération interdit une demande par un ancien agent. Les déclencheurs sont désarmés localement avant demande et à réception des révocations.
+
+### Lecture longue et diagnostic des échecs
+
+Une commande `flash.read` reste une opération unique côté API et produit au plus un artefact complet. L’agent lit la région par blocs séquentiels d’au plus 1 Mio via esptool-js 0.7.0, sans nouvelle identification entre les blocs, sans retry et sans publication de préfixe partiel. La taille exacte de chaque bloc est vérifiée. L’échéance de départ n’est pas réappliquée pendant la lecture démarrée ; les contrôles de connexion, réservation, autorisation applicable et échéance d’exécution restent actifs. L’interface manuelle demande `timeout:600` pour les lectures ; les clients REST choisissent leur timeout dans les limites existantes, sans prolongation automatique.
+
+`error` conserve un `code` et peut ajouter `phase`, `error_type`, `transport_kind`, `elapsed_ms`, `received_bytes`, `expected_bytes`, `block_address`, `block_size`, `serial_reads`, `serial_bytes`, `serial_timeouts`, `silence_limit_ms`, `last_read_ms`, `last_packet_bytes`, `start_remaining_ms`, `execution_remaining_ms`, `lease_remaining_ms`, `grant_remaining_ms`, `visibility`, `http_status`. Ces champs sont filtrés : aucun message arbitraire d’exception, corps HTTP, nom réseau, token ou contenu flash.
+
+Les phases distinguent notamment `identify`, `flash_read`, `artifact_upload` et `artifact_download`. Les erreurs du transport sont traduites indépendamment de l’ordre de notification USB : `closed` → `serial_disconnected`, `no-response` → `serial_timeout`, `partial-packet` → `serial_partial_packet`, `invalid-packet` → `serial_invalid_packet`. Un échec HTTP d’artefact reste `artifact_transfer_failed`, et non une déconnexion USB. Les erreurs d’échéance distinguent connexion agent perdue, réservation expirée, grant expiré et délai d’exécution dépassé.
+
+Après un échec de lecture flash, la session chargeur est fermée sans retry ; une erreur de nettoyage ne remplace pas l’erreur initiale. Le verrou d’écriture Web Serial est toujours relâché si l’envoi d’un acquittement échoue. Le décodage SLIP utilise un tampon à croissance géométrique au lieu d’une allocation par octet.
+
+### Session navigateur locale et opérations manuelles
+
+`POST /session/v1/open` exige une connexion directe de boucle locale, un Host local et un Origin égal à l’origine exacte de la requête. Il crée/réutilise un cookie `bench_ui_v1` HttpOnly, SameSite Strict, Secure en HTTPS, valable huit heures au plus. Réponse sans secret : identifiant public du client de page, liste des IDs de cartes autorisés et epoch. Le serveur borne le magasin à 128 sessions éphémères. Un redémarrage invalide tous les cookies ; l’expiration ferme la liaison agent et révoque les réservations concernées. Un relais local peut être explicitement déclaré par `BENCH_UI_FORWARD_PEERS` (pairs TCP réels autorisés) avec `BENCH_ORIGIN` (origine publique exacte, obligatoirement une URL loopback). Les headers transférés ne sont jamais utilisés comme preuve d’origine locale. Sans configuration, les relais restent refusés. Ce mode est destiné à une redirection exposée uniquement en boucle locale du PC, pas à une publication LAN.
+
+Le même cookie authentifie REST et le WebSocket agent. Le navigateur envoie `{"type":"auth","version":1}` sans token ; le serveur lie l’agent à cette session et à sa liste de cartes. Les agents externes continuent d’envoyer leur token dans la trame d’authentification. Toute mutation REST par cookie et tout WebSocket de session exigent l’Origin exact ; les clients externes Bearer conservent leur contrat.
+
+`manual-operations` prend une réservation exclusive de 900 s, vérifie la génération affichée et soumet l’opération dans la même file que `operations`. Un changement de génération produit `device_changed` avant départ. Si validation échoue, la nouvelle réservation est immédiatement libérée. Une réservation concurrente produit `device_reserved`, sans reprise forcée ni mise en attente implicite côté page.
+
+L’autorité locale par opération n’est accordée que lorsque le cookie de l’opérateur correspond à la session de l’agent physique de la carte. Elle ne modifie pas `grant_until`. La confirmation destructive reste `allow_destructive:true`, avec scope `program`. Les requêtes Bearer sur cette même route ne reçoivent aucune autorité locale : elles restent soumises aux grants et scopes habituels. Les champs `local_control` ou identité agent envoyés par un client sont refusés ; seul le serveur détermine `local_control` et l’ajoute à l’offre destinée à l’agent.
+
+Après `result_ack` et fin du retour console, l’agent envoie `{"type":"settled","device":"…","generation":"…","id":"…"}`. Le serveur vérifie la génération et l’existence d’un résultat effectivement reçu, refuse les doublons et libère la réservation automatique lorsque toutes ses opérations sont terminales et stabilisées. Une annulation/expiration avant départ la libère également ; un timeout matériel sans résultat reste protégé. Les réservations explicites des clients externes ne sont pas libérées par `settled`.
+
+Un déclencheur automatique conserve sa réservation jusqu’à son expiration, au plus 120 s après stabilisation de l’armement, ou à son désarmement. D’autres actions manuelles de la même session peuvent réutiliser cette réservation automatique ; les autres clients restent exclus. Le désarmement stabilisé permet sa libération. Aucun rejeu n’est ajouté.
+
+### Redirection locale de session
+
+`create_app(..., origin="http://localhost:8080", ui_forward_peers=["172.18.0.1/32"])` configure le même contrôle que les variables d’environnement `BENCH_ORIGIN` et `BENCH_UI_FORWARD_PEERS`. Le pair réel doit correspondre à une adresse/CIDR autorisé. L’origine des mutations et du WebSocket doit être exactement celle configurée ; les en-têtes proxy et le Host interne réécrit ne la remplacent jamais. En HTTPS public, le cookie est Secure même si le relais parle HTTP au backend. Une configuration sans origine explicite, avec une origine non loopback, des credentials ou un chemin est refusée au démarrage. Ces règles s’appliquent au bootstrap, aux appels REST par cookie et à l’authentification WebSocket ; les clients Bearer gardent leur contrat.
+
+### Reset interne USB Serial/JTAG
+
+La capacité `reset` est annoncée pour un pont UART externe et pour le contrôleur
+USB Serial/JTAG identifié par VID:PID `303a:1001`. Elle n’est pas déduite du seul VID
+Espressif : un port OTG/CDC ou non identifié ne l’annonce pas. `io0` reste réservé au
+pont UART externe. Les déclencheurs reset emploient la même méthode bornée et le
+même verrou matériel ; aucun reset n’est exécuté en mode chargeur ou en quarantaine.
+
+En console USB Serial/JTAG, le moteur utilise le contrôle CDC RTS avec DTR relâché :
+assertion 200 ms, relâchement, attente 200 ms. Il ne pilote pas la broche EN et ne
+force pas IO0. Le port de capture reste ouvert. Une erreur est remontée sans retry ;
+le relâchement est tenté même si l’assertion échoue. Le résultat `reset:true` signifie
+que la séquence a été envoyée, `method` vaut `usb_serial_jtag` ou `en`, et
+`boot_verified:false` interdit de conclure que le firmware a effectivement démarré.
+
+Espressif distingue ce reset des cœurs d’un reset système : les strappings ne sont
+pas rééchantillonnés. Une entrée manuelle en téléchargement peut donc nécessiter un
+reset physique ; aucun watchdog de secours ni accès registre implicite n’est ajouté.
+Si le contrôleur disparaît du bus, aucune commande USB ne peut le réinitialiser.
+Sources : [modes de reset Espressif](https://docs.espressif.com/projects/esptool/en/latest/esp32s3/esptool/advanced-options.html)
+et [séquence hard_reset Espressif](https://github.com/espressif/esp-pylib/blob/master/esp_pylib/serial_reset.py).
+Cette méthode doit encore être qualifiée sur la carte et le navigateur réels.

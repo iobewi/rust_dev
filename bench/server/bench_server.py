@@ -12,11 +12,14 @@ from aiohttp import WSMsgType, web
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from protocol import MAX_ARTIFACT, Fault, integer, require
 from server.core import Broker
+from server.ui_sessions import COOKIE, LIFETIME, UISessions, UIAccess
 
 TOKENS = web.AppKey('tokens', dict)
 BROKER = web.AppKey('broker', Broker)
 ORIGIN = web.AppKey('origin', object)
 IDENTITY = web.RequestKey('identity', dict)
+SESSIONS = web.AppKey('ui_sessions', UISessions)
+UI_ACCESS = web.AppKey('ui_access', UIAccess)
 
 PAGES = Path(__file__).resolve().parents[1] / 'web'
 
@@ -50,8 +53,13 @@ async def errors(request, handler):
         require(not origin or origin == expected, 'origin_forbidden', 'Unexpected Origin', 403)
         if request.path.startswith('/api/v1/'):
             authorization = request.headers.get('Authorization', '')
-            require(authorization.startswith('Bearer '), 'unauthenticated', 'Bearer token required', 401)
-            identity = credentials(request.app[TOKENS], authorization[7:])
+            if authorization:
+                require(authorization.startswith('Bearer '), 'unauthenticated', 'Bearer token required', 401)
+                identity = credentials(request.app[TOKENS], authorization[7:])
+            else:
+                session = request.app[SESSIONS].get(request.cookies.get(COOKIE))
+                request.app[UI_ACCESS].check(request, mutation=request.method not in {'GET', 'HEAD'})
+                identity = {'id': session['client'], 'role': 'client', 'scopes': ['read', 'control', 'program'], 'local_agent': session['agent']}
             request[IDENTITY] = identity
             if identity['role'] == 'client':
                 scope = 'read' if request.method == 'GET' else 'control'
@@ -89,6 +97,15 @@ def json_reply(value, status=200):
     return web.json_response(value, status=status)
 
 
+async def browser_session(request):
+    request.app[UI_ACCESS].check(request, mutation=True)
+    key, session = request.app[SESSIONS].open(request.cookies.get(COOKIE))
+    response = json_reply({'client': session['client'], 'devices': session['devices'], 'epoch': request.app[BROKER].epoch})
+    response.set_cookie(COOKIE, key, httponly=True, samesite='Strict', secure=request.app[UI_ACCESS].secure_cookie(request),
+                        path='/', max_age=max(1, int(session['until'] - request.app[BROKER].clock())))
+    return response
+
+
 async def health(request):
     return json_reply({'status': 'ok', 'protocol': 1, 'epoch': request.app[BROKER].epoch})
 
@@ -123,7 +140,8 @@ async def operations(request):
     b.sweep()
     if request.method == 'POST':
         data = await payload(request)
-        result = b.submit(who, request[IDENTITY]['scopes'], data)
+        result = (b.manual(who, request[IDENTITY]['scopes'], data, request[IDENTITY].get('local_agent'))
+                  if request.path.endswith('/manual-operations') else b.submit(who, request[IDENTITY]['scopes'], data))
         return json_reply(result, 202)
     key = request.match_info['id']
     if request.method == 'DELETE':
@@ -190,7 +208,12 @@ async def websocket(request):
     try:
         hello = await ws.receive_json(timeout=5)
         require(isinstance(hello, dict) and hello.get('type') == 'auth' and hello.get('version') == 1)
-        identity = credentials(request.app[TOKENS], hello.get('token'), 'agent')
+        if hello.get('token') is not None:
+            identity = credentials(request.app[TOKENS], hello.get('token'), 'agent')
+        else:
+            request.app[UI_ACCESS].check(request, mutation=True)
+            session = request.app[SESSIONS].get(request.cookies.get(COOKIE))
+            identity = {'id': session['agent'], 'role': 'agent', 'devices': session['devices']}
         b.agent(identity['id'], ws)
         registered = True
         await ws.send_json({'type': 'welcome', 'version': 1, 'epoch': b.epoch, 'server_ms': b.clock() * 1000})
@@ -213,8 +236,8 @@ async def websocket(request):
                     await ws.send_json(b.finish(identity['id'], message))
                 else:
                     b.agent_event(identity['id'], message)
-                    if kind == 'recover':
-                        await ws.send_json({'type': 'recovered', 'device': message['device'], 'generation': message['generation']})
+                    if kind in {'recover', 'release_control'}:
+                        await ws.send_json({'type': 'recovered' if kind == 'recover' else 'control_released', 'device': message['device'], 'generation': message['generation']})
             except (Fault, ValueError, KeyError, TypeError) as e:
                 await ws.send_json({'type': 'error', 'id': message.get('id') if isinstance(message, dict) else None,
                                     'error': {'code': getattr(e, 'code', 'invalid_message')}})
@@ -232,6 +255,13 @@ async def dispatcher(app):
         while True:
             await asyncio.sleep(0.05)
             b = app[BROKER]; b.sweep()
+            for session in app[SESSIONS].sweep():
+                socket = b.agents.get(session['agent'])
+                if socket is not None and not socket.closed:
+                    await socket.close(code=1008, message=b'Browser session expired')
+                for lease in list(b.leases.values()):
+                    if lease['active'] and lease['owner'] == session['client']:
+                        b.release(lease['id'], lease['owner'], 'session_expired')
             sent_revocations.intersection_update(b.leases)
             for lease in list(b.leases.values()):
                 if not lease['active'] and lease['id'] not in sent_revocations:
@@ -268,16 +298,20 @@ async def static(request):
     return web.FileResponse(PAGES / name)
 
 
-def create_app(tokens, broker=None, origin=None):
+def create_app(tokens, broker=None, origin=None, ui_forward_peers=()):
     validate_config(tokens)
+    access = UIAccess(origin, ui_forward_peers)
     app = web.Application(middlewares=[errors], client_max_size=MAX_ARTIFACT)
     app[TOKENS], app[BROKER], app[ORIGIN] = tokens, broker or Broker(), origin
+    allowed = sorted({device for identity in tokens.values() if identity['role'] == 'agent' for device in identity['devices']}) or ['esp32-local']
+    app[UI_ACCESS] = access
+    app[SESSIONS] = UISessions(app[BROKER].clock, allowed)
     app.cleanup_ctx.append(dispatcher)
-    app.add_routes([web.get('/health', health), web.get('/agent/v1/ws', websocket),
+    app.add_routes([web.get('/health', health), web.get('/agent/v1/ws', websocket), web.post('/session/v1/open', browser_session),
                     web.get('/api/v1/devices', devices), web.post('/api/v1/leases', leases),
                     web.get('/api/v1/leases/{id}', leases), web.patch('/api/v1/leases/{id}', leases),
                     web.delete('/api/v1/leases/{id}', leases),
-                    web.post('/api/v1/operations', operations), web.get('/api/v1/operations/{id}', operations),
+                    web.post('/api/v1/operations', operations), web.post('/api/v1/manual-operations', operations), web.get('/api/v1/operations/{id}', operations),
                     web.delete('/api/v1/operations/{id}', operations),
                     web.get('/api/v1/devices/{device}/events', events),
                     web.get('/api/v1/devices/{device}/events/stream', event_stream),
@@ -291,6 +325,7 @@ if __name__ == '__main__':
     if not path:
         sys.exit('Set BENCH_TOKENS_FILE to an external JSON credentials file (see bench/README.md)')
     config = json.loads(Path(path).read_text())
-    web.run_app(create_app(config, origin=os.environ.get('BENCH_ORIGIN')),
+    web.run_app(create_app(config, origin=os.environ.get('BENCH_ORIGIN'),
+                ui_forward_peers=[peer.strip() for peer in os.environ.get('BENCH_UI_FORWARD_PEERS', '').split(',') if peer.strip()]),
                 host=os.environ.get('BENCH_HOST', '127.0.0.1'), port=int(os.environ.get('BENCH_PORT', 8080)),
                 access_log=None)

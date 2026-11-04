@@ -45,7 +45,7 @@ test('UART backpressure drops are observable in the source sequence',()=>{
  x.agent.event('uart',{data:'AA=='});x.agent.socket.bufferedAmount=0;x.agent.event('uart',{data:'AA=='});
  assert.deepEqual(x.messages.map(m=>m.seq),[1,3]);
 });
-test('engine never resets native USB using EN or IO0',async()=>{
+test('engine never resets an unidentified native USB port or exposes IO0',async()=>{
  const engine=new EspEngine({getInfo:()=>({usbVendorId:0x303a})},{},()=>{});
  assert.equal(engine.capabilities().includes('reset'),false);
  await assert.rejects(engine.reset());
@@ -178,5 +178,28 @@ test('console return failure reasserts the hold and informs the broker',async()=
  x.engine.openConsole=async()=>{throw new Error('Port lost');};
  await x.agent.message(x.offer());await x.agent.message({type:'execute',id:'op',deadline_ms:performance.now()+11000,execution_deadline_ms:performance.now()+121000});
  await x.agent.message({type:'result_ack',id:'op',generation:'gen',quarantined:false});
- assert.equal(x.engine.hold,true);assert.equal(x.messages.at(-1).type,'hold');
+ assert.equal(x.engine.hold,true);assert.ok(x.messages.some(message=>message.type==='hold'));assert.equal(x.messages.at(-1).type,'settled');
+});
+
+test('agent publishes safe diagnostics and activity until acknowledgement',async()=>{
+ const { HardwareError }=await import('../web/hardware-errors.js');const x=setup(),logs=[],activity=[];
+ x.agent.onLog=e=>logs.push(e);x.agent.onActivity=v=>activity.push(v);
+ x.engine.execute=async()=>{throw new HardwareError('console_required');};
+ await x.agent.message(x.offer());await x.agent.message({type:'execute',id:'op',deadline_ms:performance.now()+11000,execution_deadline_ms:performance.now()+121000});
+ assert.equal(x.messages.at(-1).error.code,'console_required');assert.equal(logs.at(-1).command,'identify');assert.equal(activity[0],true);
+ await x.agent.message({type:'result_ack',id:'op',generation:'gen',quarantined:false});assert.equal(activity.at(-1),false);
+});
+test('local release refuses active work and does not clear a safety hold',()=>{
+ const x=setup();x.engine.hold=true;x.agent.active={};assert.throws(()=>x.agent.releaseControl());
+ x.agent.active=null;x.agent.releaseControl();assert.equal(x.engine.hold,true);assert.equal(x.agent.grantUntil<=performance.now(),true);
+ assert.equal(x.messages.at(-1).type,'release_control');
+});
+
+test('server-authenticated local operation needs no remote grant, while external operations still do',async()=>{
+ const x=setup();x.agent.grantUntil=0;
+ await x.agent.message({...x.offer(),command:'io0',local_control:true});
+ await x.agent.message({type:'execute',id:'op',deadline_ms:performance.now()+11000,execution_deadline_ms:performance.now()+121000});
+ assert.equal(x.runs(),1);assert.equal(x.messages.at(-1).state,'completed');
+ await x.agent.message({type:'result_ack',id:'op',generation:'gen',quarantined:false});
+ assert.equal(x.messages.at(-1).type,'settled');assert.equal(x.agent.grantUntil,0);
 });
