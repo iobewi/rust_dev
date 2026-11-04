@@ -3,3 +3,8 @@ __pycache__/
 node_modules/
 *.env
 *tokens*.json
+.bench-runs/
+*.egg-info/
+.pytest_cache/
+python/build/
+python/dist/

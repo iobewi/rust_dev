@@ -36,6 +36,8 @@ Les recettes historiques sont retirées, sans être transplantées dans d’autr
 | `web/protocol.js` | Validation indépendante des plans flash et résolution des manifestes locaux |
 | `web/api-client.js`, `web/ui.js` | Client manuel de la même API ; autorisations locales explicites |
 | `tools/sim_agent.py` | Agent externe simulant un périphérique, sans accès USB |
+| `python/src/iobewi_bench/` | Client API synchrone et fixtures pytest ; réservations, artefacts et continuité UART |
+| `recipes/` | Exemple générique de recette pytest en lecture seule, ignoré sans opt-in |
 | `examples/client.py` | Client indépendant, export et assertions appartenant à l’appelant |
 
 Python est conservé. `aiohttp` apporte HTTP asynchrone, WebSocket authentifié, heartbeat et SSE, sans implémenter un protocole WebSocket artisanal ni ajouter un framework applicatif lourd. Toutes les mutations du broker sont synchrones dans une seule boucle asyncio : le test concurrence vérifie qu’une seule réservation gagne. Les transferts réseau ne gardent aucun verrou matériel.
