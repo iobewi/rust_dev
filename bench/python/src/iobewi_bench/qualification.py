@@ -192,6 +192,9 @@ class Campaign:
         try:
             if self.after is not None:
                 self.events()
+        except BaseException as error:
+            errors.append(error)
+        try:
             state = self.snapshot("after")
             assert state["connected"] and not state["quarantined"], "Card did not recover"
             assert state["reservation"] is None, "Reservation remains after cleanup"

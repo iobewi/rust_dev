@@ -113,6 +113,15 @@ def test_cleanup_attempts_every_board_and_preserves_all_failures(sim_bench, tmp_
     assert json.loads((case.directory / "cleanup.json").read_text())["errors"] == ["ValueError", "RuntimeError"]
 
 
+def test_event_capture_failure_still_records_final_device_state(sim_bench, tmp_path, monkeypatch):
+    case = Campaign(sim_bench, "board", tmp_path / "proofs", __file__, "capture-failure")
+    case.start()
+    monkeypatch.setattr(case, "events", Mock(side_effect=AssertionError("events lost")))
+    with pytest.raises(ExceptionGroup):
+        case.close()
+    assert json.loads((case.directory / "after.json").read_text())["device"]["reservation"] is None
+
+
 @pytest.mark.parametrize("batch", [
     {"epoch": "epoch", "lost": 1, "next": 4, "latest": 4, "events": []},
     {"epoch": "changed", "lost": 0, "next": 4, "latest": 4, "events": []},
