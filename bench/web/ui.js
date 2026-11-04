@@ -151,6 +151,11 @@ function statusDetails(name = null) {
     button.setAttribute('aria-expanded', String(open));
     if (restoreFocus) button.focus();
   });
+  if (name) {
+    const title = $('status-panel-' + name).querySelector('.pane-title');
+    title.style.scrollMarginTop = document.querySelector('.app-header').offsetHeight + 'px';
+    title.scrollIntoView({ block: 'nearest' });
+  }
 }
 document.querySelectorAll('[data-status]').forEach(button => {
   button.onclick = () => statusDetails(button.getAttribute('aria-expanded') === 'true' ? null : button.dataset.status);

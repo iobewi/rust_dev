@@ -236,7 +236,10 @@ test('local browser session connects Web Serial and drives automatic per-operati
   await page.click('#status-wake');assert.equal(await page.locator('#status-panel-wake').isVisible(),false);
   const closedTop=await page.locator('.workspace').evaluate(node=>node.getBoundingClientRect().top+scrollY);
   assert.ok(openTop>closedTop+50);
-  await openStatus(page,'card');await openStatus(page,'usb');
+  await page.evaluate(()=>window.scrollTo(0,document.body.scrollHeight));
+  await openStatus(page,'card');
+  assert.ok(await page.locator('#status-panel-card .pane-title').evaluate(node=>node.getBoundingClientRect().top>=document.querySelector('.app-header').getBoundingClientRect().bottom-1));
+  await openStatus(page,'usb');
   assert.equal(await page.locator('#status-panel-card').isVisible(),false);
   assert.equal(await page.locator('.status-panel:visible').count(),1);
   await page.locator('#status-panel-usb [data-close-status]').click();
