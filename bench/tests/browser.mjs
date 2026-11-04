@@ -186,7 +186,19 @@ test(`local browser session and direct control over ${usbJtag?'USB Serial/JTAG':
   await page.waitForFunction(()=>{const op=JSON.parse(document.querySelector('#result').textContent);return op.command==='partitions'&&op.state==='failed'&&document.querySelector('#partition-address').value==='0x20000';});
   assert.equal(await page.locator('#partition-suggestion').isVisible(),false);
   await page.evaluate(()=>{window.__partitionAddress=0x8000;});
-  await page.click('#tab-memory');await page.fill('#address','0x10000');await page.fill('#size','64');await page.click('#read');
+  await page.click('#tab-memory');await page.fill('#address','0x10000');await page.fill('#size','64');
+  await page.evaluate(()=>{window.__pauseFlashRead=true;window.__journalNode=document.querySelector('#agent-log');});
+  await page.click('#read');
+  await page.waitForFunction(()=>typeof window.__continueFlashRead==='function'&&document.querySelector('#agent-log').textContent.includes('0 / 64 octets'));
+  assert.equal(await page.locator('#agent-log').isVisible(),true);
+  assert.equal(await page.locator('#read').isDisabled(),true);
+  await page.click('#workspace-tab-consoles');assert.equal(await page.locator('#agent-log').isVisible(),true);
+  await page.click('#workspace-tab-operations');assert.equal(await page.locator('#agent-log').isVisible(),true);
+  assert.equal(await page.evaluate(()=>window.__journalNode===document.querySelector('#agent-log')),true);
+  // A deliberate journal collapse persists across workspaces; switching alone never hides it.
+  await page.click('#agent-log-toggle');await page.click('#workspace-tab-consoles');await page.click('#workspace-tab-operations');
+  assert.equal(await page.locator('#agent-log').isVisible(),false);await page.click('#agent-log-toggle');
+  await page.evaluate(()=>{window.__pauseFlashRead=false;window.__continueFlashRead();});
   await page.waitForFunction(()=>document.querySelector('#dump-state').textContent.includes('64 octets'));
   assert.ok((await page.textContent('#hex-dump')).includes('ff ff'));
   // A loader SerialFault must survive engine cleanup, WS, broker and UI translation.
