@@ -142,11 +142,24 @@ function indicator(name, label, icon, tone = 'neutral') {
   button.querySelector('use').setAttribute('href', '#icon-' + icon);
   button.setAttribute('aria-label', ({ card: 'Carte', usb: 'USB', agent: 'Agent', control: 'Pilotage', safety: 'Sécurité', wake: 'Veille' }[name]) + ' : ' + label);
 }
-document.querySelectorAll('.status-panel').forEach(panel => {
-  panel.addEventListener('toggle', () => {
-    const button = document.querySelector(`[popovertarget="${panel.id}"]`);
-    button.setAttribute('aria-expanded', String(panel.matches(':popover-open')));
+function statusDetails(name = null) {
+  document.querySelectorAll('[data-status]').forEach(button => {
+    const open = button.dataset.status === name;
+    const panel = $('status-panel-' + button.dataset.status);
+    const restoreFocus = !open && panel.contains(document.activeElement);
+    panel.hidden = !open;
+    button.setAttribute('aria-expanded', String(open));
+    if (restoreFocus) button.focus();
   });
+}
+document.querySelectorAll('[data-status]').forEach(button => {
+  button.onclick = () => statusDetails(button.getAttribute('aria-expanded') === 'true' ? null : button.dataset.status);
+});
+document.querySelectorAll('[data-close-status]').forEach(button => { button.onclick = () => statusDetails(); });
+document.addEventListener('keydown', event => {
+  if (event.key === 'Escape' && document.querySelector('.status-panel:not([hidden])')) {
+    event.preventDefault(); statusDetails();
+  }
 });
 function wakeIndicator(state) {
   $('wake-state').textContent = state;
@@ -192,14 +205,27 @@ function renderConsole() {
   if (!body.children.length) { const empty = document.createElement('div'); empty.className = 'console-empty'; empty.textContent = 'Aucune entrée affichée. La capture brute est conservée.'; body.append(empty); }
   body.scrollTop = follow ? body.scrollHeight : previousScroll; followState();
 }
+let consoleFollowing = true;
 function followState() {
   if ($('workspace-consoles').hidden) return;
   const body = $('uart-log'), following = body.scrollHeight - body.clientHeight - body.scrollTop < 30;
+  consoleFollowing = following;
   $('follow-state').textContent = paused ? 'Affichage en pause · capture active' : following ? 'Suivi du direct' : 'Lecture de l’historique · capture active';
   $('follow').hidden = !paused && following;
 }
 $('uart-log').addEventListener('scroll', followState);
+new ResizeObserver(() => {
+  if ($('workspace-consoles').hidden) return;
+  if (consoleFollowing && !paused) $('uart-log').scrollTop = $('uart-log').scrollHeight;
+  followState();
+}).observe($('uart-log'));
 hook('follow', () => { paused = false; pausedAt = Infinity; $('pause').textContent = 'Pause affichage'; renderConsole(); $('uart-log').scrollTop = $('uart-log').scrollHeight; followState(); });
+hook('console-auto-size', () => {
+  const body = $('uart-log'), follow = body.scrollHeight - body.clientHeight - body.scrollTop < 30;
+  body.style.removeProperty('height');
+  if (follow) body.scrollTop = body.scrollHeight;
+  followState();
+});
 hook('format-text', () => { format = 'text'; $('format-text').setAttribute('aria-pressed', 'true'); $('format-hex').setAttribute('aria-pressed', 'false'); renderConsole(); });
 hook('format-hex', () => { format = 'hex'; $('format-text').setAttribute('aria-pressed', 'false'); $('format-hex').setAttribute('aria-pressed', 'true'); renderConsole(); });
 $('console-search').oninput = renderConsole; $('timestamps').onchange = renderConsole;

@@ -5,7 +5,7 @@
 .uart-pane{margin:10px;border:1px solid var(--accent);box-shadow:0 2px 8px #0002}
 .uart-pane>.pane-title{background:var(--accent);color:light-dark(#fff,#11263a)}
 .uart-pane>.pane-title span{color:inherit}
-.console{height:390px;max-height:75vh;resize:vertical;background:light-dark(#10202e,#0d141c);color:#e3edf5;border-bottom:3px solid var(--accent)}
+.console{height:55dvh;min-height:min(190px,40dvh);max-height:85dvh;resize:vertical;background:light-dark(#10202e,#0d141c);color:#e3edf5;border-bottom:3px solid var(--accent)}
 .console-row time,.console-row .seq{color:#93a8bb}.console-row .kind{color:#8cc9ff}.console-row.mark{background:#29415a}.console-empty{color:#a5b9c9}
 .agent-pane{margin:10px;border:1px solid var(--line)}.agent-log{height:145px;resize:vertical;overflow:auto;min-height:70px;max-height:60vh;background:var(--surface);font:12px/1.7 ui-monospace,Consolas,monospace}
 .agent-log .journal-row{padding:2px 10px;border-bottom:1px solid var(--line);overflow-wrap:anywhere}.journal-row time{color:var(--muted);margin-right:12px}
@@ -21,7 +21,7 @@
 @media(max-width:760px){.help-popup{max-width:calc(100vw - 140px)}}
 @media(pointer:coarse){.help-trigger{min-width:32px;min-height:32px}}
 
-/* Status controls share the full-width workspace; details use native popovers. */
+/* Status details stay in document flow and push the workspace down. */
 .app-header{position:sticky;top:0;z-index:10}
 .icon-definitions{position:absolute;width:0;height:0;overflow:hidden}
 .status-bar{display:flex;align-items:center;justify-content:flex-end;gap:5px;flex-wrap:wrap;min-width:0}
@@ -34,11 +34,13 @@
 .status-icon{width:20px;height:20px;flex:none;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
 .status-item .help-popup{left:auto;right:0;max-width:min(280px,calc(100vw - 24px))}
 .status-item:has([aria-expanded=true]) .help-popup{display:none}
-.status-panel{position:fixed;inset:70px 12px auto auto;margin:0;width:410px;max-width:calc(100vw - 24px);max-height:calc(100dvh - 90px);padding:0;border:1px solid var(--line);border-radius:4px;background:var(--panel);color:var(--ink);box-shadow:0 8px 28px #0003;overflow:auto}
-.status-panel .pane-title{position:sticky;top:0;z-index:1}.status-content{padding:12px}.status-content p{overflow-wrap:anywhere}
-.status-content>.row{margin-top:10px}.status-content label{flex-wrap:wrap}.status-content select{max-width:100%}
+.status-panel{margin:0;padding:0;border:0;border-bottom:1px solid var(--line);background:var(--panel);color:var(--ink);min-width:0}
+.status-panel .pane-title{padding:6px 12px}.status-content{padding:12px;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px 24px;align-items:start}.status-content>.hint,.status-content>.access-panel{grid-column:1/-1}.status-content>p{margin:0}.status-content>hr{grid-column:1/-1;width:100%;border:0;border-top:1px solid var(--line)}.status-content p{overflow-wrap:anywhere}
+.status-content>.row{margin:0}.status-content label{flex-wrap:wrap}.status-content select{max-width:100%}
 .status-content #io0-duration{width:85px}.status-content details{padding-block:10px}.status-content details button{margin-top:8px}
 .status-content .access-panel{padding:10px 0;border-bottom:0}.status-content .fields label,.status-content .fields input{width:100%}
-.card-identity{display:grid;grid-template-columns:90px minmax(0,1fr);gap:7px;margin:14px 0}.card-identity dt{color:var(--muted)}.card-identity dd{margin:0;overflow-wrap:anywhere;font-family:ui-monospace,Consolas,monospace}
-@media(max-width:760px){.status-bar{width:100%;justify-content:flex-start}.status-button span{max-width:120px}.status-item .help-popup{position:fixed;top:145px;left:12px;right:auto}.status-panel{top:145px;max-height:calc(100dvh - 165px)}}
-@media(max-width:400px){.status-bar{display:grid;grid-template-columns:repeat(3,minmax(0,1fr))}.status-button{width:100%;padding-inline:4px;justify-content:flex-start}.status-button span{max-width:80px}.status-panel{top:150px;max-height:calc(100dvh - 170px)}}
+.card-identity{grid-column:2;grid-row:1/span 4;display:grid;grid-template-columns:90px minmax(0,1fr);gap:7px;margin:14px 0}.card-identity dt{color:var(--muted)}.card-identity dd{margin:0;overflow-wrap:anywhere;font-family:ui-monospace,Consolas,monospace}
+@media(max-width:760px){.status-bar{width:100%;justify-content:flex-start}.status-button span{max-width:120px}.status-item .help-popup{position:fixed;top:145px;left:12px;right:auto}.status-content{grid-template-columns:1fr}.card-identity{grid-column:auto;grid-row:auto}}
+@media(max-width:400px){.status-bar{display:grid;grid-template-columns:repeat(3,minmax(0,1fr))}.status-button{width:100%;padding-inline:4px;justify-content:flex-start}.status-button span{max-width:80px}}
+
+#console-auto-size{min-height:26px;padding:2px 7px;font-size:11px}.uart-pane>.pane-title #console-auto-size{background:transparent;color:inherit;border-color:currentColor}

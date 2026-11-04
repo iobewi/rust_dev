@@ -228,13 +228,35 @@ test('local browser session connects Web Serial and drives automatic per-operati
     assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
     const bounds=await page.locator('#status-panel-'+name).boundingBox();assert.ok(bounds.x>=0&&bounds.x+bounds.width<=360);
   }
-  // The header stays visible outside the open panel, including on narrow screens.
-  await page.click('.app-header h1');
-  assert.equal(await page.locator('#status-panel-wake').isVisible(),false);
+  // Inline details push the workspace down and persist while the rest of the page is used.
+  assert.equal(await page.locator('[popover]').count(),0);
+  const openTop=await page.locator('.workspace').evaluate(node=>node.getBoundingClientRect().top+scrollY);
   await page.click('#workspace-tab-operations');
-  assert.equal(await page.locator('#status-panel-wake').isVisible(),false);
-  assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
+  assert.equal(await page.locator('#status-panel-wake').isVisible(),true);
+  await page.click('#status-wake');assert.equal(await page.locator('#status-panel-wake').isVisible(),false);
+  const closedTop=await page.locator('.workspace').evaluate(node=>node.getBoundingClientRect().top+scrollY);
+  assert.ok(openTop>closedTop+50);
+  await openStatus(page,'card');await openStatus(page,'usb');
+  assert.equal(await page.locator('#status-panel-card').isVisible(),false);
+  assert.equal(await page.locator('.status-panel:visible').count(),1);
+  await page.locator('#status-panel-usb [data-close-status]').click();
+  assert.equal(await page.locator('#status-panel-usb').isVisible(),false);
+  assert.equal(await page.locator('#status-usb').evaluate(node=>node===document.activeElement),true);
   await page.click('#workspace-tab-consoles');
+  // Default height follows the viewport; a manual height lasts until Hauteur auto.
+  if (await page.locator('#follow').isVisible()) await page.click('#follow');
+  await page.setViewportSize({width:1280,height:1000});
+  const tall=await page.locator('#uart-log').evaluate(node=>node.getBoundingClientRect().height);
+  await page.setViewportSize({width:1280,height:700});
+  const short=await page.locator('#uart-log').evaluate(node=>node.getBoundingClientRect().height);
+  await page.waitForFunction(()=>document.querySelector('#follow').hidden);
+  assert.ok(tall-short>100);assert.ok(Math.abs(short-700*.55)<5);
+  await page.locator('#uart-log').evaluate(node=>{node.style.height='250px';});
+  await page.setViewportSize({width:1280,height:900});
+  assert.equal(await page.locator('#uart-log').evaluate(node=>node.getBoundingClientRect().height),250);
+  await page.click('#console-auto-size');
+  assert.ok(Math.abs(await page.locator('#uart-log').evaluate(node=>node.getBoundingClientRect().height)-900*.55)<5);
+  assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
   // A persisted uncertain outcome survives automatic reconnect; no API work is replayed.
   let replayed=0;page.on('request',r=>{if(r.method()==='POST'&&r.url().endsWith('/api/v1/operations'))replayed++;});
   await page.evaluate(async()=>{localStorage.setItem('bench.v1.hold.board','1');const port=window.__serialPort;port.controller.error(new DOMException('Unplugged','NetworkError'));await port.close();const e=new Event('disconnect');Object.defineProperty(e,'port',{value:port});window.__serial.dispatchEvent(e);});
