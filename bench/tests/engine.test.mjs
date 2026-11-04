@@ -98,3 +98,37 @@ test('partition failure identifies the address problem without exposing raw flas
  const x=await setup();x.loader.readFlash=async()=>new Uint8Array(0xc00).fill(255);
  await assert.rejects(x.engine.execute('partitions',{address:0x8000},x.context),e=>e.code==='partition_table_invalid');
 });
+
+
+test('known USB Serial/JTAG exposes an internal reset but never IO0',async()=>{
+ const signals=[],port={getInfo:()=>({usbVendorId:0x303a,usbProductId:0x1001}),setSignals:async value=>signals.push(value)};
+ const engine=new EspEngine(port,{},()=>{});engine.mode='console';
+ assert.equal(engine.capabilities().includes('reset'),true);assert.equal(engine.capabilities().includes('io0'),false);
+ const result=await engine.execute('reset',{}, {check(){}});
+ assert.deepEqual(result,{reset:true,method:'usb_serial_jtag',boot_verified:false});
+ assert.deepEqual(signals,[{dataTerminalReady:false,requestToSend:true},{dataTerminalReady:false,requestToSend:false}]);
+ assert.equal(engine.mode,'console');assert.equal(engine.busy,false);
+ await assert.rejects(engine.execute('io0',{duration_ms:1},{check(){}}),error=>error.code==='external_uart_required');
+ assert.equal(signals.length,2);
+});
+
+test('native OTG or unidentified Espressif ports never advertise or attempt internal reset',async()=>{
+ for(const info of [{usbVendorId:0x303a},{usbVendorId:0x303a,usbProductId:0x4001}]){
+  let calls=0;const engine=new EspEngine({getInfo:()=>info,setSignals:async()=>{calls++;}},{},()=>{});engine.mode='console';
+  assert.equal(engine.capabilities().includes('reset'),false);
+  await assert.rejects(engine.reset(),error=>error.code==='external_uart_required');assert.equal(calls,0);
+ }
+});
+
+test('native reset is refused in loader mode and while quarantined without signaling',async()=>{
+ let calls=0;const engine=new EspEngine({getInfo:()=>({usbVendorId:0x303a,usbProductId:0x1001}),setSignals:async()=>{calls++;}},{},()=>{});
+ engine.mode='loader';await assert.rejects(engine.execute('reset',{}, {check(){}}),error=>error.code==='console_required');
+ engine.mode='console';engine.hold=true;await assert.rejects(engine.execute('reset',{}, {check(){}}));assert.equal(calls,0);
+});
+
+test('native reset attempts release after an assertion failure and preserves the first error',async()=>{
+ const original=new Error('assertion failed'),signals=[];
+ const engine=new EspEngine({getInfo:()=>({usbVendorId:0x303a,usbProductId:0x1001}),setSignals:async value=>{signals.push(value);throw original;}},{},()=>{});engine.mode='console';
+ await assert.rejects(engine.reset(),error=>error===original);
+ assert.equal(signals.length,2);assert.equal(signals[1].requestToSend,false);
+});

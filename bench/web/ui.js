@@ -270,7 +270,8 @@ function renderState() {
   document.querySelectorAll('[data-hardware]').forEach(button => {
     const command = button.dataset.command || actions[button.id];
     button.disabled = !base || !capability.has(command) || Boolean(blocked && !safeCommands.has(command)) ||
-      command === 'console' && (!local || engine?.mode !== 'loader');
+      command === 'console' && (!local || engine?.mode !== 'loader') ||
+      command === 'reset' && local && engine?.mode !== 'console';
   });
   $('partition-suggestion').hidden = partitionSuggestions.get(selected()) !== d?.generation || !d?.generation || Number($('partition-address').value) !== 0x8000;
   $('devices').disabled = working || usbBusy || Boolean(reconnect.running);
@@ -279,8 +280,15 @@ function renderState() {
   $('device-mode').textContent = local ? engine?.mode || '—' : d?.connected ? 'Agent distant' : '—';
   $('chip-info').textContent = d?.chip || '—'; $('flash-info').textContent = d?.flash_size ? `${hex(d.flash_size)} · ${d.flash_size} octets` : '—';
   $('rdid-info').textContent = local && localDevice.flash_id != null ? hex(localDevice.flash_id) : '—';
-  $('interface-info').textContent = local ? engine?.native ? 'USB Serial/JTAG' : 'UART externe' : 'Agent du banc';
+  $('interface-info').textContent = local ? engine?.usbSerialJtag ? 'USB Serial/JTAG' : engine?.native ? 'USB natif (OTG ou non identifié)' : 'UART externe' : 'Agent du banc';
   $('signals-info').textContent = capability.has('reset') && capability.has('io0') ? 'Disponibles' : 'Non exposés';
+  const resetButton = $('reset-device'), usbReset = local && engine?.usbSerialJtag;
+  resetButton.hidden = Boolean(local && engine?.native && !usbReset);
+  resetButton.textContent = usbReset ? 'Reset USB' : local ? 'Reset EN' : 'Redémarrer';
+  resetButton.title = usbReset ? 'Redémarre via le contrôleur USB Serial/JTAG, sans piloter EN ou IO0.' : 'Redémarre par EN, en mode console avec un pont UART externe.';
+  const resetSlot = $(usbReset ? 'card-mode-actions' : 'card-reset-signals');
+  if (resetButton.parentElement !== resetSlot) resetSlot.append(resetButton);
+
   $('control-state').textContent = working ? 'Opération manuelle en cours' : d?.reservation ? (otherOwner ? 'Pilotée par : ' + d.reservation.owner : 'Déclencheur ou opération en cours') : d?.connected && !d?.localOnly ? 'Disponible · commandes directes' : 'Local · observation';
   $('grant').disabled = !local || !agent?.generation; $('revoke').disabled = $('grant').disabled;
   $('grant-state').textContent = local && agent?.grantUntil > performance.now() ? `Opérations distantes autorisées : ${Math.ceil((agent.grantUntil - performance.now()) / 1000)} s` : 'À la demande · aucune autorisation distante active.';

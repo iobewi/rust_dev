@@ -8,7 +8,9 @@ const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 export class EspEngine {
   constructor(port, deps, event, hold = () => {}) {
     this.port = port; this.deps = deps; this.event = event; this.persistHold = hold;
-    this.native = port.getInfo().usbVendorId === 0x303a;
+    const usb = port.getInfo();
+    this.native = usb.usbVendorId === 0x303a;
+    this.usbSerialJtag = this.native && usb.usbProductId === 0x1001;
     this.mode = 'off'; this.reader = null; this.loader = null; this.baudrate = 115200;
     this.flashBaud = 460800; this.hold = false; this.trigger = null; this.tail = new Uint8Array();
     this.trace = new Tracer(); this.busy = false; this.phase = 'prepare'; this.readProgress = {};
@@ -56,7 +58,8 @@ export class EspEngine {
   }
   capabilities() {
     const caps = ['identify', 'partitions', 'flash.read', 'flash.write', 'flash.erase', 'uart.write', 'uart.configure', 'console', 'mark', 'trigger', 'http.request'];
-    return this.native ? caps : [...caps, 'reset', 'io0'];
+    if (!this.native) return [...caps, 'reset', 'io0'];
+    return this.usbSerialJtag ? [...caps, 'reset'] : caps;
   }
   async openConsole() {
     if (this.hold) throw new HardwareError('operator_recovery_required');
@@ -120,10 +123,22 @@ export class EspEngine {
     return { chip, flash_size: 2 ** code, flash_id: id, mac: await l.chip.readMac(l) };
   }
   async reset() {
-    if (this.native) throw new HardwareError('external_uart_required');
+    if (this.native && !this.usbSerialJtag) throw new HardwareError('external_uart_required');
     if (this.mode !== 'console') throw new HardwareError('console_required');
-    await this.port.setSignals({ dataTerminalReady: false, requestToSend: true });
-    try { await sleep(100); } finally { await this.port.setSignals({ dataTerminalReady: false, requestToSend: false }); }
+    // 303a:1001 interprets CDC RTS as an internal core reset, not a physical EN pin.
+    // Keep DTR deasserted: do not request download mode or expose an IO0 override.
+    let failure;
+    try {
+      await this.port.setSignals({ dataTerminalReady: false, requestToSend: true });
+      await sleep(this.usbSerialJtag ? 200 : 100);
+    } catch (error) { failure = error; }
+    finally {
+      try { await this.port.setSignals({ dataTerminalReady: false, requestToSend: false }); }
+      catch (error) { if (!failure) failure = error; }
+    }
+    if (failure) throw failure;
+    if (this.usbSerialJtag) await sleep(200);
+    return this.usbSerialJtag ? 'usb_serial_jtag' : 'en';
   }
   matchTrigger(chunk) {
     const trigger = this.trigger;
@@ -162,7 +177,7 @@ export class EspEngine {
       if (command === 'mark') { this.event('mark', { detail: args.label }); return { label: args.label }; }
       if (command === 'trigger') {
         if (args.action === 'disarm') { this.cancelTrigger(); return { armed: false }; }
-        if (args.action === 'reset' && this.native) throw new Error('No EN line');
+        if (args.action === 'reset' && !this.capabilities().includes('reset')) throw new HardwareError('external_uart_required');
         this.cancelTrigger();
         this.trigger = { bytes: unb64(args.data), action: args.action, until: performance.now() + args.expires_ms,
           delay: args.delay_ms || 0, live: context.triggerLive || context.live };
@@ -183,7 +198,7 @@ export class EspEngine {
         } finally { clearTimeout(timer); }
       }
       if (command === 'console') { this.setPhase('console', context); await this.openConsole(); return { mode: this.mode }; }
-      if (command === 'reset') { await this.reset(); return { reset: true }; }
+      if (command === 'reset') { const method = await this.reset(); return { reset: true, method, boot_verified: false }; }
       if (command === 'io0') {
         if (this.native) throw new HardwareError('external_uart_required');
         if (this.mode !== 'console') throw new HardwareError('console_required');
