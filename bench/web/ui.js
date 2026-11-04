@@ -264,7 +264,11 @@ function renderState() {
   const capability = new Set(d?.capabilities || []);
   const otherOwner = d?.reservation && d.reservation.owner !== session?.client;
   const base = Boolean(session && info()?.connected && !working && !ownBusy && !otherOwner);
-  document.querySelectorAll('[data-hardware]').forEach(button => { const command = button.dataset.command || actions[button.id]; button.disabled = !base || !capability.has(command) || Boolean(blocked && !safeCommands.has(command)); });
+  document.querySelectorAll('[data-hardware]').forEach(button => {
+    const command = button.dataset.command || actions[button.id];
+    button.disabled = !base || !capability.has(command) || Boolean(blocked && !safeCommands.has(command)) ||
+      command === 'console' && (!local || engine?.mode !== 'loader');
+  });
   $('partition-suggestion').hidden = partitionSuggestions.get(selected()) !== d?.generation || !d?.generation || Number($('partition-address').value) !== 0x8000;
   $('devices').disabled = working;
   $('cancel').disabled = !working || !current;
