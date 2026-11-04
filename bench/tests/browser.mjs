@@ -110,6 +110,7 @@ test('local browser session connects Web Serial and drives automatic per-operati
   await page.waitForFunction(()=>document.querySelector('#uart-log').textContent.includes('READY'));
   await page.waitForFunction(()=>document.querySelector('#agent-state').textContent==='Agent connecté');
   await page.waitForFunction(()=>!document.querySelector('[data-command="reset"]').disabled);
+  assert.equal(await page.locator('[data-command=console]').isDisabled(),true);
   await closeStatus(page);
   assert.equal(await page.textContent('#status-label-usb'),'USB connecté');
   await page.waitForFunction(()=>document.querySelector('#status-label-agent').textContent==='Agent connecté');
@@ -177,9 +178,20 @@ test('local browser session connects Web Serial and drives automatic per-operati
   assert.equal(await page.locator('#workspace-operations').isVisible(),true);
   assert.equal(await page.locator('#panel-operations').isVisible(),true);
   assert.ok((await page.textContent('#client-state')).includes('Port série déconnecté'));
-  await page.waitForFunction(()=>!document.querySelector('[data-command="console"]').disabled);
-  await page.evaluate(()=>{window.__readFault=null;});await openStatus(page,'card');await page.click('[data-command="console"]');
+  await page.waitForFunction(()=>!document.querySelector('[data-command="identify"]').disabled);
+  // Stay in loader explicitly through the API: only this known mode enables Return console.
+  await page.evaluate(async()=>{
+    window.__readFault=null;
+    const devices=await (await fetch('/api/v1/devices')).json(),device=devices.devices.find(d=>d.id==='board');
+    const response=await fetch('/api/v1/manual-operations',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({device:device.id,generation:device.generation,command:'identify',args:{return_console:false}})});
+    if(!response.ok)throw new Error('Loader setup rejected: '+response.status);
+  });
+  await page.waitForFunction(()=>document.querySelector('#device-mode').textContent==='loader'&&!document.querySelector('[data-command="console"]').disabled);
+  await openStatus(page,'card');await page.click('[data-command="console"]');
   await page.waitForFunction(()=>{const op=JSON.parse(document.querySelector('#result').textContent);return op.command==='console'&&op.state==='completed';});
+  await page.waitForFunction(()=>document.querySelector('#device-mode').textContent==='console');
+  assert.equal(await page.locator('[data-command=console]').isDisabled(),true);
 
   await closeStatus(page);
   await page.click('#tab-flash');await page.setInputFiles('#binary',{name:'sample.bin',mimeType:'application/octet-stream',buffer:Buffer.from([1,2,3,4])});
@@ -301,6 +313,7 @@ test('local browser session connects Web Serial and drives automatic per-operati
   assert.equal(await page.locator('#status-card').getAttribute('data-tone'),'warning');
   assert.equal(await page.textContent('#status-label-permissions'),'Autorisations');
   await openStatus(page,'card');assert.equal(await page.locator('#recover').isVisible(),true);
+  assert.equal(await page.locator('[data-command=console]').isDisabled(),true);
   assert.deepEqual(errors,[]);
  } finally {await browser?.close();proc.kill('SIGTERM');lines.close();}
 });
