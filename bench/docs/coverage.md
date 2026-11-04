@@ -1,12 +1,18 @@
 # Couverture fonctionnelle et validation
 
+La [matrice de qualification finale](final-qualification.md) relie les dix exigences
+de l'issue #2 aux tests nommés et aux essais physiques encore nécessaires. Elle donne
+l'ordre de passage C3/S3 et une préparation hors ligne des images/restaurations.
+Les références historiques ci-dessous ne constituent pas une requalification sur
+le SHA courant.
+
 ## Matrice issue de l’existant
 
 | Capacité historique | Nouvelle implémentation | Vérification logicielle / matériel restant |
 |---|---|---|
 | Choisir un port Web Serial | `ui.attach`, `EspEngine` | Sélection physique et permission à valider |
-| Retrouver un port autorisé / reconnexion | Bouton dédié + reconnexion automatique du même port et de la même identité ; aucun rejeu, blocage persistant conservé | Reconnexion automatique et blocage testés dans Chromium avec port simulé ; reprise réelle du correctif à qualifier |
-| UART externe et USB Serial/JTAG | Capacités distinctes, EN/BOOT refusés au natif, esptool conserve sa stratégie USB | Refus natif testés ; S3/C3 et renumérotation USB à qualifier |
+| Retrouver un port autorisé / reconnexion | Connecter ouvre le sélecteur ; reconnexion automatique involontaire du même port et de la même identité ; aucun rejeu, blocage persistant conservé | Reconnexion automatique et blocage testés dans Chromium avec port simulé ; reprise réelle liée au SHA testé |
+| UART externe et USB Serial/JTAG | Capacités distinctes : EN/BOOT externes non exposés au natif ; reset USB interne sur contrôleur Serial/JTAG reconnu | Refus natif et reset interne testés ; S3/C3 et renumérotation USB à qualifier par transport |
 | Capture continue, timestamps | Événements UART binaires numérotés, timestamp source et serveur ; SSE / curseur REST | Chunks binaires, pertes source/anneau testés ; débit réel restant |
 | Identification puce/flash/MAC | Mesure esptool avant enregistrement, revérification avant flash | Contrat et mocks ; RDID/MAC réels restant |
 | Décodage partitions | Lecture 0xc00, magie, bornes et champs numériques | Décodeur Node ; tables réelles restant |
