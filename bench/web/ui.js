@@ -52,7 +52,7 @@ function logAgent(event) {
 }
 hook('agent-log-clear', () => { journal.rows = []; $('agent-log').replaceChildren(); });
 hook('agent-log-toggle', () => { const open = $('agent-log').hidden; $('agent-log').hidden = !open; $('agent-log-toggle').textContent = open ? 'Réduire' : 'Développer'; $('agent-log-toggle').setAttribute('aria-expanded', String(open)); });
-const wake = new WorkWakeLock({ wakeLock: navigator.wakeLock, visible: () => document.visibilityState === 'visible', onState: state => { $('wake-state').textContent = state; } });
+const wake = new WorkWakeLock({ wakeLock: navigator.wakeLock, visible: () => document.visibilityState === 'visible', onState: wakeIndicator });
 const activity = () => wake.update(Boolean(portConnected && (engine?.busy || agent?.active || agent?.awaitingResult)));
 document.addEventListener('visibilitychange', () => wake.update(wake.active, true));
 const reconnect = new SerialReconnect({ ports: () => navigator.serial.getPorts(), idle: () => !working && !engine?.busy && !agent?.active && agent?.socket?.readyState !== 1,
@@ -135,6 +135,24 @@ document.querySelectorAll('.help').forEach(help => {
   help.addEventListener('mouseenter', () => help.classList.remove('dismissed'));
   help.addEventListener('focusin', () => help.classList.remove('dismissed'));
 });
+function indicator(name, label, icon, tone = 'neutral') {
+  const button = $('status-' + name);
+  $('status-label-' + name).textContent = label;
+  button.dataset.tone = tone;
+  button.querySelector('use').setAttribute('href', '#icon-' + icon);
+  button.setAttribute('aria-label', ({ card: 'Carte', usb: 'USB', agent: 'Agent', control: 'Pilotage', safety: 'Sécurité', wake: 'Veille' }[name]) + ' : ' + label);
+}
+document.querySelectorAll('.status-panel').forEach(panel => {
+  panel.addEventListener('toggle', () => {
+    const button = document.querySelector(`[popovertarget="${panel.id}"]`);
+    button.setAttribute('aria-expanded', String(panel.matches(':popover-open')));
+  });
+});
+function wakeIndicator(state) {
+  $('wake-state').textContent = state;
+  const held = state === 'Écran maintenu allumé', normal = state === 'Veille : normale';
+  indicator('wake', held ? 'Écran actif' : normal ? 'Veille normale' : state.includes('masqué') ? 'Onglet masqué' : 'Veille non protégée', held ? 'sun' : normal ? 'moon' : 'alert', held ? 'active' : normal ? 'neutral' : 'warning');
+}
 function closeAccess() { $('access-panel').hidden = true; $('access-toggle').setAttribute('aria-expanded', 'false'); }
 function openAccess() { $('access-panel').hidden = false; $('access-toggle').setAttribute('aria-expanded', 'true'); }
 hook('access-toggle', () => { const open = $('access-panel').hidden; $('access-panel').hidden = !open; $('access-toggle').setAttribute('aria-expanded', String(open)); });
@@ -220,7 +238,6 @@ function renderState() {
   $('interface-info').textContent = local ? engine?.native ? 'USB Serial/JTAG' : 'UART externe' : 'Agent du banc';
   $('signals-info').textContent = capability.has('reset') && capability.has('io0') ? 'Disponibles' : 'Non exposés';
   $('control-state').textContent = working ? 'Opération manuelle en cours' : d?.reservation ? (otherOwner ? 'Pilotée par : ' + d.reservation.owner : 'Déclencheur ou opération en cours') : d?.connected && !d?.localOnly ? 'Disponible · commandes directes' : 'Local · observation';
-  $('lease-state').textContent = $('control-state').textContent;
   $('grant').disabled = !local || !agent?.generation; $('revoke').disabled = $('grant').disabled;
   $('grant-state').textContent = local && agent?.grantUntil > performance.now() ? `Opérations distantes autorisées : ${Math.ceil((agent.grantUntil - performance.now()) / 1000)} s` : 'Opérations distantes sensibles : verrouillées';
   $('revoke').hidden = !(local && agent?.grantUntil > performance.now());
@@ -232,6 +249,14 @@ function renderState() {
   $('disconnect').disabled = !portConnected || working || Boolean(ownBusy);
   $('connect').disabled = working || Boolean(portConnected);
   $('reconnect').disabled = $('connect').disabled;
+  indicator('card', selected() || 'Carte', 'chip');
+  indicator('usb', portConnected ? 'USB connecté' : reconnect.waiting ? 'Reconnexion USB' : 'USB débranché', portConnected ? 'usb' : reconnect.waiting ? 'busy' : 'unplug', portConnected ? 'positive' : reconnect.waiting ? 'active' : 'neutral');
+  const linked = local ? Boolean(agent?.generation && agent?.socket?.readyState === 1) : Boolean(d?.connected);
+  const serverLost = $('server-state').textContent === 'liaison interrompue';
+  indicator('agent', serverLost ? 'Liaison interrompue' : linked ? 'Agent connecté' : 'Agent hors ligne', linked && !serverLost ? 'link' : 'offline', serverLost ? 'warning' : linked ? 'positive' : 'neutral');
+  indicator('control', otherOwner ? 'Occupée · ' + d.reservation.owner : working || ownBusy || d?.reservation ? 'En cours' : d?.connected ? 'Disponible' : 'En attente', otherOwner ? 'user' : working || ownBusy || d?.reservation ? 'busy' : 'check', otherOwner || working || ownBusy || d?.reservation ? 'active' : 'neutral');
+  const granted = local && agent?.grantUntil > performance.now();
+  indicator('safety', blocked ? 'Carte bloquée' : granted ? 'Distant autorisé' : 'Verrouillée', blocked ? 'alert' : granted ? 'unlock' : 'lock', blocked || granted ? 'warning' : 'neutral');
   $('footer-target').textContent = selected() ? `${selected()} · ${$('control-state').textContent}` : 'Aucune carte sélectionnée';
 }
 $('devices').onchange = () => {

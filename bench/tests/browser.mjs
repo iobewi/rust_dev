@@ -6,6 +6,14 @@ import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 const { chromium }=createRequire(import.meta.url)('playwright');
 
+async function openStatus(page, name) {
+ if (!await page.locator('#status-panel-' + name).isVisible()) await page.click('#status-' + name);
+ await page.waitForSelector('#status-panel-' + name, { state: 'visible' });
+}
+async function closeStatus(page) {
+ await page.keyboard.press('Escape');
+}
+
 test('automatic manual operations and independent API share exclusion across two browser agents',async()=>{
  const proc=spawn('python3',['tests/browser_fixture.py'],{cwd:new URL('..',import.meta.url),stdio:['ignore','pipe','pipe']});
  let stderr='';proc.stderr.on('data',b=>stderr+=b);
@@ -38,7 +46,7 @@ test('automatic manual operations and independent API share exclusion across two
   await page.waitForFunction(()=>window.secondAgent?.generation);
   await page.waitForFunction(()=>document.querySelector('#devices').options.length===2);
   assert.equal(await page.locator('#client-token').count(),0);assert.equal(await page.locator('#reserve').count(),0);
-  await page.selectOption('#devices','board');await page.evaluate(()=>{window.blockIdentify=true;});
+  await openStatus(page,'card');await page.selectOption('#devices','board');await page.evaluate(()=>{window.blockIdentify=true;});
   await page.click('[data-command="identify"]');await page.waitForFunction(()=>typeof window.releaseIdentify==='function');
   assert.equal(await page.locator('#devices').isDisabled(),true);
   await page.evaluate(()=>{document.querySelector('#devices').value='board-b';});await page.click('#refresh');
@@ -96,11 +104,15 @@ test('local browser session connects Web Serial and drives automatic per-operati
   });
   await page.goto(url);assert.equal(await page.locator('#access-panel').isVisible(),false);
   await page.waitForFunction(()=>document.querySelector('#device-id').value==='board');
-  await page.click('#connect');await page.waitForFunction(()=>document.querySelector('#usb-state').textContent==='connecté'||!document.querySelector('#client-state').textContent.startsWith('Connectez un port série'));
+  await openStatus(page,'usb');await page.click('#connect');await page.waitForFunction(()=>document.querySelector('#usb-state').textContent==='connecté'||!document.querySelector('#client-state').textContent.startsWith('Connectez un port série'));
   assert.equal(await page.textContent('#usb-state'),'connecté',JSON.stringify({feedback:await page.textContent('#client-state'),errors}));
   await page.waitForFunction(()=>document.querySelector('#uart-log').textContent.includes('READY'));
   await page.waitForFunction(()=>document.querySelector('#agent-state').textContent==='Agent connecté');
   await page.waitForFunction(()=>!document.querySelector('[data-command="reset"]').disabled);
+  await closeStatus(page);
+  assert.equal(await page.textContent('#status-label-usb'),'USB connecté');
+  await page.waitForFunction(()=>document.querySelector('#status-label-agent').textContent==='Agent connecté');
+  assert.equal(await page.locator('.device-panel').count(),0);
   await page.click('#format-hex');await page.waitForFunction(()=>document.querySelector('#uart-log').textContent.includes('00 ff'));
   await page.click('#pause');const frozen=await page.textContent('#uart-log');
   await page.evaluate(()=>window.__serialPort.controller.enqueue(new Uint8Array([42,43])));
@@ -137,9 +149,10 @@ test('local browser session connects Web Serial and drives automatic per-operati
   assert.equal(await page.locator('#panel-operations').isVisible(),true);
   assert.ok((await page.textContent('#client-state')).includes('Port série déconnecté'));
   await page.waitForFunction(()=>!document.querySelector('[data-command="console"]').disabled);
-  await page.evaluate(()=>{window.__readFault=null;});await page.click('[data-command="console"]');
+  await page.evaluate(()=>{window.__readFault=null;});await openStatus(page,'card');await page.click('[data-command="console"]');
   await page.waitForFunction(()=>{const op=JSON.parse(document.querySelector('#result').textContent);return op.command==='console'&&op.state==='completed';});
 
+  await closeStatus(page);
   await page.click('#tab-flash');await page.setInputFiles('#binary',{name:'sample.bin',mimeType:'application/octet-stream',buffer:Buffer.from([1,2,3,4])});
   await page.waitForSelector('#images-body input');await page.locator('#images-body input').fill('0x20000');
   await page.click('#validate-plan');await page.waitForFunction(()=>document.querySelector('#plan-state').textContent.includes('images vérifiées'));
@@ -156,14 +169,24 @@ test('local browser session connects Web Serial and drives automatic per-operati
   const localState=await page.evaluate(async()=>{const r=await fetch('/api/v1/devices');return (await r.json()).devices[0];});
   assert.equal(localState.privileged_seconds,0);
   assert.equal(await page.textContent('#usb-state'),'connecté');
+  // Remote grants remain explicit and their active state is visible with the panel closed.
+  await openStatus(page,'safety');await page.locator('#authorization-settings summary').click();
+  await page.selectOption('#grant-time','60');page.once('dialog',dialog=>dialog.accept());await page.click('#grant');
+  await page.waitForFunction(()=>document.querySelector('#status-label-safety').textContent==='Distant autorisé');
+  await closeStatus(page);assert.equal(await page.locator('#status-safety').getAttribute('data-tone'),'warning');
+  await openStatus(page,'safety');await page.click('#revoke');
+  await page.waitForFunction(()=>document.querySelector('#status-label-safety').textContent==='Verrouillée');
+  await closeStatus(page);
   // Physical agent can release an orphan reservation without restarting the server.
   const orphan=await fetch(url+'/api/v1/leases',{method:'POST',headers:{Authorization:'Bearer client-bob-1234567890','Content-Type':'application/json'},body:JSON.stringify({device:'board',ttl:60})});
   assert.equal(orphan.status,201);
   await page.waitForFunction(()=>!document.querySelector('#release-control').disabled);
-  page.once('dialog',dialog=>dialog.accept());await page.click('#release-control');
+  await page.waitForFunction(()=>document.querySelector('#status-label-control').textContent.includes('bob'));
+  await openStatus(page,'control');page.once('dialog',dialog=>dialog.accept());await page.click('#release-control');
   await page.waitForFunction(()=>document.querySelector('#agent-log').textContent.includes('Pilotage libéré'));
   const released=await fetch(url+'/api/v1/devices',{headers:{Authorization:'Bearer client-alice-123456789'}});
   assert.equal((await released.json()).devices.find(d=>d.id==='board').reservation,null);
+  await closeStatus(page);
   // USB return reconnects only the selected port, with a fresh agent generation.
   const generation=await page.evaluate(async()=>{const r=await fetch('/api/v1/devices',{headers:{Authorization:'Bearer client-alice-123456789'}});return (await r.json()).devices[0].generation;});
   await page.evaluate(async()=>{const port=window.__serialPort;port.controller.error(new DOMException('Unplugged','NetworkError'));await port.close();const event=new Event('disconnect');Object.defineProperty(event,'port',{value:port});window.__serial.dispatchEvent(event);});
@@ -192,13 +215,22 @@ test('local browser session connects Web Serial and drives automatic per-operati
   // A narrow viewport must retain the console and put dense tables in their own horizontal scroller.
   await page.setViewportSize({width:360,height:900});assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
   // Context help is available without persistent prose, by keyboard and pointer.
-  await page.focus('[aria-describedby="help-commandes"]');
-  assert.equal(await page.locator('#help-commandes').isVisible(),true);
-  await page.keyboard.press('Escape');assert.equal(await page.locator('#help-commandes').isVisible(),false);
-  await page.locator('[aria-describedby="help-commandes"]').hover();
-  assert.equal(await page.locator('#help-commandes').isVisible(),true);
-  assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
-  await page.locator('#workspace-tab-operations').click();
+  await page.focus('#status-usb');
+  assert.equal(await page.locator('#status-help-usb').isVisible(),true);
+  await page.keyboard.press('Escape');assert.equal(await page.locator('#status-help-usb').isVisible(),false);
+  await page.locator('#status-usb').hover();
+  assert.equal(await page.locator('#status-help-usb').isVisible(),true);
+  await openStatus(page,'usb');assert.equal(await page.locator('#connect').isVisible(),true);
+  await closeStatus(page);assert.equal(await page.locator('#status-panel-usb').isVisible(),false);
+  assert.equal(await page.locator('#status-usb').getAttribute('aria-expanded'),'false');
+  for (const name of ['card','agent','control','safety','wake']) {
+    await openStatus(page,name);
+    assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
+    const bounds=await page.locator('#status-panel-'+name).boundingBox();assert.ok(bounds.x>=0&&bounds.x+bounds.width<=360);
+  }
+  // Native auto-popovers dismiss on an outside click without changing capture or hardware state.
+  await page.click('#workspace-tab-operations');
+  assert.equal(await page.locator('#status-panel-wake').isVisible(),false);
   assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
   await page.click('#workspace-tab-consoles');
   // A persisted uncertain outcome survives automatic reconnect; no API work is replayed.
@@ -208,6 +240,8 @@ test('local browser session connects Web Serial and drives automatic per-operati
   await page.waitForFunction(()=>document.querySelector('#usb-state').textContent==='connecté');
   await page.waitForFunction(async()=>{const r=await fetch('/api/v1/devices',{headers:{Authorization:'Bearer client-alice-123456789'}});return (await r.json()).devices[0].quarantined;});
   assert.equal(await page.textContent('#device-mode'),'loader');assert.equal(replayed,0);
+  await page.waitForFunction(()=>document.querySelector('#status-label-safety').textContent==='Carte bloquée');
+  assert.equal(await page.locator('#status-safety').getAttribute('data-tone'),'warning');
   assert.deepEqual(errors,[]);
  } finally {await browser?.close();proc.kill('SIGTERM');lines.close();}
 });
@@ -228,7 +262,7 @@ test('automatic browser session and manual API work through a real HTTP and WebS
    window.forwardedAgent.connect();
   });
   await page.waitForFunction(()=>window.forwardedAgent.generation);
-  await page.click('#refresh');await page.waitForFunction(()=>!document.querySelector('[data-command="identify"]').disabled);
+  await openStatus(page,'card');await page.click('#refresh');await page.waitForFunction(()=>!document.querySelector('[data-command="identify"]').disabled);
   await page.click('[data-command="identify"]');
   await page.waitForFunction(()=>{const op=JSON.parse(document.querySelector('#result').textContent);return op.state==='completed'&&op.result?.simulated;});
   await page.waitForFunction(async()=>{const r=await fetch('/api/v1/devices');const d=(await r.json()).devices[0];return d.reservation===null;});
