@@ -5,6 +5,7 @@ export class SerialReconnect {
   }
   remember(port, identity) { this.stop(); this.port = port; this.identity = identity; }
   stop() { this.version++; this.cancel(this.timer); this.waiting = false; }
+  forget() { this.stop(); this.port = null; this.identity = null; }
   disconnected(port) {
     if (port !== this.port) return;
     this.stop(); this.waiting = true; this.retry(this.version);

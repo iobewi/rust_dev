@@ -98,8 +98,8 @@ test(`local browser session and direct control over ${usbJtag?'USB Serial/JTAG':
    const serial=new EventTarget();
    const port={readable:null,writable:null,controller:null,signals:[],getInfo:()=>usbJtag?{usbVendorId:0x303a,usbProductId:0x1001}:{usbVendorId:0x1a86},
     async open(){if(this.readable)throw new Error('Port already open');this.readable=new ReadableStream({start:controller=>{this.controller=controller;controller.enqueue(new Uint8Array([82,69,65,68,89,13,10,0,255]));}});this.writable=new WritableStream();},
-    async close(){try{this.controller?.close();}catch{}this.readable=null;this.writable=null;},async setSignals(value){this.signals.push(value);}};
-   window.__portAuthorized=false;window.__chooserCount=0;serial.requestPort=async()=>{window.__chooserCount++;window.__portAuthorized=true;return port;};serial.getPorts=async()=>window.__portAuthorized?[port]:[];window.__serialPort=port;window.__serial=serial;
+    async close(){if(this.readable?.locked||this.writable?.locked)throw new Error('Web Serial streams still locked');this.closeCalls=(this.closeCalls||0)+1;try{this.controller?.close();}catch{}this.readable=null;this.writable=null;},async setSignals(value){this.signals.push(value);}};
+   window.__authorizedPorts=[];window.__chooserCount=0;serial.requestPort=async()=>{window.__chooserCount++;if(window.__rejectChooser)throw new DOMException('No port selected','NotFoundError');const chosen=window.__nextPort||port;window.__nextPort=null;if(!window.__authorizedPorts.includes(chosen))window.__authorizedPorts.push(chosen);window.__serialPort=chosen;return chosen;};serial.getPorts=async()=>window.__authorizedPorts;window.__serialPort=port;window.__serial=serial;
    window.__wakeRequests=0;window.__wakeReleases=0;
    Object.defineProperty(navigator,'wakeLock',{value:{request:async()=>{window.__wakeRequests++;const lock=new EventTarget();lock.release=async()=>{window.__wakeReleases++;lock.dispatchEvent(new Event('release'));};return lock;}},configurable:true});
    Object.defineProperty(navigator,'serial',{value:serial,configurable:true});
@@ -261,13 +261,14 @@ test(`local browser session and direct control over ${usbJtag?'USB Serial/JTAG':
   await closeStatus(page);
   // USB return reconnects only the selected port, with a fresh agent generation.
   const generation=await page.evaluate(async()=>{const r=await fetch('/api/v1/devices',{headers:{Authorization:'Bearer client-alice-123456789'}});return (await r.json()).devices[0].generation;});
-  await page.evaluate(async()=>{const port=window.__serialPort;port.controller.error(new DOMException('Unplugged','NetworkError'));await port.close();const event=new Event('disconnect');Object.defineProperty(event,'port',{value:port});window.__serial.dispatchEvent(event);});
+  await page.evaluate(async()=>{const port=window.__serialPort;port.controller.error(new DOMException('Unplugged','NetworkError'));await Promise.resolve();await port.close();const event=new Event('disconnect');Object.defineProperty(event,'port',{value:port});window.__serial.dispatchEvent(event);});
   await page.waitForFunction(()=>document.querySelector('#usb-state').textContent==='non connecté');
   assert.equal(await page.locator('#card-details').isVisible(),false);
   await page.waitForFunction(async old=>{const r=await fetch('/api/v1/devices',{headers:{Authorization:'Bearer client-alice-123456789'}});const d=(await r.json()).devices[0];return d.connected&&d.generation!==old;},generation);
   try { await page.waitForFunction(()=>document.querySelector('#usb-state').textContent==='connecté'); }
   catch(error) { throw new Error(JSON.stringify({feedback:await page.textContent('#client-state'),journal:await page.textContent('#agent-log'),errors}),{cause:error}); }
   assert.ok((await page.textContent('#agent-log')).includes('Reconnexion de la carte'));
+  assert.equal(await page.evaluate(()=>window.__chooserCount),1);
   // Following the tail is explicit and history selection never loses captured bytes.
   await page.click('#format-text');
   await page.evaluate(()=>{for(let i=0;i<60;i++)window.__serialPort.controller.enqueue(new TextEncoder().encode('line '+i+'\n'));});
@@ -333,18 +334,38 @@ test(`local browser session and direct control over ${usbJtag?'USB Serial/JTAG':
   assert.ok(Math.abs(await page.locator('#uart-log').evaluate(node=>node.getBoundingClientRect().height)-900*.55)<5);
   assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
   await page.waitForFunction(()=>!document.querySelector('#usb-toggle').disabled);
+  const closesBefore=await page.evaluate(()=>window.__serialPort.closeCalls||0);
   await page.click('#usb-toggle');
   await page.waitForFunction(()=>document.querySelector('#usb-state').textContent==='non connecté'&&document.querySelector('#usb-toggle').textContent==='Connecter');
   assert.equal(await page.locator('#card-details').isVisible(),false);
   assert.equal(await page.locator('#status-label-card').isVisible(),false);
+  const closed=await page.evaluate(()=>({readable:window.__serialPort.readable,writable:window.__serialPort.writable,closes:window.__serialPort.closeCalls}));
+  assert.equal(closed.readable,null);assert.equal(closed.writable,null);assert.equal(closed.closes,closesBefore+1);
+  await page.waitForFunction(async()=>{const response=await fetch('/api/v1/devices');return !(await response.json()).devices.find(d=>d.id==='board').connected;});
+  // A delayed physical-disconnect event must not re-arm a deliberately forgotten port.
+  await page.evaluate(()=>{const event=new Event('disconnect');Object.defineProperty(event,'port',{value:window.__serialPort});window.__serial.dispatchEvent(event);});
   await page.waitForTimeout(1700);assert.equal(await page.textContent('#usb-state'),'non connecté');
+  // Cancelling a manual chooser leaves the UI ready; an authorized old port is not reopened.
+  await page.evaluate(()=>{window.__rejectChooser=true;});await page.click('#usb-toggle');
+  await page.waitForFunction(()=>!document.querySelector('#usb-toggle').disabled&&document.querySelector('#usb-toggle').textContent==='Connecter');
+  assert.equal(await page.textContent('#usb-state'),'non connecté');assert.equal(await page.evaluate(()=>window.__chooserCount),2);
+  // Choose a different physical port, UART -> JTAG or JTAG -> UART, despite the old permission.
+  await page.evaluate(usbJtag=>{
+    window.__rejectChooser=false;
+    window.__nextPort={...window.__serialPort,readable:null,writable:null,controller:null,signals:[],
+      getInfo:()=>usbJtag?{usbVendorId:0x1a86}:{usbVendorId:0x303a,usbProductId:0x1001}};
+    window.__replacementPort=window.__nextPort;
+  },usbJtag);
   await page.click('#usb-toggle');
   await page.waitForFunction(()=>document.querySelector('#usb-state').textContent==='connecté'&&!document.querySelector('#usb-toggle').disabled);
-  assert.equal(await page.textContent('#usb-toggle'),'Déconnecter');assert.equal(await page.evaluate(()=>window.__chooserCount),1);
+  assert.equal(await page.textContent('#usb-toggle'),'Déconnecter');assert.equal(await page.evaluate(()=>window.__chooserCount),3);
+  assert.equal(await page.evaluate(()=>window.__serialPort===window.__replacementPort),true);
+  assert.equal(await page.textContent('#interface-info'),usbJtag?'UART externe':'USB Serial/JTAG');
+  assert.equal(await page.textContent('#reset-device'),usbJtag?'Reset EN':'Reset USB');
   assert.equal(await page.locator('#card-details').isVisible(),true);
   // A persisted uncertain outcome survives automatic reconnect; no API work is replayed.
   let replayed=0;page.on('request',r=>{if(r.method()==='POST'&&r.url().endsWith('/api/v1/operations'))replayed++;});
-  await page.evaluate(async()=>{localStorage.setItem('bench.v1.hold.board','1');const port=window.__serialPort;port.controller.error(new DOMException('Unplugged','NetworkError'));await port.close();const e=new Event('disconnect');Object.defineProperty(e,'port',{value:port});window.__serial.dispatchEvent(e);});
+  await page.evaluate(async()=>{localStorage.setItem('bench.v1.hold.board','1');const port=window.__serialPort;port.controller.error(new DOMException('Unplugged','NetworkError'));await Promise.resolve();await port.close();const e=new Event('disconnect');Object.defineProperty(e,'port',{value:port});window.__serial.dispatchEvent(e);});
   await page.waitForFunction(()=>document.querySelector('#usb-state').textContent==='non connecté');
   await page.waitForFunction(()=>document.querySelector('#usb-state').textContent==='connecté');
   await page.waitForFunction(async()=>{const r=await fetch('/api/v1/devices',{headers:{Authorization:'Bearer client-alice-123456789'}});return (await r.json()).devices[0].quarantined;});
