@@ -87,14 +87,17 @@ export class EspEngine {
   async closeConsole() {
     if (this.mode !== 'console') return;
     this.mode = 'off';
-    if (this.reader) await this.reader.cancel();
-    await this.readDone;
+    // USB loss can reject cancellation. Still drain the loop and close the real port.
+    try { if (this.reader) await this.reader.cancel(); } catch { /* The loop releases its lock. */ }
+    try { await this.readDone; } catch { /* Closing the port below remains mandatory. */ }
     await this.port.close();
   }
   async close() {
     this.cancelTrigger();
     await this.closeConsole();
     if (this.transport) { await this.transport.disconnect(); this.transport = null; this.loader = null; }
+    // A failed/partial open may leave Web Serial open while the engine mode is off.
+    if (this.port.readable || this.port.writable) await this.port.close();
     this.mode = 'off';
   }
   async openLoader() {

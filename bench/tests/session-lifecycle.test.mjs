@@ -52,3 +52,9 @@ test('journal is bounded and excludes arbitrary errors, credentials and payloads
  assert.equal(journal.rows.length,2);assert.equal(JSON.stringify(journal.rows).includes(secret),false);assert.match(journal.rows.at(-1).text,/4096 octets/);
  assert.equal(hardwareError(new Error(secret)).code,'hardware_command_failed');assert.equal(hardwareError(new Error(secret),true).code,'serial_disconnected');
 });
+
+
+test('forgetting a voluntarily disconnected port prevents delayed events from restarting it',async()=>{
+ const x=reconnection();x.ports([x.port]);x.reconnect.forget();x.reconnect.disconnected(x.port);await x.reconnect.attempt();
+ assert.equal(x.reconnect.waiting,false);assert.equal(x.reconnect.port,null);assert.equal(x.calls.length,0);
+});

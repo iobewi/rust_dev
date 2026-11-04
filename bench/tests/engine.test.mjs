@@ -132,3 +132,16 @@ test('native reset attempts release after an assertion failure and preserves the
  await assert.rejects(engine.reset(),error=>error===original);
  assert.equal(signals.length,2);assert.equal(signals[1].requestToSend,false);
 });
+
+
+test('close releases a partially opened Web Serial port even when engine mode is off',async()=>{
+ let closes=0;const port={getInfo:()=>({}),readable:new ReadableStream(),writable:new WritableStream(),async close(){closes++;this.readable=null;this.writable=null;}};
+ const engine=new EspEngine(port,{},()=>{});await engine.close();assert.equal(closes,1);assert.equal(port.readable,null);assert.equal(port.writable,null);
+ await engine.close();assert.equal(closes,1);
+});
+
+test('a rejected reader cancellation does not skip Web Serial close',async()=>{
+ let closes=0;const port={getInfo:()=>({}),async close(){closes++;}};
+ const engine=new EspEngine(port,{},()=>{});engine.mode='console';engine.reader={cancel:async()=>{throw new Error('reader already lost');}};engine.readDone=Promise.resolve();
+ await engine.close();assert.equal(closes,1);assert.equal(engine.mode,'off');
+});
