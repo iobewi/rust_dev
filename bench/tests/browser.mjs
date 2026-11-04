@@ -98,21 +98,23 @@ test('local browser session connects Web Serial and drives automatic per-operati
    const port={readable:null,writable:null,controller:null,signals:[],getInfo:()=>({usbVendorId:0x1a86}),
     async open(){if(this.readable)throw new Error('Port already open');this.readable=new ReadableStream({start:controller=>{this.controller=controller;controller.enqueue(new Uint8Array([82,69,65,68,89,13,10,0,255]));}});this.writable=new WritableStream();},
     async close(){try{this.controller?.close();}catch{}this.readable=null;this.writable=null;},async setSignals(value){this.signals.push(value);}};
-   serial.requestPort=async()=>port;serial.getPorts=async()=>[port];window.__serialPort=port;window.__serial=serial;
+   window.__portAuthorized=false;window.__chooserCount=0;serial.requestPort=async()=>{window.__chooserCount++;window.__portAuthorized=true;return port;};serial.getPorts=async()=>window.__portAuthorized?[port]:[];window.__serialPort=port;window.__serial=serial;
    window.__wakeRequests=0;window.__wakeReleases=0;
    Object.defineProperty(navigator,'wakeLock',{value:{request:async()=>{window.__wakeRequests++;const lock=new EventTarget();lock.release=async()=>{window.__wakeReleases++;lock.dispatchEvent(new Event('release'));};return lock;}},configurable:true});
    Object.defineProperty(navigator,'serial',{value:serial,configurable:true});
   });
   await page.goto(url);assert.equal(await page.locator('#access-panel').isVisible(),false);
   await page.waitForFunction(()=>document.querySelector('#device-id').value==='board');
-  await openStatus(page,'usb');await page.click('#connect');await page.waitForFunction(()=>document.querySelector('#usb-state').textContent==='connecté'||!document.querySelector('#client-state').textContent.startsWith('Connectez un port série'));
+  await page.click('#usb-toggle');await page.waitForFunction(()=>document.querySelector('#usb-state').textContent==='connecté'||!document.querySelector('#client-state').textContent.startsWith('Connectez un port série'));
   assert.equal(await page.textContent('#usb-state'),'connecté',JSON.stringify({feedback:await page.textContent('#client-state'),errors}));
   await page.waitForFunction(()=>document.querySelector('#uart-log').textContent.includes('READY'));
   await page.waitForFunction(()=>document.querySelector('#agent-state').textContent==='Agent connecté');
   await page.waitForFunction(()=>!document.querySelector('[data-command="reset"]').disabled);
   assert.equal(await page.locator('[data-command=console]').isDisabled(),true);
   await closeStatus(page);
-  assert.equal(await page.textContent('#status-label-usb'),'USB connecté');
+  assert.equal(await page.textContent('#usb-toggle'),'Déconnecter');
+  assert.equal(await page.locator('#connect,#disconnect,#reconnect,[data-status=usb]').count(),0);
+  assert.equal(await page.evaluate(()=>window.__chooserCount),1);
   await page.waitForFunction(()=>document.querySelector('#status-label-agent').textContent==='Agent connecté');
   assert.equal(await page.locator('.device-panel').count(),1);
   assert.equal(await page.locator('[data-status=card]').count(),0);
@@ -255,15 +257,13 @@ test('local browser session connects Web Serial and drives automatic per-operati
   await page.waitForFunction(()=>[...document.querySelectorAll('#uart-log .payload')].some(node=>node.textContent==='INFO - board connected, ip = 192.168.1.2'));
   // A narrow viewport must retain the console and put dense tables in their own horizontal scroller.
   await page.setViewportSize({width:360,height:900});assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
-  // Context help is available without persistent prose, by keyboard and pointer.
-  await page.focus('#status-usb');
-  assert.equal(await page.locator('#status-help-usb').isVisible(),true);
-  await page.keyboard.press('Escape');assert.equal(await page.locator('#status-help-usb').isVisible(),false);
-  await page.locator('#status-usb').hover();
-  assert.equal(await page.locator('#status-help-usb').isVisible(),true);
-  await openStatus(page,'usb');assert.equal(await page.locator('#connect').isVisible(),true);
-  await closeStatus(page);assert.equal(await page.locator('#status-panel-usb').isVisible(),false);
-  assert.equal(await page.locator('#status-usb').getAttribute('aria-expanded'),'false');
+  // Context help remains on the upper status bar; USB is permanently in the sidebar.
+  await page.focus('#status-agent');
+  assert.equal(await page.locator('#status-help-agent').isVisible(),true);
+  await page.keyboard.press('Escape');assert.equal(await page.locator('#status-help-agent').isVisible(),false);
+  await page.locator('#status-agent').hover();
+  assert.equal(await page.locator('#status-help-agent').isVisible(),true);
+  assert.equal(await page.locator('.device-panel #usb-toggle').isVisible(),true);
   for (const name of ['agent','control','permissions','wake']) {
     await openStatus(page,name);
     assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
@@ -280,13 +280,13 @@ test('local browser session connects Web Serial and drives automatic per-operati
   await page.evaluate(()=>window.scrollTo(0,document.body.scrollHeight));
   await openStatus(page,'agent');
   assert.ok(await page.locator('#status-panel-agent .pane-title').evaluate(node=>node.getBoundingClientRect().top>=document.querySelector('.app-header').getBoundingClientRect().bottom-1));
-  await openStatus(page,'usb');
+  await openStatus(page,'permissions');
   assert.equal(await page.locator('#status-panel-agent').isVisible(),false);
   assert.equal(await page.locator('.device-panel').isVisible(),true);
   assert.equal(await page.locator('.status-panel:visible').count(),1);
-  await page.locator('#status-panel-usb [data-close-status]').click();
-  assert.equal(await page.locator('#status-panel-usb').isVisible(),false);
-  assert.equal(await page.locator('#status-usb').evaluate(node=>node===document.activeElement),true);
+  await page.locator('#status-panel-permissions [data-close-status]').click();
+  assert.equal(await page.locator('#status-panel-permissions').isVisible(),false);
+  assert.equal(await page.locator('#status-permissions').evaluate(node=>node===document.activeElement),true);
   await page.click('#workspace-tab-consoles');
   // Default height follows the viewport; a manual height lasts until Hauteur auto.
   if (await page.locator('#follow').isVisible()) await page.click('#follow');
@@ -302,6 +302,13 @@ test('local browser session connects Web Serial and drives automatic per-operati
   await page.click('#console-auto-size');
   assert.ok(Math.abs(await page.locator('#uart-log').evaluate(node=>node.getBoundingClientRect().height)-900*.55)<5);
   assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
+  await page.waitForFunction(()=>!document.querySelector('#usb-toggle').disabled);
+  await page.click('#usb-toggle');
+  await page.waitForFunction(()=>document.querySelector('#usb-state').textContent==='non connecté'&&document.querySelector('#usb-toggle').textContent==='Connecter');
+  await page.waitForTimeout(1700);assert.equal(await page.textContent('#usb-state'),'non connecté');
+  await page.click('#usb-toggle');
+  await page.waitForFunction(()=>document.querySelector('#usb-state').textContent==='connecté'&&!document.querySelector('#usb-toggle').disabled);
+  assert.equal(await page.textContent('#usb-toggle'),'Déconnecter');assert.equal(await page.evaluate(()=>window.__chooserCount),1);
   // A persisted uncertain outcome survives automatic reconnect; no API work is replayed.
   let replayed=0;page.on('request',r=>{if(r.method()==='POST'&&r.url().endsWith('/api/v1/operations'))replayed++;});
   await page.evaluate(async()=>{localStorage.setItem('bench.v1.hold.board','1');const port=window.__serialPort;port.controller.error(new DOMException('Unplugged','NetworkError'));await port.close();const e=new Event('disconnect');Object.defineProperty(e,'port',{value:port});window.__serial.dispatchEvent(e);});

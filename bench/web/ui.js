@@ -15,6 +15,7 @@ const safeCommands = new Set(['identify', 'partitions', 'flash.read', 'mark']);
 const actions = { 'try-partition-address': 'partitions', read: 'flash.read', write: 'flash.write', erase: 'flash.erase', send: 'uart.write',
   configure: 'uart.configure', io0: 'io0', mark: 'mark', trigger: 'trigger', disarm: 'trigger', http: 'http.request' };
 let operationDevice;
+let usbBusy = false, authorizedPorts = [];
 let agent, engine, localDevice, portConnected = false, current, working = false;
 let knownDevices = [], imagePlan = [], artifactList = [], confirmation;
 let format = 'text', paused = false, pausedAt = Infinity, renderPending = false, selectedOperation, lastConsoleKey;
@@ -59,6 +60,7 @@ document.addEventListener('visibilitychange', () => wake.update(wake.active, tru
 const reconnect = new SerialReconnect({ ports: () => navigator.serial.getPorts(), idle: () => !working && !engine?.busy && !agent?.active && agent?.socket?.readyState !== 1,
   attach: (port, identity) => attach(port, identity), state: stage => { logAgent({ stage });
     feedback(stage === 'identity_changed' ? diagnostic('physical_identity_changed') : stage === 'usb_connected' ? 'Carte reconnectée. Aucune opération rejouée.' : 'Reconnexion automatique de la carte…');
+    renderState();
   } });
 
 async function openSession() {
@@ -263,14 +265,14 @@ function renderState() {
   const ownBusy = local && (engine?.busy || agent?.active || agent?.awaitingResult);
   const capability = new Set(d?.capabilities || []);
   const otherOwner = d?.reservation && d.reservation.owner !== session?.client;
-  const base = Boolean(session && info()?.connected && !working && !ownBusy && !otherOwner);
+  const base = Boolean(session && info()?.connected && !working && !ownBusy && !usbBusy && !reconnect.running && !otherOwner);
   document.querySelectorAll('[data-hardware]').forEach(button => {
     const command = button.dataset.command || actions[button.id];
     button.disabled = !base || !capability.has(command) || Boolean(blocked && !safeCommands.has(command)) ||
       command === 'console' && (!local || engine?.mode !== 'loader');
   });
   $('partition-suggestion').hidden = partitionSuggestions.get(selected()) !== d?.generation || !d?.generation || Number($('partition-address').value) !== 0x8000;
-  $('devices').disabled = working;
+  $('devices').disabled = working || usbBusy || Boolean(reconnect.running);
   $('cancel').disabled = !working || !current;
   $('usb-state').textContent = portConnected ? 'connecté' : 'non connecté';
   $('device-mode').textContent = local ? engine?.mode || '—' : d?.connected ? 'Agent distant' : '—';
@@ -288,11 +290,13 @@ function renderState() {
   $('safety-state').classList.toggle('danger', Boolean(blocked));
   $('recover').hidden = !blocked; $('recovery-help').hidden = !blocked;
   $('recover').disabled = !local || !agent?.generation || Boolean(ownBusy) || !blocked;
-  $('disconnect').disabled = !portConnected || working || Boolean(ownBusy);
-  $('connect').disabled = working || Boolean(portConnected);
-  $('reconnect').disabled = $('connect').disabled;
+  const usbAction = usbBusy ? portConnected ? 'Déconnexion…' : 'Connexion…' : portConnected ? 'Déconnecter' : reconnect.running ? 'Reconnexion…' : reconnect.waiting ? 'Annuler la reconnexion' : 'Connecter';
+  $('usb-toggle').textContent = usbAction;
+  $('usb-toggle').disabled = usbBusy || working || Boolean(ownBusy || reconnect.running);
+  $('usb-toggle').title = portConnected ? 'Déconnecter volontairement le port désactive sa reconnexion automatique.' : reconnect.waiting ? 'Attendre la même carte ou annuler la reconnexion pour choisir un autre port.' : 'Connecter le port série peut redémarrer la carte. Un port déjà autorisé est réutilisé lorsqu’il est unique.';
+  $('usb-indicator').dataset.tone = portConnected ? 'positive' : reconnect.waiting || usbBusy ? 'active' : 'neutral';
+  $('usb-indicator').querySelector('use').setAttribute('href', '#icon-' + (portConnected ? 'usb' : reconnect.waiting || usbBusy ? 'busy' : 'unplug'));
   indicator('card', blocked ? 'Carte bloquée' : selected() || 'Carte', blocked ? 'alert' : 'chip', blocked ? 'warning' : 'neutral');
-  indicator('usb', portConnected ? 'USB connecté' : reconnect.waiting ? 'Reconnexion USB' : 'USB débranché', portConnected ? 'usb' : reconnect.waiting ? 'busy' : 'unplug', portConnected ? 'positive' : reconnect.waiting ? 'active' : 'neutral');
   const linked = local ? Boolean(agent?.generation && agent?.socket?.readyState === 1) : Boolean(d?.connected);
   const serverLost = $('server-state').textContent === 'liaison interrompue';
   indicator('agent', serverLost ? 'Liaison interrompue' : linked ? 'Agent connecté' : 'Agent hors ligne', linked && !serverLost ? 'link' : 'offline', serverLost ? 'warning' : linked ? 'positive' : 'neutral');
@@ -408,12 +412,30 @@ function connectAgent() {
   } });
   agent.connect();
 }
-hook('connect', async () => { if (!navigator.serial) throw new Error('Web Serial indisponible dans ce navigateur ou ce contexte'); const port = await navigator.serial.requestPort(); await openSession(); await attach(port); });
-hook('reconnect', async () => { if (!navigator.serial) throw new Error('Web Serial indisponible'); await openSession(); const ports = await navigator.serial.getPorts(); if (ports.length !== 1) throw new Error('Choisissez explicitement le port série'); await attach(ports[0]); });
-hook('disconnect', async () => {
-  if (working || agent?.active || agent?.awaitingResult) throw new Error('Terminez la réservation et l’opération avant de déconnecter le port');
-  reconnect.stop(); agent?.socket?.close(); await engine.close(); portConnected = false; $('device-id').disabled = false; renderState(); append('SYS', 'Port fermé par l’opérateur', localDevice.id);
+async function refreshAuthorizedPorts() {
+  try { authorizedPorts = await navigator.serial?.getPorts() || []; } catch { authorizedPorts = []; }
+}
+hook('usb-toggle', async () => {
+  if (usbBusy || working || engine?.busy || agent?.active || agent?.awaitingResult || reconnect.running) throw new Error('Terminez l’opération en cours avant de modifier la connexion USB');
+  if (reconnect.waiting && !portConnected) {
+    reconnect.stop(); renderState(); feedback('Reconnexion automatique annulée. Vous pouvez connecter un port.'); return;
+  }
+  if (!navigator.serial) throw new Error('Web Serial indisponible dans ce navigateur ou ce contexte');
+  usbBusy = true; renderState();
+  try {
+    if (portConnected) {
+      reconnect.stop(); agent?.socket?.close(); await engine.close(); portConnected = false;
+      $('device-id').disabled = false; append('SYS', 'Port fermé par l’opérateur', localDevice.id);
+    } else {
+      // Use the click activation for a chooser, without waiting on network requests first.
+      const port = authorizedPorts.length === 1 ? authorizedPorts[0] : await navigator.serial.requestPort();
+      await openSession(); await attach(port);
+    }
+    await refreshAuthorizedPorts();
+  } finally { usbBusy = false; renderState(); }
 });
+refreshAuthorizedPorts();
+navigator.serial?.addEventListener('connect', refreshAuthorizedPorts);
 hook('agent-connect', connectAgent);
 hook('grant', () => { if (!agent?.generation) throw new Error('Agent local non connecté'); if (confirm(`Autoriser les opérations privilégiées sur ${localDevice.id} pendant ${$('grant-time').selectedOptions[0].textContent} ?`)) { agent.grant(Number($('grant-time').value)); renderState(); } });
 hook('revoke', () => { agent.grant(0); renderState(); });
@@ -591,7 +613,7 @@ navigator.serial?.addEventListener('disconnect', event => {
   portConnected = false; confirmation = null; $('program-confirmation').hidden = true;
   renderState(); append('PERTE', 'Port USB déconnecté', localDevice.id); logAgent({ stage: 'usb_lost' });
   feedback('USB déconnecté. Reconnexion automatique de la même carte à son retour ; aucune opération rejouée.');
-  reconnect.disconnected(port);
+  reconnect.disconnected(port); renderState();
 });
 let refreshTimer;
 async function backgroundRefresh() {
