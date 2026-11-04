@@ -32,7 +32,9 @@ Pour les clients externes, la réservation, le scope `program`, le consentement 
 
 ## Consoles et outils
 
-La console UART contrastée et redimensionnable reste visible au-dessus des onglets Partitions, Plan flash, Lecture mémoire, Opérations et Déclencheurs/outils. Les partitions sont lues à l’adresse explicite du projet ; aucune table valide à l’adresse demandée produit un diagnostic dédié. Manifestes et binaires alimentent le même plan ; aucun fichier ne déclenche une écriture à son ajout.
+Deux onglets principaux séparent les usages : **Consoles** rassemble la console UART contrastée et redimensionnable et le journal de l’agent ; **Opérations** rassemble Partitions, Plan flash, Lecture mémoire, Historique des opérations et Déclencheurs/outils. La capture et le journal continuent quand leur onglet est masqué. Un résultat de lecture ou une erreur ouvre automatiquement le panneau concerné. Les deux niveaux d’onglets sont utilisables avec les flèches, Début et Fin.
+
+Un tableau **Pilotage**, commun aux deux onglets, rassemble l’identité matérielle, les commandes de mode, l’activité, les autorisations distantes et la récupération. Les états et alertes restent visibles. Les explications sont disponibles via les boutons « ? », au survol, au focus clavier ou au toucher ; Échap les masque. Les partitions sont lues à l’adresse explicite du projet ; aucune table valide à l’adresse demandée produit un diagnostic dédié. Manifestes et binaires alimentent le même plan ; aucun fichier ne déclenche une écriture à son ajout.
 
 `ConsoleBuffer` conserve jusqu’à 1 Mio / 4 096 événements par carte. Les lignes texte suivent les fins de ligne du firmware (LF, CRLF, CR), et non les fragments USB. Une ligne partielle reste visible et se complète en direct. Horodatage et séquence correspondent au premier fragment retenu de la ligne. La recherche porte sur les lignes assemblées. Hex, pause, recherche et effacement de l’affichage ne changent pas l’export brut. Le retour au direct est explicite après consultation de l’historique.
 

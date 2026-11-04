@@ -111,6 +111,16 @@ test('local browser session connects Web Serial and drives automatic per-operati
   assert.equal(await page.locator('#agent-token').count(),0);assert.equal(await page.locator('#client-token').count(),0);
   assert.equal(await page.locator('#reserve').count(),0);
   assert.equal(await page.locator('#access-panel').isVisible(),false);
+  assert.equal(await page.locator('#workspace-consoles').isVisible(),true);
+  assert.equal(await page.locator('#workspace-operations').isVisible(),false);
+  // Both tab groups support keyboard navigation; capture continues while operations are visible.
+  await page.focus('#workspace-tab-consoles');await page.keyboard.press('ArrowRight');
+  assert.equal(await page.locator('#workspace-operations').isVisible(),true);
+  assert.equal(await page.locator('#workspace-consoles').isVisible(),false);
+  await page.evaluate(()=>window.__serialPort.controller.enqueue(new Uint8Array([65,66,67,10])));
+  await page.click('#workspace-tab-consoles');
+  await page.waitForFunction(()=>document.querySelector('#uart-log').textContent.includes('41 42 43 0a'));
+  await page.click('#workspace-tab-operations');
   await page.click('#tab-partitions');await page.click('[data-command="partitions"]');
   await page.waitForFunction(()=>document.querySelector('#partitions-body').textContent.includes('factory'));
   await page.waitForFunction(()=>!document.querySelector('#read').disabled);
@@ -123,6 +133,8 @@ test('local browser session connects Web Serial and drives automatic per-operati
   await page.evaluate(()=>{window.__readFault='closed';});await page.click('#read');
   await page.waitForFunction(()=>{const op=JSON.parse(document.querySelector('#result').textContent);return op.state==='failed'&&op.error?.code==='serial_disconnected';});
   assert.equal(JSON.parse(await page.textContent('#result')).error.phase,'flash_read');
+  assert.equal(await page.locator('#workspace-operations').isVisible(),true);
+  assert.equal(await page.locator('#panel-operations').isVisible(),true);
   assert.ok((await page.textContent('#client-state')).includes('Port série déconnecté'));
   await page.waitForFunction(()=>!document.querySelector('[data-command="console"]').disabled);
   await page.evaluate(()=>{window.__readFault=null;});await page.click('[data-command="console"]');
@@ -134,6 +146,7 @@ test('local browser session connects Web Serial and drives automatic per-operati
   await page.click('#write');await page.waitForSelector('#program-confirmation');assert.ok((await page.textContent('#confirmation-target')).includes('board'));
   assert.ok((await page.textContent('#confirmation-regions')).includes('0x00020004'));
   await page.click('#cancel-write');assert.equal(await page.locator('#program-confirmation').isVisible(),false);
+  await page.click('#workspace-tab-consoles');
   // Local UART TX uses only this operation's authority; it must not open a remote grant.
   await page.waitForFunction(()=>!document.querySelector('#send').disabled);
   await page.fill('#uart','00 ff');await page.click('#send');
@@ -147,7 +160,6 @@ test('local browser session connects Web Serial and drives automatic per-operati
   const orphan=await fetch(url+'/api/v1/leases',{method:'POST',headers:{Authorization:'Bearer client-bob-1234567890','Content-Type':'application/json'},body:JSON.stringify({device:'board',ttl:60})});
   assert.equal(orphan.status,201);
   await page.waitForFunction(()=>!document.querySelector('#release-control').disabled);
-  await page.locator('#release-control').evaluate(node=>{node.closest('details').open=true;});
   page.once('dialog',dialog=>dialog.accept());await page.click('#release-control');
   await page.waitForFunction(()=>document.querySelector('#agent-log').textContent.includes('Pilotage libéré'));
   const released=await fetch(url+'/api/v1/devices',{headers:{Authorization:'Bearer client-alice-123456789'}});
@@ -165,13 +177,30 @@ test('local browser session connects Web Serial and drives automatic per-operati
   await page.evaluate(()=>{for(let i=0;i<60;i++)window.__serialPort.controller.enqueue(new TextEncoder().encode('line '+i+'\n'));});
   await page.waitForFunction(()=>document.querySelector('#uart-log').textContent.includes('line 59'));
   await page.locator('#uart-log').evaluate(node=>{node.scrollTop=0;node.dispatchEvent(new Event('scroll'));});
-  await page.waitForSelector('#follow',{state:'visible'});await page.click('#follow');
+  await page.waitForSelector('#follow',{state:'visible'});
+  await page.click('#workspace-tab-operations');
+  await page.evaluate(()=>window.__serialPort.controller.enqueue(new TextEncoder().encode('captured while hidden\n')));
+  await page.click('#workspace-tab-consoles');
+  await page.waitForFunction(()=>document.querySelector('#uart-log').textContent.includes('captured while hidden'));
+  assert.equal(await page.locator('#follow').isVisible(),true);
+  assert.equal(await page.locator('#uart-log').evaluate(node=>node.scrollTop),0);
+  await page.click('#follow');
   await page.waitForFunction(()=>document.querySelector('#follow').hidden);
   // Text rows follow firmware newlines, never arbitrary USB read boundaries.
   await page.evaluate(()=>{for(const text of ['I','NFO - board connected, ip = 192','.','168.1.2\r','\n'])window.__serialPort.controller.enqueue(new TextEncoder().encode(text));});
   await page.waitForFunction(()=>[...document.querySelectorAll('#uart-log .payload')].some(node=>node.textContent==='INFO - board connected, ip = 192.168.1.2'));
   // A narrow viewport must retain the console and put dense tables in their own horizontal scroller.
   await page.setViewportSize({width:360,height:900});assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
+  // Context help is available without persistent prose, by keyboard and pointer.
+  await page.focus('[aria-describedby="help-commandes"]');
+  assert.equal(await page.locator('#help-commandes').isVisible(),true);
+  await page.keyboard.press('Escape');assert.equal(await page.locator('#help-commandes').isVisible(),false);
+  await page.locator('[aria-describedby="help-commandes"]').hover();
+  assert.equal(await page.locator('#help-commandes').isVisible(),true);
+  assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
+  await page.locator('#workspace-tab-operations').click();
+  assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
+  await page.click('#workspace-tab-consoles');
   // A persisted uncertain outcome survives automatic reconnect; no API work is replayed.
   let replayed=0;page.on('request',r=>{if(r.method()==='POST'&&r.url().endsWith('/api/v1/operations'))replayed++;});
   await page.evaluate(async()=>{localStorage.setItem('bench.v1.hold.board','1');const port=window.__serialPort;port.controller.error(new DOMException('Unplugged','NetworkError'));await port.close();const e=new Event('disconnect');Object.defineProperty(e,'port',{value:port});window.__serial.dispatchEvent(e);});

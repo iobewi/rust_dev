@@ -77,11 +77,64 @@ function selectedTarget() {
   if (!session || !d?.connected) throw new Error('Connectez une carte au banc');
   return { device: d.id, chip: d.chip, flash_size: d.flash_size, generation: d.generation };
 }
-function tab(name) {
-  document.querySelectorAll('[data-tab]').forEach(button => button.setAttribute('aria-selected', String(button.dataset.tab === name)));
-  document.querySelectorAll('.tab-panel').forEach(panel => { panel.hidden = panel.id !== 'panel-' + name; });
+function selectTabs(attribute, name, panelSelector, panelPrefix) {
+  document.querySelectorAll(`[${attribute}]`).forEach(button => {
+    const active = button.getAttribute(attribute) === name;
+    button.setAttribute('aria-selected', String(active)); button.tabIndex = active ? 0 : -1;
+  });
+  let focusHidden = false;
+  document.querySelectorAll(panelSelector).forEach(panel => {
+    panel.hidden = panel.id !== panelPrefix + name;
+    if (panel.hidden && panel.contains(document.activeElement)) focusHidden = true;
+  });
+  if (focusHidden) document.querySelector(`[${attribute}="${name}"]`).focus();
 }
-document.querySelectorAll('[data-tab]').forEach(button => { button.onclick = () => tab(button.dataset.tab); });
+let consoleView;
+function workspaceTab(name) {
+  const wasHidden = $('workspace-consoles').hidden;
+  if (!wasHidden && name !== 'consoles') {
+    consoleView = ['uart-log', 'agent-log'].map(id => {
+      const node = $(id);
+      return { id, scroll: node.scrollTop, follow: node.scrollHeight - node.clientHeight - node.scrollTop < 30 };
+    });
+  }
+  selectTabs('data-workspace-tab', name, '.workspace-panel', 'workspace-');
+  if (name === 'consoles') {
+    if (wasHidden && consoleView) {
+      for (const { id, scroll, follow } of consoleView) $(id).scrollTop = follow ? $(id).scrollHeight : scroll;
+    }
+    scheduleConsole();
+  }
+}
+function tab(name) {
+  workspaceTab('operations');
+  selectTabs('data-tab', name, '.tab-panel', 'panel-');
+}
+function wireTabs(attribute, select) {
+  const buttons = [...document.querySelectorAll(`[${attribute}]`)];
+  buttons.forEach(button => {
+    button.tabIndex = button.getAttribute('aria-selected') === 'true' ? 0 : -1;
+    button.onclick = () => select(button.getAttribute(attribute));
+    button.onkeydown = event => {
+      let index = buttons.indexOf(button);
+      if (event.key === 'ArrowRight') index = (index + 1) % buttons.length;
+      else if (event.key === 'ArrowLeft') index = (index + buttons.length - 1) % buttons.length;
+      else if (event.key === 'Home') index = 0;
+      else if (event.key === 'End') index = buttons.length - 1;
+      else return;
+      event.preventDefault(); buttons[index].click(); buttons[index].focus();
+    };
+  });
+}
+wireTabs('data-workspace-tab', workspaceTab);
+wireTabs('data-tab', tab);
+document.querySelectorAll('.help').forEach(help => {
+  help.addEventListener('keydown', event => {
+    if (event.key === 'Escape') { help.classList.add('dismissed'); help.querySelector('button').blur(); }
+  });
+  help.addEventListener('mouseenter', () => help.classList.remove('dismissed'));
+  help.addEventListener('focusin', () => help.classList.remove('dismissed'));
+});
 function closeAccess() { $('access-panel').hidden = true; $('access-toggle').setAttribute('aria-expanded', 'false'); }
 function openAccess() { $('access-panel').hidden = false; $('access-toggle').setAttribute('aria-expanded', 'true'); }
 hook('access-toggle', () => { const open = $('access-panel').hidden; $('access-panel').hidden = !open; $('access-toggle').setAttribute('aria-expanded', String(open)); });
@@ -97,6 +150,7 @@ function scheduleConsole() {
   requestAnimationFrame(() => { renderPending = false; if (!paused) renderConsole(); followState(); });
 }
 function renderConsole() {
+  if ($('workspace-consoles').hidden) return;
   const id = selected(), body = $('uart-log');
   const previousScroll = body.scrollTop, follow = body.scrollHeight - body.clientHeight - body.scrollTop < 30;
   if (!id || !captures.has(id)) {
@@ -121,6 +175,7 @@ function renderConsole() {
   body.scrollTop = follow ? body.scrollHeight : previousScroll; followState();
 }
 function followState() {
+  if ($('workspace-consoles').hidden) return;
   const body = $('uart-log'), following = body.scrollHeight - body.clientHeight - body.scrollTop < 30;
   $('follow-state').textContent = paused ? 'Affichage en pause · capture active' : following ? 'Suivi du direct' : 'Lecture de l’historique · capture active';
   $('follow').hidden = !paused && following;
