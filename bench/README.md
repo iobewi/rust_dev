@@ -8,7 +8,8 @@ Cette refonte part de **`bench/audit-final` (`9938b64`)**, qui contient entière
 - [Contrat REST et WebSocket](docs/api.md)
 - [Interface d’instrumentation et parcours de connexion](docs/interface.md)
 - [Couverture de l’existant et validation matérielle restante](docs/coverage.md)
-- [Client Python indépendant](examples/client.py)
+- [Recettes pytest et client Python installable](docs/pytest.md)
+- [Exemple historique de client Python asynchrone](examples/client.py)
 
 ## Démarrer
 
@@ -93,6 +94,6 @@ npx playwright install --with-deps chromium
 npm run test:browser
 ```
 
-La CI exécute les tests Python, Node et Chromium. Les tests navigateur utilisent le véritable agent JavaScript et le WebSocket avec **un moteur matériel simulé**. Les tests du moteur esptool et du transport utilisent des doubles contrôlés. Les tests Python comprennent un cycle API complet : réservation, upload, programmation simulée, relecture, comparaison binaire et UART.
+La CI exécute les tests Python, Node, le client/les fixtures pytest et Chromium. Les recettes pytest sont un composant client séparé : le serveur ne décide toujours aucun verdict de projet. Les tests navigateur utilisent le véritable agent JavaScript et le WebSocket avec **un moteur matériel simulé**. Les tests du moteur esptool et du transport utilisent des doubles contrôlés. Les tests Python comprennent un cycle API complet : réservation, upload, programmation simulée, relecture, comparaison binaire et UART.
 
 Le stockage serveur est **éphémère et borné** : 16 Mio par artefact, 64 Mio au total, 2 048 événements par carte, 4 096 opérations, rétention d’une heure pour les artefacts et résultats terminaux. Un redémarrage change `epoch` et supprime réservations, résultats et artefacts ; aucun travail n’est rejoué. Les clients doivent exporter les données nécessaires avant expiration. Le navigateur affiche uniquement un tampon UART limité et peut l’exporter manuellement.
