@@ -119,9 +119,12 @@ test(`local browser session and direct control over ${usbJtag?'USB Serial/JTAG':
   await page.waitForFunction(()=>!document.querySelector('[data-command="reset"]').disabled);
   assert.equal(await page.locator('[data-command=console]').isDisabled(),true);
   assert.equal(await page.textContent('#reset-device'),usbJtag?'Reset USB':'Reset EN');
-  assert.equal(await page.textContent('#signals-info'),usbJtag?'Non exposés':'Disponibles');
+  assert.equal(await page.textContent('#card-commands-title'),'Commandes de la carte');
+  assert.equal(await page.locator('#card-commands #reset-device').isVisible(),true);
+  assert.equal(await page.locator('#card-boot-actions').isVisible(),!usbJtag);
+  assert.equal(await page.locator('#io0-duration').isVisible(),!usbJtag);
   assert.equal(await page.locator('#io0').isDisabled(),usbJtag);
-  assert.equal(await page.locator('#card-mode-actions #reset-device').count(),usbJtag?1:0);
+  assert.equal(await page.locator('#card-mode-title,#card-signals-title,#device-mode,#signals-info').count(),0);
   await page.click('#reset-device');
   await page.waitForFunction(()=>{const op=JSON.parse(document.querySelector('#result').textContent);return op.command==='reset'&&op.state==='completed';});
   const resetResult=JSON.parse(await page.textContent('#result')).result;
@@ -217,11 +220,11 @@ test(`local browser session and direct control over ${usbJtag?'USB Serial/JTAG':
       body:JSON.stringify({device:device.id,generation:device.generation,command:'flash.read',args:{address:0x10000,size:64,return_console:false}})});
     if(!response.ok)throw new Error('Loader setup rejected: '+response.status);
   });
-  await page.waitForFunction(()=>document.querySelector('#device-mode').textContent==='loader'&&!document.querySelector('[data-command="console"]').disabled);
+  await page.waitForFunction(()=>document.querySelector('#card-commands').dataset.mode==='loader'&&!document.querySelector('[data-command="console"]').disabled);
   assert.equal(await page.locator('#reset-device').isDisabled(),true);
   await openStatus(page,'card');await page.click('[data-command="console"]');
   await page.waitForFunction(()=>{const op=JSON.parse(document.querySelector('#result').textContent);return op.command==='console'&&op.state==='completed';});
-  await page.waitForFunction(()=>document.querySelector('#device-mode').textContent==='console');
+  await page.waitForFunction(()=>document.querySelector('#card-commands').dataset.mode==='console');
   assert.equal(await page.locator('[data-command=console]').isDisabled(),true);
 
   await closeStatus(page);
@@ -362,6 +365,8 @@ test(`local browser session and direct control over ${usbJtag?'USB Serial/JTAG':
   assert.equal(await page.evaluate(()=>window.__serialPort===window.__replacementPort),true);
   assert.equal(await page.textContent('#interface-info'),usbJtag?'UART externe':'USB Serial/JTAG');
   assert.equal(await page.textContent('#reset-device'),usbJtag?'Reset EN':'Reset USB');
+  assert.equal(await page.locator('#card-reset-actions').isVisible(),true);
+  assert.equal(await page.locator('#card-boot-actions').isVisible(),usbJtag);
   assert.equal(await page.locator('#card-details').isVisible(),true);
   // A persisted uncertain outcome survives automatic reconnect; no API work is replayed.
   let replayed=0;page.on('request',r=>{if(r.method()==='POST'&&r.url().endsWith('/api/v1/operations'))replayed++;});
@@ -369,7 +374,7 @@ test(`local browser session and direct control over ${usbJtag?'USB Serial/JTAG':
   await page.waitForFunction(()=>document.querySelector('#usb-state').textContent==='non connecté');
   await page.waitForFunction(()=>document.querySelector('#usb-state').textContent==='connecté');
   await page.waitForFunction(async()=>{const r=await fetch('/api/v1/devices',{headers:{Authorization:'Bearer client-alice-123456789'}});return (await r.json()).devices[0].quarantined;});
-  assert.equal(await page.textContent('#device-mode'),'loader');assert.equal(replayed,0);
+  assert.equal(await page.getAttribute('#card-commands','data-mode'),'loader');assert.equal(replayed,0);
   await page.waitForFunction(()=>document.querySelector('#status-label-card').textContent==='Carte bloquée');
   assert.equal(await page.locator('#status-card').getAttribute('data-tone'),'warning');
   assert.equal(await page.textContent('#status-label-permissions'),'Autorisations');
