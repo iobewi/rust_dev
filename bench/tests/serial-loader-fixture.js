@@ -12,6 +12,10 @@ export class ESPLoader {
   async readFlashId() { return 0x164068; }
   async readFlash(address, size, onPacketReceived) {
     if (globalThis.__readFault) throw Object.assign(new Error('fixture private transport detail'), { name: 'SerialFault', kind: globalThis.__readFault });
+    if (globalThis.__pauseFlashRead) {
+      onPacketReceived?.(new Uint8Array(), 0, size);
+      await new Promise(resolve => { globalThis.__continueFlashRead = resolve; });
+    }
     const bytes = new Uint8Array(size).fill(255);
     if (address === (globalThis.__partitionAddress ?? 0x8000) && size >= 64) {
       const view = new DataView(bytes.buffer); view.setUint16(0, 0x50aa, true); bytes[2] = 0; bytes[3] = 0;

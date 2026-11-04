@@ -32,7 +32,7 @@ Pour les clients externes, la réservation, le scope `program`, le consentement 
 
 ## Consoles et outils
 
-Deux onglets principaux séparent les usages : **Consoles** rassemble la console UART contrastée et redimensionnable et le journal de l’agent ; **Opérations** rassemble Partitions, Plan flash, Lecture mémoire, Historique des opérations et Déclencheurs/outils. La capture et le journal continuent quand leur onglet est masqué. Un résultat de lecture ou une erreur ouvre automatiquement le panneau concerné. Les deux niveaux d’onglets sont utilisables avec les flèches, Début et Fin.
+Deux onglets principaux séparent les usages : **Consoles** présente la console UART contrastée et redimensionnable ; **Opérations** rassemble Partitions, Plan flash, Lecture mémoire, Historique des opérations et Déclencheurs/outils. Le **journal de l’agent est commun aux deux vues**, sous la barre d’onglets principale : sa progression reste visible pendant une lecture flash dans Opérations. Changer d’onglet conserve le même journal et son état réduit/développé. La capture UART continue quand son onglet est masqué. Un résultat de lecture ou une erreur ouvre automatiquement le panneau concerné. Les deux niveaux d’onglets sont utilisables avec les flèches, Début et Fin.
 
 Le groupe **USB** est tout en haut de la barre latérale et reste visible. Avant la connexion locale, seul ce groupe est affiché : le nom de carte et ses commandes sont masqués. La connexion développe automatiquement les détails ; un débranchement ou une déconnexion volontaire les masque, puis la reconnexion les réaffiche. Une carte connectée par un agent externe reste consultable même sans port USB local.
 

@@ -43,14 +43,14 @@ $('server-origin').textContent = location.origin;
 const journal = new AgentJournal();
 function logAgent(event) {
   journal.append(event);
-  const body = $('agent-log'), follow = body.scrollHeight - body.clientHeight - body.scrollTop < 30;
+  const body = $('agent-log'), previousScroll = body.scrollTop, follow = body.scrollHeight - body.clientHeight - body.scrollTop < 30;
   body.replaceChildren();
   for (const row of journal.rows) {
     const line = document.createElement('div'); line.className = 'journal-row';
     const time = document.createElement('time'); time.textContent = new Date(row.at).toLocaleTimeString('fr-FR', { hour12: false });
     const text = document.createElement('span'); text.textContent = row.text; line.append(time, text); body.append(line);
   }
-  if (follow) body.scrollTop = body.scrollHeight;
+  body.scrollTop = follow ? body.scrollHeight : previousScroll;
 }
 hook('agent-log-clear', () => { journal.rows = []; $('agent-log').replaceChildren(); });
 hook('agent-log-toggle', () => { const open = $('agent-log').hidden; $('agent-log').hidden = !open; $('agent-log-toggle').textContent = open ? 'Réduire' : 'Développer'; $('agent-log-toggle').setAttribute('aria-expanded', String(open)); });
@@ -96,7 +96,7 @@ let consoleView;
 function workspaceTab(name) {
   const wasHidden = $('workspace-consoles').hidden;
   if (!wasHidden && name !== 'consoles') {
-    consoleView = ['uart-log', 'agent-log'].map(id => {
+    consoleView = ['uart-log'].map(id => {
       const node = $(id);
       return { id, scroll: node.scrollTop, follow: node.scrollHeight - node.clientHeight - node.scrollTop < 30 };
     });
