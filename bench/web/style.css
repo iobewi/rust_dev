@@ -46,3 +46,5 @@
 #console-auto-size{min-height:26px;padding:2px 7px;font-size:11px}.uart-pane>.pane-title #console-auto-size{background:transparent;color:inherit;border-color:currentColor}
 
 .partition-suggestion{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;padding:10px;background:var(--selected);border-bottom:1px solid var(--line)}.partition-suggestion span{flex:1;min-width:180px}
+
+.card-safety{grid-column:1/-1;border-top:1px solid var(--line);padding-top:8px}.card-safety p{margin:0}.permissions-content #authorization-settings{align-items:center}.permissions-content #grant-state{align-self:center}

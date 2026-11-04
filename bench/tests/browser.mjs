@@ -192,12 +192,12 @@ test('local browser session connects Web Serial and drives automatic per-operati
   assert.equal(localState.privileged_seconds,0);
   assert.equal(await page.textContent('#usb-state'),'connecté');
   // Remote grants remain explicit and their active state is visible with the panel closed.
-  await openStatus(page,'safety');await page.locator('#authorization-settings summary').click();
+  await openStatus(page,'permissions');assert.equal(await page.locator('#grant').isVisible(),true);assert.equal(await page.locator('#grant-time').isVisible(),true);assert.equal(await page.locator('#status-panel-permissions details').count(),0);assert.equal(await page.locator('#recover').isVisible(),false);
   await page.selectOption('#grant-time','60');page.once('dialog',dialog=>dialog.accept());await page.click('#grant');
-  await page.waitForFunction(()=>document.querySelector('#status-label-safety').textContent==='Distant autorisé');
-  await closeStatus(page);assert.equal(await page.locator('#status-safety').getAttribute('data-tone'),'warning');
-  await openStatus(page,'safety');await page.click('#revoke');
-  await page.waitForFunction(()=>document.querySelector('#status-label-safety').textContent==='Verrouillée');
+  await page.waitForFunction(()=>/^Distant autorisé · [0-9]+ s$/.test(document.querySelector('#status-label-permissions').textContent));
+  await closeStatus(page);assert.equal(await page.locator('#status-permissions').getAttribute('data-tone'),'warning');
+  await openStatus(page,'permissions');await page.click('#revoke');
+  await page.waitForFunction(()=>document.querySelector('#status-label-permissions').textContent==='Autorisations');
   await closeStatus(page);
   // Physical agent can release an orphan reservation without restarting the server.
   const orphan=await fetch(url+'/api/v1/leases',{method:'POST',headers:{Authorization:'Bearer client-bob-1234567890','Content-Type':'application/json'},body:JSON.stringify({device:'board',ttl:60})});
@@ -245,7 +245,7 @@ test('local browser session connects Web Serial and drives automatic per-operati
   await openStatus(page,'usb');assert.equal(await page.locator('#connect').isVisible(),true);
   await closeStatus(page);assert.equal(await page.locator('#status-panel-usb').isVisible(),false);
   assert.equal(await page.locator('#status-usb').getAttribute('aria-expanded'),'false');
-  for (const name of ['card','agent','control','safety','wake']) {
+  for (const name of ['card','agent','control','permissions','wake']) {
     await openStatus(page,name);
     assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
     const bounds=await page.locator('#status-panel-'+name).boundingBox();assert.ok(bounds.x>=0&&bounds.x+bounds.width<=360);
@@ -289,8 +289,10 @@ test('local browser session connects Web Serial and drives automatic per-operati
   await page.waitForFunction(()=>document.querySelector('#usb-state').textContent==='connecté');
   await page.waitForFunction(async()=>{const r=await fetch('/api/v1/devices',{headers:{Authorization:'Bearer client-alice-123456789'}});return (await r.json()).devices[0].quarantined;});
   assert.equal(await page.textContent('#device-mode'),'loader');assert.equal(replayed,0);
-  await page.waitForFunction(()=>document.querySelector('#status-label-safety').textContent==='Carte bloquée');
-  assert.equal(await page.locator('#status-safety').getAttribute('data-tone'),'warning');
+  await page.waitForFunction(()=>document.querySelector('#status-label-card').textContent==='Carte bloquée');
+  assert.equal(await page.locator('#status-card').getAttribute('data-tone'),'warning');
+  assert.equal(await page.textContent('#status-label-permissions'),'Autorisations');
+  await openStatus(page,'card');assert.equal(await page.locator('#recover').isVisible(),true);
   assert.deepEqual(errors,[]);
  } finally {await browser?.close();proc.kill('SIGTERM');lines.close();}
 });

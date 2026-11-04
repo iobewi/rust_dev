@@ -141,7 +141,7 @@ function indicator(name, label, icon, tone = 'neutral') {
   $('status-label-' + name).textContent = label;
   button.dataset.tone = tone;
   button.querySelector('use').setAttribute('href', '#icon-' + icon);
-  button.setAttribute('aria-label', ({ card: 'Carte', usb: 'USB', agent: 'Agent', control: 'Pilotage', safety: 'Sécurité', wake: 'Veille' }[name]) + ' : ' + label);
+  button.setAttribute('aria-label', ({ card: 'Carte', usb: 'USB', agent: 'Agent', control: 'Pilotage', permissions: 'Autorisations', wake: 'Veille' }[name]) + ' : ' + label);
 }
 function statusDetails(name = null) {
   document.querySelectorAll('[data-status]').forEach(button => {
@@ -273,24 +273,25 @@ function renderState() {
   $('signals-info').textContent = capability.has('reset') && capability.has('io0') ? 'Disponibles' : 'Non exposés';
   $('control-state').textContent = working ? 'Opération manuelle en cours' : d?.reservation ? (otherOwner ? 'Pilotée par : ' + d.reservation.owner : 'Déclencheur ou opération en cours') : d?.connected && !d?.localOnly ? 'Disponible · commandes directes' : 'Local · observation';
   $('grant').disabled = !local || !agent?.generation; $('revoke').disabled = $('grant').disabled;
-  $('grant-state').textContent = local && agent?.grantUntil > performance.now() ? `Opérations distantes autorisées : ${Math.ceil((agent.grantUntil - performance.now()) / 1000)} s` : 'Opérations distantes sensibles : verrouillées';
+  $('grant-state').textContent = local && agent?.grantUntil > performance.now() ? `Opérations distantes autorisées : ${Math.ceil((agent.grantUntil - performance.now()) / 1000)} s` : 'À la demande · aucune autorisation distante active.';
   $('revoke').hidden = !(local && agent?.grantUntil > performance.now());
   $('release-control').disabled = !local || !agent?.generation || Boolean(ownBusy || working) || !d?.reservation;
   activity();
   $('safety-state').textContent = local && agent?.awaitingResult ? 'Attente de l’accusé serveur' : blocked ? 'Blocage : récupération opérateur requise' : d ? 'Aucun blocage signalé' : 'Aucun état matériel connu';
   $('safety-state').classList.toggle('danger', Boolean(blocked));
+  $('recover').hidden = !blocked; $('recovery-help').hidden = !blocked;
   $('recover').disabled = !local || !agent?.generation || Boolean(ownBusy) || !blocked;
   $('disconnect').disabled = !portConnected || working || Boolean(ownBusy);
   $('connect').disabled = working || Boolean(portConnected);
   $('reconnect').disabled = $('connect').disabled;
-  indicator('card', selected() || 'Carte', 'chip');
+  indicator('card', blocked ? 'Carte bloquée' : selected() || 'Carte', blocked ? 'alert' : 'chip', blocked ? 'warning' : 'neutral');
   indicator('usb', portConnected ? 'USB connecté' : reconnect.waiting ? 'Reconnexion USB' : 'USB débranché', portConnected ? 'usb' : reconnect.waiting ? 'busy' : 'unplug', portConnected ? 'positive' : reconnect.waiting ? 'active' : 'neutral');
   const linked = local ? Boolean(agent?.generation && agent?.socket?.readyState === 1) : Boolean(d?.connected);
   const serverLost = $('server-state').textContent === 'liaison interrompue';
   indicator('agent', serverLost ? 'Liaison interrompue' : linked ? 'Agent connecté' : 'Agent hors ligne', linked && !serverLost ? 'link' : 'offline', serverLost ? 'warning' : linked ? 'positive' : 'neutral');
   indicator('control', otherOwner ? 'Occupée · ' + d.reservation.owner : working || ownBusy || d?.reservation ? 'En cours' : d?.connected ? 'Disponible' : 'En attente', otherOwner ? 'user' : working || ownBusy || d?.reservation ? 'busy' : 'check', otherOwner || working || ownBusy || d?.reservation ? 'active' : 'neutral');
   const granted = local && agent?.grantUntil > performance.now();
-  indicator('safety', blocked ? 'Carte bloquée' : granted ? 'Distant autorisé' : 'Verrouillée', blocked ? 'alert' : granted ? 'unlock' : 'lock', blocked || granted ? 'warning' : 'neutral');
+  indicator('permissions', granted ? `Distant autorisé · ${Math.ceil((agent.grantUntil - performance.now()) / 1000)} s` : 'Autorisations', granted ? 'unlock' : 'lock', granted ? 'warning' : 'neutral');
   $('footer-target').textContent = selected() ? `${selected()} · ${$('control-state').textContent}` : 'Aucune carte sélectionnée';
 }
 $('devices').onchange = () => {
