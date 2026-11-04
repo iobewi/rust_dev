@@ -44,3 +44,5 @@
 @media(max-width:400px){.status-bar{display:grid;grid-template-columns:repeat(3,minmax(0,1fr))}.status-button{width:100%;padding-inline:4px;justify-content:flex-start}.status-button span{max-width:80px}}
 
 #console-auto-size{min-height:26px;padding:2px 7px;font-size:11px}.uart-pane>.pane-title #console-auto-size{background:transparent;color:inherit;border-color:currentColor}
+
+.partition-suggestion{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;padding:10px;background:var(--selected);border-bottom:1px solid var(--line)}.partition-suggestion span{flex:1;min-width:180px}

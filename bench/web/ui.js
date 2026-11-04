@@ -12,7 +12,7 @@ import { address, hex, flashPlan } from './ui-model.js';
 const $ = id => document.getElementById(id);
 const terminal = new Set(['completed', 'failed', 'expired', 'cancelled', 'indeterminate']);
 const safeCommands = new Set(['identify', 'partitions', 'flash.read', 'mark']);
-const actions = { read: 'flash.read', write: 'flash.write', erase: 'flash.erase', send: 'uart.write',
+const actions = { 'try-partition-address': 'partitions', read: 'flash.read', write: 'flash.write', erase: 'flash.erase', send: 'uart.write',
   configure: 'uart.configure', io0: 'io0', mark: 'mark', trigger: 'trigger', disarm: 'trigger', http: 'http.request' };
 let operationDevice;
 let agent, engine, localDevice, portConnected = false, current, working = false;
@@ -20,6 +20,7 @@ let knownDevices = [], imagePlan = [], artifactList = [], confirmation;
 let format = 'text', paused = false, pausedAt = Infinity, renderPending = false, selectedOperation, lastConsoleKey;
 let streamController, streamGeneration = 0, refreshPromise, sessionOpened = false;
 let session, sessionPromise;
+const partitionSuggestions = new Map();
 const captures = new Map(), cursors = new Map(), operationLog = new Map(), partitionCache = new Map();
 const api = () => new BenchClient();
 const selected = () => $('devices').value;
@@ -261,6 +262,7 @@ function renderState() {
   const otherOwner = d?.reservation && d.reservation.owner !== session?.client;
   const base = Boolean(session && info()?.connected && !working && !ownBusy && !otherOwner);
   document.querySelectorAll('[data-hardware]').forEach(button => { const command = button.dataset.command || actions[button.id]; button.disabled = !base || !capability.has(command) || Boolean(blocked && !safeCommands.has(command)); });
+  $('partition-suggestion').hidden = partitionSuggestions.get(selected()) !== d?.generation || !d?.generation || Number($('partition-address').value) !== 0x8000;
   $('devices').disabled = working;
   $('cancel').disabled = !working || !current;
   $('usb-state').textContent = portConnected ? 'connecté' : 'non connecté';
@@ -432,6 +434,7 @@ function recordOperation(op, started) {
 async function submit(command, args = {}, destructive = false) {
   if (working) throw new Error('Une opération manuelle est déjà en cours');
   const target = selectedTarget();
+  if (command === 'partitions') { partitionSuggestions.delete(target.device); partitionCache.delete(target.device); renderPartitions(); }
   operationDevice = target.device; working = true; current = null; renderState(); const started = performance.now(), client = api();
   try {
     let op = await client.request('manual-operations', { method: 'POST', data: { device: target.device, generation: target.generation, command, args, allow_destructive: destructive, timeout: command === 'flash.read' ? 600 : 120 } });
@@ -441,7 +444,12 @@ async function submit(command, args = {}, destructive = false) {
       await new Promise(resolve => setTimeout(resolve, 250));
       op = await client.request('operations/' + op.id); recordOperation(op, started);
     }
-    if (op.state !== 'completed') { feedback(`Opération ${op.state} : ${diagnostic(op.error?.code || 'inspectez le résultat')}`); tab('operations'); return op; }
+    if (op.state !== 'completed') {
+      const suggest = command === 'partitions' && args.address === 0x8000 && op.error?.code === 'partition_table_invalid';
+      if (suggest) partitionSuggestions.set(target.device, target.generation);
+      feedback(`Opération ${op.state} : ${diagnostic(op.error?.code || 'inspectez le résultat')}`);
+      tab(suggest ? 'partitions' : 'operations'); return op;
+    }
     feedback(`${command} : terminé sur ${target.device}`);
     if (command === 'partitions' && op.result?.partitions) { partitionCache.set(target.device, op.result.partitions); renderPartitions(); }
     if (command === 'identify' && op.result?.chip) { const d = info(target.device); if (d) Object.assign(d, op.result); renderState(); }
@@ -454,6 +462,12 @@ async function submit(command, args = {}, destructive = false) {
 }
 document.querySelectorAll('[data-command]').forEach(button => { button.onclick = safely(() => submit(button.dataset.command,
   button.dataset.command === 'partitions' ? { address: address($('partition-address').value) } : {})); });
+$('partition-address').addEventListener('input', () => { partitionSuggestions.delete(selected()); renderState(); });
+hook('try-partition-address', () => {
+  if (partitionSuggestions.get(selected()) !== info()?.generation) throw new Error('La carte a changé : relisez la table à son adresse explicite');
+  $('partition-address').value = '0x10000';
+  return submit('partitions', { address: 0x10000 });
+});
 hook('cancel', async () => { const op = await api().request('operations/' + current, { method: 'DELETE' }); json(op); feedback(op.cancel_requested ? 'Annulation demandée ; interruption matérielle non confirmée.' : 'Commande annulée avant exécution.'); });
 
 function renderPartitions() {

@@ -138,6 +138,28 @@ test('local browser session connects Web Serial and drives automatic per-operati
   await page.waitForFunction(()=>!document.querySelector('#read').disabled);
   await page.waitForFunction(()=>window.__wakeRequests>0&&window.__wakeReleases>0);
   assert.ok((await page.textContent('#agent-log')).includes('partitions'));
+  // An invalid default table suggests an explicit alternative, without an automatic second read.
+  await page.evaluate(()=>{window.__partitionAddress=0x10000;});
+  const partitionRequests=[];page.on('request',request=>{
+    if(request.method()==='POST'&&request.url().endsWith('/manual-operations')) {
+      const body=request.postDataJSON();if(body.command==='partitions')partitionRequests.push(body.args.address);
+    }
+  });
+  await page.click('[data-command="partitions"]');
+  await page.waitForSelector('#partition-suggestion',{state:'visible'});
+  assert.equal(await page.locator('#panel-partitions').isVisible(),true);
+  assert.equal(await page.inputValue('#partition-address'),'0x8000');
+  assert.deepEqual(partitionRequests,[0x8000]);
+  await page.click('#try-partition-address');
+  await page.waitForFunction(()=>document.querySelector('#partitions-body').textContent.includes('factory'));
+  assert.equal(await page.inputValue('#partition-address'),'0x10000');
+  assert.equal(await page.locator('#partition-suggestion').isVisible(),false);
+  assert.deepEqual(partitionRequests,[0x8000,0x10000]);
+  // Other invalid addresses retain their diagnostic without the default-address suggestion.
+  await page.fill('#partition-address','0x20000');await page.click('[data-command="partitions"]');
+  await page.waitForFunction(()=>{const op=JSON.parse(document.querySelector('#result').textContent);return op.command==='partitions'&&op.state==='failed'&&document.querySelector('#partition-address').value==='0x20000';});
+  assert.equal(await page.locator('#partition-suggestion').isVisible(),false);
+  await page.evaluate(()=>{window.__partitionAddress=0x8000;});
   await page.click('#tab-memory');await page.fill('#address','0x10000');await page.fill('#size','64');await page.click('#read');
   await page.waitForFunction(()=>document.querySelector('#dump-state').textContent.includes('64 octets'));
   assert.ok((await page.textContent('#hex-dump')).includes('ff ff'));
