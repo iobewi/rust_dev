@@ -184,7 +184,7 @@ test('local browser session connects Web Serial and drives automatic per-operati
     window.__readFault=null;
     const devices=await (await fetch('/api/v1/devices')).json(),device=devices.devices.find(d=>d.id==='board');
     const response=await fetch('/api/v1/manual-operations',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({device:device.id,generation:device.generation,command:'identify',args:{return_console:false}})});
+      body:JSON.stringify({device:device.id,generation:device.generation,command:'flash.read',args:{address:0x10000,size:64,return_console:false}})});
     if(!response.ok)throw new Error('Loader setup rejected: '+response.status);
   });
   await page.waitForFunction(()=>document.querySelector('#device-mode').textContent==='loader'&&!document.querySelector('[data-command="console"]').disabled);
