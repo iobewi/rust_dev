@@ -150,6 +150,7 @@ function statusDetails(name = null) {
     panel.hidden = !open;
     button.setAttribute('aria-expanded', String(open));
     if (restoreFocus) button.focus();
+    if (!open) button.closest('.help').classList.add('dismissed');
   });
   if (name) {
     const title = $('status-panel-' + name).querySelector('.pane-title');

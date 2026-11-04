@@ -32,7 +32,7 @@
 .status-button[data-tone=warning]{color:var(--warning);border-color:var(--warning)}
 .status-button[aria-expanded=true]{background:var(--panel);border-color:var(--accent)}
 .status-icon{width:20px;height:20px;flex:none;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
-.status-item .help-popup{left:auto;right:0;max-width:min(280px,calc(100vw - 24px))}
+.status-item .help-popup{pointer-events:none;left:auto;right:0;max-width:min(280px,calc(100vw - 24px))}
 .status-item:has([aria-expanded=true]) .help-popup{display:none}
 .status-panel{margin:0;padding:0;border:0;border-bottom:1px solid var(--line);background:var(--panel);color:var(--ink);min-width:0}
 .status-panel .pane-title{padding:6px 12px}.status-content{padding:12px;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px 24px;align-items:start}.status-content>.hint,.status-content>.access-panel{grid-column:1/-1}.status-content>p{margin:0}.status-content>hr{grid-column:1/-1;width:100%;border:0;border-top:1px solid var(--line)}.status-content p{overflow-wrap:anywhere}
