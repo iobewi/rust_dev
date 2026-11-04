@@ -7,6 +7,7 @@ import { createInterface } from 'node:readline';
 const { chromium }=createRequire(import.meta.url)('playwright');
 
 async function openStatus(page, name) {
+ if (name === 'card') { assert.equal(await page.locator('.device-panel').isVisible(),true); return; }
  if (!await page.locator('#status-panel-' + name).isVisible()) await page.click('#status-' + name);
  await page.waitForSelector('#status-panel-' + name, { state: 'visible' });
 }
@@ -112,7 +113,9 @@ test('local browser session connects Web Serial and drives automatic per-operati
   await closeStatus(page);
   assert.equal(await page.textContent('#status-label-usb'),'USB connecté');
   await page.waitForFunction(()=>document.querySelector('#status-label-agent').textContent==='Agent connecté');
-  assert.equal(await page.locator('.device-panel').count(),0);
+  assert.equal(await page.locator('.device-panel').count(),1);
+  assert.equal(await page.locator('[data-status=card]').count(),0);
+  assert.equal(await page.locator('[data-command=identify]').isVisible(),true);
   await page.click('#format-hex');await page.waitForFunction(()=>document.querySelector('#uart-log').textContent.includes('00 ff'));
   await page.click('#pause');const frozen=await page.textContent('#uart-log');
   await page.evaluate(()=>window.__serialPort.controller.enqueue(new Uint8Array([42,43])));
@@ -129,6 +132,10 @@ test('local browser session connects Web Serial and drives automatic per-operati
   await page.focus('#workspace-tab-consoles');await page.keyboard.press('ArrowRight');
   assert.equal(await page.locator('#workspace-operations').isVisible(),true);
   assert.equal(await page.locator('#workspace-consoles').isVisible(),false);
+  assert.equal(await page.locator('[data-command=identify]').isVisible(),true);
+  assert.equal(await page.locator('[data-command=reset]').isVisible(),true);
+  const sidebarBounds=await page.locator('.device-panel').boundingBox(), mainBounds=await page.locator('.work-area').boundingBox();
+  assert.ok(sidebarBounds.x+sidebarBounds.width<=mainBounds.x+1);
   await page.evaluate(()=>window.__serialPort.controller.enqueue(new Uint8Array([65,66,67,10])));
   await page.click('#workspace-tab-consoles');
   await page.waitForFunction(()=>document.querySelector('#uart-log').textContent.includes('41 42 43 0a'));
@@ -245,7 +252,7 @@ test('local browser session connects Web Serial and drives automatic per-operati
   await openStatus(page,'usb');assert.equal(await page.locator('#connect').isVisible(),true);
   await closeStatus(page);assert.equal(await page.locator('#status-panel-usb').isVisible(),false);
   assert.equal(await page.locator('#status-usb').getAttribute('aria-expanded'),'false');
-  for (const name of ['card','agent','control','permissions','wake']) {
+  for (const name of ['agent','control','permissions','wake']) {
     await openStatus(page,name);
     assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
     const bounds=await page.locator('#status-panel-'+name).boundingBox();assert.ok(bounds.x>=0&&bounds.x+bounds.width<=360);
@@ -259,10 +266,11 @@ test('local browser session connects Web Serial and drives automatic per-operati
   const closedTop=await page.locator('.workspace').evaluate(node=>node.getBoundingClientRect().top+scrollY);
   assert.ok(openTop>closedTop+50);
   await page.evaluate(()=>window.scrollTo(0,document.body.scrollHeight));
-  await openStatus(page,'card');
-  assert.ok(await page.locator('#status-panel-card .pane-title').evaluate(node=>node.getBoundingClientRect().top>=document.querySelector('.app-header').getBoundingClientRect().bottom-1));
+  await openStatus(page,'agent');
+  assert.ok(await page.locator('#status-panel-agent .pane-title').evaluate(node=>node.getBoundingClientRect().top>=document.querySelector('.app-header').getBoundingClientRect().bottom-1));
   await openStatus(page,'usb');
-  assert.equal(await page.locator('#status-panel-card').isVisible(),false);
+  assert.equal(await page.locator('#status-panel-agent').isVisible(),false);
+  assert.equal(await page.locator('.device-panel').isVisible(),true);
   assert.equal(await page.locator('.status-panel:visible').count(),1);
   await page.locator('#status-panel-usb [data-close-status]').click();
   assert.equal(await page.locator('#status-panel-usb').isVisible(),false);

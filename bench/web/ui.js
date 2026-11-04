@@ -159,6 +159,9 @@ function statusDetails(name = null) {
     title.scrollIntoView({ block: 'nearest' });
   }
 }
+new ResizeObserver(() => {
+  document.documentElement.style.setProperty('--header-height', document.querySelector('.app-header').offsetHeight + 'px');
+}).observe(document.querySelector('.app-header'));
 document.querySelectorAll('[data-status]').forEach(button => {
   button.onclick = () => statusDetails(button.getAttribute('aria-expanded') === 'true' ? null : button.dataset.status);
 });
