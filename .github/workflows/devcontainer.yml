@@ -1,0 +1,39 @@
+name: Devcontainer validation
+on:
+  pull_request:
+    paths: ['.devcontainer/**', 'docker/**', '.dockerignore', 'bench/requirements.txt', '.github/workflows/devcontainer.yml']
+  push:
+    branches: [main]
+    paths: ['.devcontainer/**', 'docker/**', '.dockerignore', 'bench/requirements.txt', '.github/workflows/devcontainer.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  container:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm install -g @devcontainers/cli@0.90.0
+      - name: Build and open the actual devcontainer
+        run: devcontainer up --workspace-folder . > /tmp/devcontainer-up.json
+      - name: Toolchain and isolated journal smoke
+        run: devcontainer exec --workspace-folder . bench-container-smoke
+      - name: Bench software tests inside the container
+        run: |
+          devcontainer exec --workspace-folder . bash -lc 'cd /workspace/bench && python -m pytest python/tests recipes -q && node --test tests/*.test.mjs && python -m unittest discover -s tests -p "test_*.py"'
+      - name: Record private volume sentinels
+        run: |
+          devcontainer exec --workspace-folder . python -c 'import os; from pathlib import Path; Path(os.environ["BENCH_STATE_DIR"],"devcontainer-ci-sentinel.txt").write_text("persistent-state"); Path("/root/.claude/devcontainer-ci-sentinel.txt").write_text("persistent-claude")'
+      - name: Recreate without deleting the volumes
+        run: |
+          container_id="$(jq -er '.containerId' /tmp/devcontainer-up.json)"
+          docker rm --force "$container_id"
+          devcontainer up --workspace-folder . > /tmp/devcontainer-up.json
+      - name: Verify state and Claude configuration survived recreation
+        run: |
+          devcontainer exec --workspace-folder . python -c 'import os; from pathlib import Path; assert Path(os.environ["BENCH_STATE_DIR"],"devcontainer-ci-sentinel.txt").read_text()=="persistent-state"; assert Path("/root/.claude/devcontainer-ci-sentinel.txt").read_text()=="persistent-claude"'
+          devcontainer exec --workspace-folder . bench-container-smoke

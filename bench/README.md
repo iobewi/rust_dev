@@ -78,6 +78,38 @@ Les captures durables, assertions et rapports appartiennent au client. `BenchCli
 
 ## Devcontainer et redirection de port locale
 
+Le navigateur reste sur le PC de l’opérateur : il ouvre l’interface servie par le
+conteneur et possède seul le port USB via Web Serial. Le devcontainer ne lance
+aucun navigateur, n’installe pas Chromium/Playwright et ne demande aucun accès
+aux périphériques USB du PC. Le client Python installé dans le conteneur sert aux
+recettes pytest et communique uniquement avec l’API du serveur. Les tests
+navigateur simulés restent dans la CI logicielle existante, hors devcontainer.
+
+Le projet est monté explicitement dans `/workspace` avec `workspaceMount`.
+Deux volumes Docker nommés sont créés automatiquement : `iobewi-bench-state`
+conserve le journal du banc, `iobewi-claude-state` conserve la configuration
+Claude dans `/root/.claude`. Aucun dossier `.claude` préexistant sur le PC n’est
+requis. Ce nouveau volume ne reprend pas automatiquement la configuration d’un
+ancien bind mount ; configurer Claude une première fois dans le conteneur si
+nécessaire. Les reconstructions suivantes conservent les deux volumes.
+
+Les versions sont fixées : Python 3.12.16, Node 22.23.4, Rust 1.99.1, Rust Xtensa
+1.97.0.0, espup 0.19.0, espflash 4.7.0, esp-generate 2.0.0 et Claude Code 2.1.318.
+Les exécutables ESP officiels sont contrôlés par SHA-256 avant installation ;
+leurs versions et empreintes sont dans `docker/esp-tools.json`. Les paquets
+système Debian et dépendances transitives non verrouillées continuent d’évoluer :
+ceci ne garantit pas une image identique octet pour octet à chaque reconstruction.
+
+Depuis VS Code, utiliser **Dev Containers: Rebuild and Reopen in Container**.
+Le hook de création vérifie les outils et installe seulement le client Python
+depuis le workspace, sans télécharger de navigateur. Le serveur du banc reste à
+démarrer explicitement avec son fichier de configuration privé.
+
+La CI `Devcontainer validation` construit et ouvre la configuration réelle avec
+la CLI Dev Containers 0.90.0, vérifie les outils et les tests logiciels sans
+navigateur, puis recrée le conteneur pour vérifier la persistance des deux
+volumes. Ces contrôles n’accèdent à aucune carte physique.
+
 L’écoute `0.0.0.0` dans le conteneur est compatible avec la page ouverte sur `localhost` du PC. Déclarer l’origine publique exacte et l’adresse du relais telle que le serveur la voit :
 
 ```sh

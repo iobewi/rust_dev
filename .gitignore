@@ -11,11 +11,15 @@
 
 # Keep these root files
 !/.gitignore
+!/.dockerignore
 !/LICENSE
 
 # Bench software validation
 !/.github/
 !/.github/workflows/
 !/.github/workflows/bench.yml
+!/.github/workflows/devcontainer.yml
 
 !/AGENTS.md
+
+**/__pycache__/
