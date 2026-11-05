@@ -30,10 +30,10 @@ def test_upload_invalid_size_never_sends(source):
 
 def test_upload_bad_response_is_never_retried():
     client = BenchClient('http://localhost:8080', 'test-token')
-    client._request = Mock(return_value={'id': 'x', 'size': 3, 'sha256': 'invalid'})
+    client._request = Mock(side_effect=[{'storage': {'available': 100}}, {'id': 'x', 'size': 3, 'sha256': 'invalid'}])
     with pytest.raises(BenchError, match='SHA-256'):
         client.upload(b'123')
-    assert client._request.call_count == 1
+    assert client._request.call_count == 2
 
 
 def test_read_flash_exposes_loader_session():
@@ -63,3 +63,14 @@ def test_grant_wait_is_observation_only(sim_bench, tmp_path):
         case.wait_grant(minimum_seconds=1, timeout=.02)
     assert case.client.submissions == 0
     assert sim_bench.device('board')['privileged_seconds'] == 0
+
+
+def test_storage_inventory_and_owner_cleanup(sim_bench):
+    before = sim_bench.artifacts()['storage']['used']
+    artifact = sim_bench.upload(b'cleanup-test')
+    assert sim_bench.artifacts()['storage']['used'] == before + 12
+    other = BenchClient(sim_bench.url, 'pytest-second-test-token')
+    with pytest.raises(BenchError, match='403'):
+        other.delete_artifact(artifact['id'])
+    sim_bench.delete_artifact(artifact['id'])
+    assert sim_bench.artifacts()['storage']['used'] == before

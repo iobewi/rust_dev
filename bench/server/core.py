@@ -20,6 +20,7 @@ class Broker:
         self.clock, self.max_events = clock, max_events
         self.agents, self.devices, self.leases, self.operations, self.artifacts = {}, {}, {}, {}, {}
         self.artifact_bytes = 0
+        self.upload_reserved = 0
         self.epoch = uid()
 
     def agent(self, agent_id, socket):
@@ -94,15 +95,13 @@ class Broker:
         self.release_automatic()
         # Retain outcomes for one hour, never evict active or unsettled operations.
         for key, op in list(self.operations.items()):
-            if op['state'] in TERMINAL and now - op['created'] > 3600 and not op.get('unsettled'):
+            if op['state'] in TERMINAL and now - op['created'] > 3600 and not self.operation_pins(op):
                 del self.operations[key]
         for key, lease in list(self.leases.items()):
             if not lease['active'] and now - lease['until'] > 3600:
                 del self.leases[key]
         for key, art in list(self.artifacts.items()):
-            if now - art['created'] > 3600 and not any(
-                op['state'] not in TERMINAL and key in op['artifact_ids'] for op in self.operations.values()
-            ):
+            if now - art['created'] > 3600 and not self.artifact_pinned(key):
                 self.artifact_bytes -= art['size']
                 del self.artifacts[key]
 
@@ -167,12 +166,54 @@ class Broker:
                 self.release(lease['id'], owner)
             raise
 
-    def artifact(self, data, expected):
+    @staticmethod
+    def operation_pins(op):
+        return (op['state'] not in TERMINAL or op.get('unsettled') or
+                op.get('requires_settle') and not op.get('settled') or
+                op['state'] == 'indeterminate' and not op.get('reconciled'))
+
+    def artifact_pinned(self, key):
+        artifact = self.artifacts[key]
+        for op in self.operations.values():
+            if not self.operation_pins(op):
+                continue
+            references = set(op['artifact_ids'])
+            for result in [op.get('result'), (op.get('late_result') or {}).get('result')]:
+                if isinstance(result, dict) and isinstance(result.get('artifact'), dict):
+                    references.add(result['artifact'].get('id'))
+            device = self.devices.get(op['device'], {})
+            if key in references or artifact.get('owner') == 'agent:' + device.get('agent', ''):
+                return True
+        return False
+
+    def storage(self):
+        return {'total': 64 * 1024 * 1024, 'used': self.artifact_bytes,
+                'reserved': self.upload_reserved,
+                'available': 64 * 1024 * 1024 - self.artifact_bytes - self.upload_reserved,
+                'max_artifact': MAX_ARTIFACT}
+
+    def delete_artifact(self, key, owner):
+        artifact = self.artifacts.get(key)
+        require(artifact is not None, 'not_found', 'Unknown artifact', 404)
+        # Client uploads belong to their uploader. Agent readbacks may be cleaned
+        # by the client owning the operation which produced them.
+        owns_result = any(op['owner'] == owner and
+            artifact.get('owner') == 'agent:' + self.devices.get(op['device'], {}).get('agent', '') and
+            isinstance(op.get('result'), dict) and
+            (op['result'].get('artifact') or {}).get('id') == key for op in self.operations.values())
+        require(artifact.get('owner') == 'client:' + owner or owns_result,
+                'forbidden', 'Artifact belongs to another owner', 403)
+        require(not self.artifact_pinned(key), 'artifact_in_use', 'Artifact retained for execution or recovery', 409)
+        self.artifact_bytes -= artifact['size']
+        del self.artifacts[key]
+        return {'deleted': True}
+
+    def artifact(self, data, expected, owner=None):
         require(0 < len(data) <= MAX_ARTIFACT, 'artifact_size', 'Invalid artifact size', 413)
         digest = hashlib.sha256(data).hexdigest()
         require(digest == expected, 'digest_mismatch', 'SHA-256 mismatch')
-        require(self.artifact_bytes + len(data) <= 64 * 1024 * 1024, 'capacity', 'Artifact store full', 503)
-        a = {'id': uid(), 'data': data, 'size': len(data), 'sha256': digest, 'created': self.clock()}
+        require(len(data) <= self.storage()['available'], 'capacity', 'Artifact store full', 503)
+        a = {'id': uid(), 'data': data, 'size': len(data), 'sha256': digest, 'created': self.clock(), 'owner': owner}
         self.artifacts[a['id']] = a
         self.artifact_bytes += len(data)
         return {k: v for k, v in a.items() if k != 'data'}
@@ -341,6 +382,10 @@ class Broker:
             require(not any(o['device'] == d['id'] and o['unsettled'] for o in self.operations.values()),
                     'still_running', 'Hardware execution is still unsettled', 409)
             d['quarantined'] = False
+            for op in self.operations.values():
+                if op['device'] == d['id'] and op['state'] == 'indeterminate':
+                    op['reconciled'] = True
+                    op['settled'] = True
             self.event(d['id'], 'recovered', {})
         elif kind == 'uart':
             seq = integer(message.get('seq'), 1, 2**53 - 1)

@@ -21,6 +21,7 @@ export class AgentJournal {
     const detail = event.detail;
     if (detail && typeof detail === 'object') {
       parts.push(phaseLabel(detail.phase));
+      if (Number.isInteger(detail.http_status)) parts.push(`HTTP ${detail.http_status}`);
       if (Number.isFinite(detail.received_bytes) && Number.isFinite(detail.expected_bytes)) parts.push(`${detail.received_bytes} / ${detail.expected_bytes} octets`);
       if (['SerialFault', 'ESPError', 'NetworkError', 'AbortError', 'TypeError', 'RangeError', 'SyntaxError', 'Error', 'HardwareError', 'SecurityError', 'InvalidStateError'].includes(detail.error_type)) parts.push(detail.error_type);
       if (['closed', 'no-response', 'partial-packet', 'invalid-packet'].includes(detail.transport_kind)) parts.push(detail.transport_kind);

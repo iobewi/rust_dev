@@ -47,3 +47,27 @@ separately from immutable code. Unsupported transports fail explicitly.
 
 Historical recipes and evidence must not be rewritten to make interrupted tests
 pass. The new support files are copied into each evidence directory as before.
+
+## Temporary artifact store
+
+`GET /api/v1/artifacts` now includes `storage` (total, used, reserved,
+available, max_artifact, all in bytes) and a `pinned` flag per artifact.
+Total stays 64 MiB; individual artifacts stay at most 16 MiB. Upload requires
+Content-Length; admission reserves capacity before reading the body. Concurrent
+uploads cannot overcommit admission. Capacity refusal is HTTP 503 / `capacity`.
+The client's preflight is advisory; server admission remains authoritative.
+
+`DELETE /api/v1/artifacts/{id}` requires control scope and ownership. Clients
+can delete their own uploads and readbacks produced for their own operations.
+Agents cannot delete. Artifacts remain readable under the existing API policy
+(all authenticated clients with read scope); this is not a private artifact vault.
+No tokens or binary data are returned in the inventory.
+
+Active, unsettled, unacknowledged and unreconciled indeterminate operations pin
+input/output artifacts. Agent uploads are conservatively pinned while their agent
+has unresolved work, including the interval before a result associates the ID.
+The one-hour cleanup never overrides these pins. Operator recovery explicitly
+reconciles indeterminate operations, without changing their verdict to success.
+Recipes should download and verify readbacks, then explicitly delete disposable
+artifacts after settlement. Backups needed for restoration must be retained
+privately by the recipe; there is no implicit cleanup of those backups.

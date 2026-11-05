@@ -290,3 +290,36 @@ class CoreTests(unittest.TestCase):
         self.assertNotIn(self.lease['id'],str(view))
         self.b.release(self.lease['id'],'alice')
         self.assertIsNone(self.b.view(self.b.devices['board'])['reservation'])
+
+    def test_uncertain_artifact_is_pinned_past_retention_until_local_recovery(self):
+        data = b'x' * 4096
+        a = self.b.artifact(data, hashlib.sha256(data).hexdigest(), 'client:alice')
+        op = self.start(command='flash.write', args={'chip':'esp32s3', 'images':[
+            {'artifact':a['id'], 'sha256':a['sha256'], 'address':0x10000}]}, allow_destructive=True)
+        self.b.disconnect('agent')
+        self.now += 4000
+        self.b.sweep()
+        self.assertIn(a['id'], self.b.artifacts)
+        self.assertIn(op['id'], self.b.operations)
+        with self.assertRaises(Fault) as error:
+            self.b.delete_artifact(a['id'], 'alice')
+        self.assertEqual(error.exception.code, 'artifact_in_use')
+        self.b.agent('agent', object())
+        generation = self.b.register('agent', {'id':'board', 'chip':'esp32s3',
+            'flash_size':4194304, 'capabilities':['identify']}, ['board'])
+        self.b.agent_event('agent', {'type':'recover', 'device':'board', 'generation':generation})
+        self.b.delete_artifact(a['id'], 'alice')
+        self.assertEqual(self.b.storage()['used'], 0)
+
+    def test_artifact_capacity_and_owner_deletion(self):
+        a = self.b.artifact(b'x', hashlib.sha256(b'x').hexdigest(), 'client:alice')
+        with self.assertRaises(Fault) as error:
+            self.b.delete_artifact(a['id'], 'bob')
+        self.assertEqual(error.exception.status, 403)
+        self.b.upload_reserved = self.b.storage()['total'] - 1
+        with self.assertRaises(Fault) as error:
+            self.b.artifact(b'x', hashlib.sha256(b'x').hexdigest(), 'client:alice')
+        self.assertEqual((error.exception.status, error.exception.code), (503, 'capacity'))
+        self.b.upload_reserved = 0
+        self.b.delete_artifact(a['id'], 'alice')
+        self.assertEqual(self.b.storage()['available'], 64 * 1024 * 1024)

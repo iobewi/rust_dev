@@ -183,12 +183,28 @@ async def event_stream(request):
 async def artifacts(request):
     b = request.app[BROKER]; b.sweep()
     if request.method == 'POST':
-        data = await request.read()
-        return json_reply(b.artifact(data, request.headers.get('X-SHA256')), 201)
+        size = request.content_length
+        require(size is not None, 'length_required', 'Content-Length required', 411)
+        require(0 < size <= MAX_ARTIFACT, 'artifact_size', 'Invalid artifact size', 413)
+        require(size <= b.storage()['available'], 'capacity', 'Artifact store full', 503)
+        b.upload_reserved += size
+        try:
+            data = await request.read()
+            require(len(data) == size, 'artifact_size', 'Incomplete artifact', 400)
+        finally:
+            b.upload_reserved -= size
+        identity = request[IDENTITY]
+        return json_reply(b.artifact(data, request.headers.get('X-SHA256'),
+                                     identity['role'] + ':' + identity['id']), 201)
     if 'id' not in request.match_info:
         require(request[IDENTITY]['role'] == 'client', 'forbidden', 'Client required', 403)
-        return json_reply({'artifacts': [{k:v for k,v in a.items() if k != 'data'} for a in b.artifacts.values()]})
+        return json_reply({'storage': b.storage(), 'artifacts': [
+            {k:v for k,v in a.items() if k not in {'data', 'owner'}} | {'pinned': b.artifact_pinned(a['id'])}
+            for a in b.artifacts.values()]})
     key = request.match_info['id']
+    if request.method == 'DELETE':
+        require(request[IDENTITY]['role'] == 'client', 'forbidden', 'Client required', 403)
+        return json_reply(b.delete_artifact(key, request[IDENTITY]['id']))
     a = b.artifacts.get(key)
     require(a is not None, 'not_found', 'Unknown or expired artifact', 404)
     identity = request[IDENTITY]
@@ -301,7 +317,7 @@ async def static(request):
 def create_app(tokens, broker=None, origin=None, ui_forward_peers=()):
     validate_config(tokens)
     access = UIAccess(origin, ui_forward_peers)
-    app = web.Application(middlewares=[errors], client_max_size=MAX_ARTIFACT)
+    app = web.Application(middlewares=[errors], client_max_size=MAX_ARTIFACT + 1)
     app[TOKENS], app[BROKER], app[ORIGIN] = tokens, broker or Broker(), origin
     allowed = sorted({device for identity in tokens.values() if identity['role'] == 'agent' for device in identity['devices']}) or ['esp32-local']
     app[UI_ACCESS] = access
@@ -315,7 +331,7 @@ def create_app(tokens, broker=None, origin=None, ui_forward_peers=()):
                     web.delete('/api/v1/operations/{id}', operations),
                     web.get('/api/v1/devices/{device}/events', events),
                     web.get('/api/v1/devices/{device}/events/stream', event_stream),
-                    web.get('/api/v1/artifacts', artifacts), web.post('/api/v1/artifacts', artifacts), web.get('/api/v1/artifacts/{id}', artifacts),
+                    web.get('/api/v1/artifacts', artifacts), web.post('/api/v1/artifacts', artifacts), web.get('/api/v1/artifacts/{id}', artifacts), web.delete('/api/v1/artifacts/{id}', artifacts),
                     web.get('/', static), web.get('/{name}', static)])
     return app
 

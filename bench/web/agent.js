@@ -56,7 +56,12 @@ export class Agent {
         method: id ? 'GET' : 'POST', headers: { ...(this.token ? { Authorization: 'Bearer ' + this.token } : {}),
           ...(bytes ? { 'X-SHA256': await sha256(bytes) } : {}) }, ...(bytes ? { body: bytes } : {}),
       });
-      if (!response.ok) throw new HardwareError('artifact_transfer_failed', { phase, http_status: response.status });
+      if (!response.ok) {
+        // Keep only a known code; never include arbitrary response text.
+        let code = 'artifact_transfer_failed';
+        try { if ((await response.json()).error?.code === 'capacity') code = 'capacity'; } catch {}
+        throw new HardwareError(code, { phase, http_status: response.status });
+      }
       if (id) { const data = new Uint8Array(await response.arrayBuffer()); this.log('download', { bytes: data.length }); return data; }
       const result = await response.json(); this.log('upload', { bytes: bytes.length }); return result;
     } catch (error) {
