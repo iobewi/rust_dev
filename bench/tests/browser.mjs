@@ -408,3 +408,38 @@ test('automatic browser session and manual API work through a real HTTP and WebS
   assert.equal(await page.locator('#reserve').count(),0);assert.deepEqual(errors,[]);
  } finally {await browser?.close();proc.kill('SIGTERM');lines.close();}
 });
+
+test('real WebSocket reconnect quarantines interrupted work without replay or renewed grant',async()=>{
+ const proc=spawn('python3',['tests/browser_fixture.py'],{cwd:new URL('..',import.meta.url),stdio:['ignore','pipe','pipe']});
+ let stderr='';proc.stderr.on('data',b=>stderr+=b);const lines=createInterface({input:proc.stdout});let browser;
+ try {
+  const url=await new Promise((resolve,reject)=>{lines.once('line',s=>resolve(JSON.parse(s).url));proc.once('exit',()=>reject(new Error(stderr)));});
+  browser=await chromium.launch({headless:true,args:['--no-sandbox']});const page=await browser.newPage();await page.goto(url);
+  await page.evaluate(async()=>{
+   const {Agent}=await import('/agent.js');window.executions=0;
+   const engine={busy:false,hold:false,persistHold(){},setHold(v){this.hold=v;},cancelTrigger(){},async execute(){
+    window.executions++;return await new Promise(resolve=>window.finishWork=resolve);
+   }};
+   window.reconnectingAgent=new Agent({engine,device:{id:'board',chip:'esp32s3',flash_size:4194304,capabilities:['identify']},token:'agent-secret-12345678'});
+   window.reconnectingAgent.connect();
+  });
+  await page.waitForFunction(()=>window.reconnectingAgent.generation);
+  const old=await page.evaluate(()=>window.reconnectingAgent.generation);
+  const headers={Authorization:'Bearer client-alice-123456789','Content-Type':'application/json'};
+  const lease=await(await fetch(url+'/api/v1/leases',{method:'POST',headers,body:JSON.stringify({device:'board',ttl:60})})).json();
+  const op=await(await fetch(url+'/api/v1/operations',{method:'POST',headers,body:JSON.stringify({lease:lease.id,command:'identify'})})).json();
+  await page.waitForFunction(()=>window.finishWork);
+  await page.evaluate(()=>{window.reconnectingAgent.grant(1800);window.reconnectingAgent.socket.close();});
+  await page.waitForFunction(()=>!window.reconnectingAgent.generation);
+  await page.evaluate(()=>window.finishWork({simulated:true}));
+  await page.waitForFunction(old=>window.reconnectingAgent.generation&&window.reconnectingAgent.generation!==old,old);
+  assert.equal(await page.evaluate(()=>window.executions),1);
+  assert.equal(await page.evaluate(()=>window.reconnectingAgent.engine.hold),true);
+  assert.equal(await page.evaluate(()=>window.reconnectingAgent.grantUntil),0);
+  const outcome=await(await fetch(url+'/api/v1/operations/'+op.id,{headers})).json();assert.equal(outcome.state,'indeterminate');
+  const device=(await(await fetch(url+'/api/v1/devices',{headers})).json()).devices[0];assert.equal(device.quarantined,true);assert.equal(device.privileged_seconds,0);
+  await page.evaluate(()=>window.reconnectingAgent.recover());
+  await page.waitForFunction(()=>!window.reconnectingAgent.engine.hold);
+  const next=await fetch(url+'/api/v1/leases',{method:'POST',headers,body:JSON.stringify({device:'board',ttl:60})});assert.equal(next.status,201);
+ } finally {if(browser)await browser.close();proc.kill();}
+});

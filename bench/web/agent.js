@@ -1,7 +1,7 @@
 import { HardwareError, hardwareError } from './hardware-errors.js';
 // Authenticated WebSocket executor; it owns no UI and never replays a hardware operation.
 export class Agent {
-  constructor({ engine, device, token, onState = () => {}, onLog = () => {}, onActivity = () => {}, socketFactory = url => new WebSocket(url), now = () => performance.now(), reconnect = typeof window !== "undefined", schedule = setTimeout, cancel = clearTimeout }) {
+  constructor({ engine, device, token, onState = () => {}, onLog = () => {}, onActivity = () => {}, socketFactory = url => new WebSocket(url), now = () => performance.now(), reconnect = typeof window !== "undefined", schedule = (fn, ms) => setTimeout(fn, ms), cancel = id => clearTimeout(id) }) {
     Object.assign(this, { engine, device, token, onState, onLog, onActivity, socketFactory, now, reconnect, schedule, cancel });
     this.seq = 0; this.seen = new Set(); this.grantUntil = 0; this.pending = null; this.revoked = new Set(); this.awaitingResult = null;
   }
@@ -20,7 +20,7 @@ export class Agent {
     this.reconnectTimer = this.schedule(() => {
       this.reconnectTimer = null;
       if (this.stopped) return;
-      if (this.active || this.engine.busy) { this.retryConnection(); return; }
+      if (this.active || this.engine.busy || this.awaitingResult?.finalizing) { this.retryConnection(); return; }
       if (this.awaitingResult) {
         this.orphanedOperation = this.awaitingResult.id;
         this.awaitingResult = null; this.engine.setHold(true); this.activity();
@@ -114,6 +114,7 @@ export class Agent {
           agent_sha256: typeof SERVED_RESOURCE_SHA256 === 'undefined' ? null : SERVED_RESOURCE_SHA256,
           assets_sha256: typeof SERVED_ASSETS_SHA256 === 'undefined' ? null : SERVED_ASSETS_SHA256 } } });
     } else if (m.type === 'registered') {
+      if (m.quarantined === true) this.engine.setHold(true);
       this.generation = m.generation; this.seq = 0; this.log('connected'); this.onState(this.engine.hold ? 'Connexion rétablie · récupération opérateur requise' : 'Agent connected');
     } else if (m.type === 'offer') {
       if (this.awaitingResult) { this.deferredOffer = m; return; }

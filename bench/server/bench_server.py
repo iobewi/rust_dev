@@ -250,7 +250,8 @@ async def websocket(request):
                 kind = message.get('type')
                 if kind == 'register':
                     generation = b.register(identity['id'], message.get('device'), identity['devices'])
-                    await ws.send_json({'type': 'registered', 'device': message['device']['id'], 'generation': generation})
+                    await ws.send_json({'type': 'registered', 'device': message['device']['id'], 'generation': generation,
+                                        'quarantined': b.device(message['device']['id'])['quarantined']})
                 elif kind == 'ready':
                     await ws.send_json(b.commit(identity['id'], message.get('id')))
                 elif kind == 'result':
