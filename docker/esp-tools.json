@@ -1,0 +1,44 @@
+{
+  "espup": {
+    "version": "0.19.0",
+    "repository": "esp-rs/espup",
+    "archives": {
+      "x86_64": {
+        "file": "espup-x86_64-unknown-linux-gnu",
+        "sha256": "f31411c64dffff4da0f0e23c432b9a5fda48942ff8695b8b21009ceb7007bcc0"
+      },
+      "aarch64": {
+        "file": "espup-aarch64-unknown-linux-gnu",
+        "sha256": "a7e841449edbc78ce2443416e90027890b52896698767b6e45a5caafc880498b"
+      }
+    }
+  },
+  "espflash": {
+    "version": "4.7.0",
+    "repository": "esp-rs/espflash",
+    "archives": {
+      "x86_64": {
+        "file": "espflash-x86_64-unknown-linux-gnu.zip",
+        "sha256": "8ab3bafeb212ccb1d7a9c422936b9bc86f8b00fe2731053ed8ab875c8d2f0c4d"
+      },
+      "aarch64": {
+        "file": "espflash-aarch64-unknown-linux-gnu.zip",
+        "sha256": "3158e1c78f3e80ad0389c1d925b69736e1955a60b3cadf932e6d0d74d731b448"
+      }
+    }
+  },
+  "esp-generate": {
+    "version": "2.0.0",
+    "repository": "esp-rs/esp-generate",
+    "archives": {
+      "x86_64": {
+        "file": "esp-generate-x86_64-unknown-linux-gnu",
+        "sha256": "6264cfe9bcf960f40e47d6beab40d6f59f2513380fef4af0e5dfa5487c3604cf"
+      },
+      "aarch64": {
+        "file": "esp-generate-aarch64-unknown-linux-gnu",
+        "sha256": "197bf26f093a58ecb4c6ea423ef84cc159c8f0c66da52e4de323e5fdf8d3292e"
+      }
+    }
+  }
+}

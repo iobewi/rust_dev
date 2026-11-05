@@ -5,9 +5,9 @@
         "context": ".."
     },
     "workspaceFolder": "/workspace",
+    "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind",
     "mounts": [
-        "source=${localWorkspaceFolder},target=/workspace,type=bind",
-        "source=.claude,target=/root/.claude,type=bind",
+        "source=iobewi-claude-state,target=/root/.claude,type=volume",
         "source=iobewi-bench-state,target=/root/.local/state/iobewi-bench,type=volume"
     ],
     "forwardPorts": [
@@ -37,7 +37,7 @@
             }
         }
     },
-    "postCreateCommand": "bash -lc '. /opt/esp/export-esp.sh && rustc --version && cargo --version && espup --version && espflash --version && esp-generate --version && python -m pip install -e \"/workspace/bench/python[pytest]\" && cd /workspace/bench && npm ci --ignore-scripts && npx playwright install --with-deps chromium'",
-    "postStartCommand": "python --version && node --version",
+    "postCreateCommand": ["bash", "/workspace/.devcontainer/post-create.sh"],
+    "postStartCommand": ["bash", "-lc", ". /opt/esp/export-esp.sh && python --version && node --version && rustc --version && rustc +esp --version"],
     "remoteUser": "root"
 }

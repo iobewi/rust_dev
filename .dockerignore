@@ -1,0 +1,7 @@
+# Only image inputs enter the build context. Workspace code is mounted at runtime.
+**
+!docker/
+!docker/**
+!bench/
+!bench/requirements.txt
+**/__pycache__/
