@@ -76,8 +76,12 @@ class BenchClient:
         headers = {"Authorization": "Bearer " + self._token}
         data = None
         if body is not None:
-            data = json.dumps(body).encode()
-            headers["Content-Type"] = "application/json"
+            if isinstance(body, bytes):
+                data = body
+                headers.update({"Content-Type": "application/octet-stream", "X-SHA256": hashlib.sha256(body).hexdigest()})
+            else:
+                data = json.dumps(body).encode()
+                headers["Content-Type"] = "application/json"
         request = Request(self.url + path, data=data, headers=headers, method=method)
         try:
             with self._http.open(request, timeout=self.request_timeout) as response:
@@ -119,6 +123,41 @@ class BenchClient:
             board.close()
             raise
         return board
+
+    def upload(self, source):
+        """Upload once, verify metadata; source is a path or a binary buffer."""
+        limit = 16 * 1024 * 1024
+        if isinstance(source, (str, Path)):
+            with Path(source).open("rb") as stream:
+                data = stream.read(limit + 1)
+        elif isinstance(source, (bytes, bytearray, memoryview)):
+            if len(source) > limit:
+                raise ValueError("Artifact must contain 1..16777216 bytes")
+            data = bytes(source)
+        else:
+            raise TypeError("Expected a file path or binary buffer")
+        if not 0 < len(data) <= limit:
+            raise ValueError("Artifact must contain 1..16777216 bytes")
+        artifact = self._request("POST", "/api/v1/artifacts", data)
+        if (not isinstance(artifact, dict) or not isinstance(artifact.get("id"), str) or
+                not artifact["id"] or artifact.get("size") != len(data) or
+                artifact.get("sha256") != hashlib.sha256(data).hexdigest()):
+            raise BenchError("Upload response size or SHA-256 mismatch; request not retried")
+        return artifact
+
+    def wait_device(self, device_id, *, timeout=120, grant_seconds=0, recovered=False):
+        """Observe only. Never create a grant, recover, reserve or replay commands."""
+        _duration(timeout, 0.01, 3600)
+        _duration(grant_seconds, 0, 14400)
+        deadline = time.monotonic() + timeout
+        while True:
+            state = self.device(device_id)
+            if (state["connected"] and state["privileged_seconds"] >= grant_seconds and
+                    (not recovered or not state["quarantined"])):
+                return state
+            if time.monotonic() >= deadline:
+                raise TimeoutError("Operator/device preconditions not observed")
+            time.sleep(self.poll_interval)
 
     def download(self, artifact):
         data = self._request("GET", "/api/v1/artifacts/" + quote(artifact["id"], safe=""), binary=True)
@@ -166,6 +205,7 @@ class Board:
             self.output_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
             safe = {k: op.get(k) for k in ("id", "device", "generation", "command", "state", "settled", "unsettled")}
             safe["error_code"] = (op.get("error") or {}).get("code")
+            safe["http_status"] = (op.get("error") or {}).get("http_status")
             record = json.dumps(safe)
             if record != self._last_record:
                 with (self.output_dir / "operations.jsonl").open("a") as file:
@@ -212,8 +252,11 @@ class Board:
     def partitions(self, *, address=0x8000):
         return self.command("partitions", {"address": address})["partitions"]
 
-    def read_flash(self, *, address, size, timeout=600):
-        result = self.command("flash.read", {"address": address, "size": size}, timeout=timeout)
+    def read_flash(self, *, address, size, timeout=600, return_console=True):
+        if type(return_console) is not bool:
+            raise ValueError("return_console must be a boolean")
+        result = self.command("flash.read", {"address": address, "size": size,
+                                             "return_console": return_console}, timeout=timeout)
         data = self.client.download(result["artifact"])
         if len(data) != size:
             raise BenchError("Flash read size differs from the requested region")
@@ -226,6 +269,9 @@ class Board:
                 "artifact": result["artifact"]["id"], "operation": self.last_operation["id"],
             }, indent=2))
         return data
+
+    def console(self):
+        return self.command("console")
 
     def renew(self, *, ttl=900):
         self._check_target()
