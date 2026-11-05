@@ -15,6 +15,13 @@ export class EspEngine {
     this.flashBaud = 460800; this.hold = false; this.trigger = null; this.tail = new Uint8Array();
     this.trace = new Tracer(); this.busy = false; this.phase = 'prepare'; this.readProgress = {};
   }
+  provenance() {
+    const usb = this.port.getInfo();
+    const transport = this.usbSerialJtag ? 'usb_serial_jtag' : this.native ? 'native_usb_other' :
+      [0x10c4, 0x1a86, 0x0403, 0x067b].includes(usb.usbVendorId) ? 'external_uart' : 'unknown';
+    return { usb_vid: usb.usbVendorId ?? null, usb_pid: usb.usbProductId ?? null,
+      transport, transport_basis: 'inferred_from_webserial_vid_pid' };
+  }
   diagnostics() {
     const stats = this.transport?.stats || this.lastTransportStats || {};
     const base = this.transport === this.baselineTransport ? this.serialBaseline || {} : {};

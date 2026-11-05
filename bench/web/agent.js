@@ -1,8 +1,8 @@
 import { HardwareError, hardwareError } from './hardware-errors.js';
 // Authenticated WebSocket executor; it owns no UI and never replays a hardware operation.
 export class Agent {
-  constructor({ engine, device, token, onState = () => {}, onLog = () => {}, onActivity = () => {}, socketFactory = url => new WebSocket(url), now = () => performance.now() }) {
-    Object.assign(this, { engine, device, token, onState, onLog, onActivity, socketFactory, now });
+  constructor({ engine, device, token, onState = () => {}, onLog = () => {}, onActivity = () => {}, socketFactory = url => new WebSocket(url), now = () => performance.now(), reconnect = typeof window !== "undefined", schedule = (fn, ms) => setTimeout(fn, ms), cancel = id => clearTimeout(id) }) {
+    Object.assign(this, { engine, device, token, onState, onLog, onActivity, socketFactory, now, reconnect, schedule, cancel });
     this.seq = 0; this.seen = new Set(); this.grantUntil = 0; this.pending = null; this.revoked = new Set(); this.awaitingResult = null;
   }
   log(stage, detail = {}) { this.onLog({ at: Date.now(), device: this.device.id, stage, ...detail }); }
@@ -11,17 +11,51 @@ export class Agent {
     if (!this.generation || this.active || this.awaitingResult || this.engine.busy) throw new Error('Attendez la fin de l’opération');
     this.cancelTrigger(); this.grant(0); this.event('release_control', {});
   }
+  disconnect() {
+    this.stopped = true; this.cancel(this.reconnectTimer); this.reconnectTimer = null;
+    this.socket?.close();
+  }
+  retryConnection() {
+    if (!this.reconnect || this.stopped || this.reconnectTimer) return;
+    this.reconnectTimer = this.schedule(() => {
+      this.reconnectTimer = null;
+      if (this.stopped) return;
+      if (this.active || this.engine.busy || this.awaitingResult?.finalizing) { this.retryConnection(); return; }
+      if (this.awaitingResult) {
+        this.orphanedOperation = this.awaitingResult.id;
+        this.awaitingResult = null; this.engine.setHold(true); this.activity();
+      }
+      this.pending = null; this.deferredOffer = null;
+      this.connect();
+    }, 1000);
+  }
   connect() {
+    this.stopped = false; this.cancel(this.reconnectTimer); this.reconnectTimer = null;
     this.log('connection');
     const url = new URL('/agent/v1/ws', location.href); url.protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-    this.socket = this.socketFactory(url);
-    this.socket.onopen = () => { this.authSent = this.now(); this.send({ type: 'auth', version: 1, ...(this.token ? { token: this.token } : {}) }); };
-    this.socket.onmessage = e => this.message(JSON.parse(e.data)).catch(() => this.onState('agent error'));
+    const socket = this.socketFactory(url); this.socket = socket;
+    this.socket.onopen = async () => {
+      try {
+        if (!this.token && this.reconnectAttempt) {
+          const response = await fetch("/session/v1/open", { method: "POST" });
+          if (!response.ok) { socket.close(); return; }
+        }
+      } catch { socket.close(); return; }
+      if (this.socket !== socket || this.stopped) return;
+      this.authSent = this.now(); this.send({ type: 'auth', version: 1, ...(this.token ? { token: this.token } : {}) }); };
+    this.socket.onmessage = e => {
+      if (this.socket !== socket || this.stopped) return;
+      this.message(JSON.parse(e.data)).catch(() => this.onState('agent error'));
+    };
     this.socket.onclose = () => {
+      if (this.socket !== socket) return;
+      this.reconnectAttempt = true;
+      this.pending = null; this.deferredOffer = null;
       this.generation = null; this.grantUntil = 0; this.cancelTrigger();
       if (this.active || this.awaitingResult) this.engine.setHold(true);
       this.log('disconnected'); this.activity();
-      this.onState('Agent disconnected; reconnect explicitly; no command is replayed');
+      this.onState('Agent disconnected; no command is replayed');
+      this.retryConnection();
     };
   }
   send(message) {
@@ -75,9 +109,13 @@ export class Agent {
   async message(m) {
     if (m.type === 'welcome') {
       this.serverOffset = m.server_ms - this.authSent;
-      this.send({ type: 'register', device: { ...this.device, hold: this.engine.hold } });
+      this.send({ type: 'register', device: { ...this.device, hold: this.engine.hold,
+        provenance: { ...this.engine.provenance?.(),
+          agent_sha256: typeof SERVED_RESOURCE_SHA256 === 'undefined' ? null : SERVED_RESOURCE_SHA256,
+          assets_sha256: typeof SERVED_ASSETS_SHA256 === 'undefined' ? null : SERVED_ASSETS_SHA256 } } });
     } else if (m.type === 'registered') {
-      this.generation = m.generation; this.seq = 0; this.log('connected'); this.onState('Agent connected');
+      if (m.quarantined === true) this.engine.setHold(true);
+      this.generation = m.generation; this.seq = 0; this.log('connected'); this.onState(this.engine.hold ? 'Connexion rétablie · récupération opérateur requise' : 'Agent connected');
     } else if (m.type === 'offer') {
       if (this.awaitingResult) { this.deferredOffer = m; return; }
       if (this.active || this.seen.has(m.id) || m.generation !== this.generation) return;

@@ -227,7 +227,8 @@ function followState() {
 }
 let consoleHeight = $('uart-log').clientHeight;
 $('uart-log').addEventListener('scroll', () => {
-  // A resize may emit scroll before ResizeObserver; preserve follow intent.
+  // A resize may emit scroll before ResizeObserver. Preserve the prior follow
+  // intent until the observer has adjusted the viewport.
   if ($('uart-log').clientHeight === consoleHeight) followState();
 });
 new ResizeObserver(() => {
@@ -373,7 +374,7 @@ async function startStream() {
 async function attach(port, expectedIdentity = null) {
   if (working || agent?.active || engine?.busy || agent?.socket?.readyState === 1) throw new Error('Terminez le pilotage actif avant de changer de port');
   if (agent?.awaitingResult) engine.setHold(true);
-  if (agent?.socket) { agent.socket.onclose = null; agent.socket.close(); }
+  if (agent?.socket) { agent.socket.onclose = null; agent.disconnect(); }
   agent = null;
   if (engine) { try { await engine.close(); } finally { engine = null; } }
   const logicalId = $('device-id').value.trim();
@@ -435,7 +436,7 @@ hook('usb-toggle', async () => {
   try {
     if (portConnected) {
       usbDisconnecting = true; reconnect.forget(); renderState();
-      agent?.cancelTrigger(); agent?.grant(0); agent?.socket?.close();
+      agent?.cancelTrigger(); agent?.grant(0); agent?.disconnect();
       await engine.close();
       if (engine.port.readable || engine.port.writable) throw new Error('Le port Web Serial n’est pas complètement fermé');
       portConnected = false; confirmation = null; $('program-confirmation').hidden = true;
@@ -621,7 +622,7 @@ navigator.serial?.addEventListener('disconnect', event => {
   if (usbDisconnecting || !portConnected || port !== engine?.port) return;
   engine.disconnected = true;
   if (agent?.active || agent?.awaitingResult) engine.setHold(true);
-  engine.cancelTrigger(); engine.transport?.abort('closed', 'USB disconnected'); agent?.socket?.close();
+  engine.cancelTrigger(); engine.transport?.abort('closed', 'USB disconnected'); agent?.disconnect();
   portConnected = false; confirmation = null; $('program-confirmation').hidden = true;
   renderState(); append('PERTE', 'Port USB déconnecté', localDevice.id); logAgent({ stage: 'usb_lost' });
   feedback('USB déconnecté. Reconnexion automatique de la même carte à son retour ; aucune opération rejouée.');

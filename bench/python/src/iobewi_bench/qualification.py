@@ -110,6 +110,7 @@ class Campaign:
         self.reservation_attempts = 0
         self.after = None
         self.epoch = None
+        self.window = 0
         recipe = Path(recipe)
         (self.directory / "recipe.py").write_bytes(recipe.read_bytes())
         module = Path(__file__).read_bytes()
@@ -134,8 +135,9 @@ class Campaign:
         health, device = self.client.health(), self.client.device(self.device)
         self.observed_epoch = health["epoch"]
         safe = {k: device[k] for k in ("id", "generation", "connected", "quarantined",
-                "reservation", "privileged_seconds", "capabilities", "chip", "flash_size") if k in device}
-        self.write(name + ".json", {"epoch": health["epoch"], "device": safe})
+                "reservation", "privileged_seconds", "capabilities", "chip", "flash_size", "provenance", "provenance_source") if k in device}
+        self.write(name + ".json", {"epoch": health["epoch"], "device": safe,
+            "server_observed": health.get("build"), "durability": health.get("durability", "unavailable")})
         return safe
 
     def start(self):
@@ -149,6 +151,37 @@ class Campaign:
         self.epoch, self.after = batch["epoch"], batch["latest"]
         self.write("event-start.json", {"epoch": self.epoch, "after": self.after,
                                        "generation": state["generation"]})
+
+    def interrupt_window(self, reason):
+        """Explicitly end a proof window; this does not assert a continuous session."""
+        if not isinstance(reason, str) or not reason:
+            raise ValueError("An interruption reason is required")
+        failure = None
+        if self.after is not None:
+            try:
+                self.events()
+            except (AssertionError, BenchHTTPError, ContinuityError) as error:
+                failure = type(error).__name__
+        self.client.record("windows.jsonl", {"window": self.window, "epoch": self.epoch,
+            "after": self.after, "event": "interrupted", "reason": reason, "capture_error": failure})
+        self.after = None
+
+    def open_window(self, reason, *, allow_quarantine=False):
+        """Begin fresh evidence after an explicit interruption, never renew old Boards."""
+        if self.after is not None:
+            raise ContinuityError("End the previous proof window explicitly")
+        if not isinstance(reason, str) or not reason:
+            raise ValueError("A new-window reason is required")
+        self.window += 1
+        state = self.snapshot(f"window-{self.window:03d}-before")
+        assert state["connected"], "Card is disconnected"
+        assert allow_quarantine or not state["quarantined"], "Card requires local recovery"
+        batch = self.client._request("GET", f"/api/v1/devices/{quote(self.device, safe='')}/events?after=0")
+        assert batch["epoch"] == self.observed_epoch, "Server changed during window opening"
+        self.epoch, self.after = batch["epoch"], batch["latest"]
+        self.client.record("windows.jsonl", {"window": self.window, "event": "opened", "reason": reason,
+            "epoch": self.epoch, "generation": state["generation"], "after": self.after,
+            "quarantined": state["quarantined"]})
 
     def wait_grant(self, *, minimum_seconds=60, timeout=120):
         if not self.allow_destructive:
@@ -178,7 +211,7 @@ class Campaign:
         result = []
         for _ in range(100):
             batch = self.client._request("GET", f"/api/v1/devices/{quote(self.device, safe='')}/events?after={self.after}")
-            self.client.record("events.jsonl", {k: batch[k] for k in ("epoch", "lost", "next", "latest")})
+            self.client.record("events.jsonl", {"window": self.window, **{k: batch[k] for k in ("epoch", "lost", "next", "latest")}})
             assert batch["epoch"] == self.epoch, "Server epoch changed; proof interrupted"
             assert batch["lost"] == 0, "Server events lost; proof incomplete"
             for event in batch["events"]:

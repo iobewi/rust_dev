@@ -83,9 +83,21 @@ class Broker:
         origins = data.get('http_origins', [])
         require(isinstance(origins, list) and len(origins) <= 8)
         origins = [local_origin(origin) for origin in origins]
+        provenance = data.get('provenance', {})
+        require(isinstance(provenance, dict) and not provenance.keys() - {
+            'usb_vid', 'usb_pid', 'transport', 'transport_basis', 'agent_sha256', 'assets_sha256'})
+        for key in ('usb_vid', 'usb_pid'):
+            if provenance.get(key) is not None:
+                integer(provenance[key], 0, 65535)
+        for key in ('agent_sha256', 'assets_sha256'):
+            value = provenance.get(key)
+            require(value is None or isinstance(value, str) and len(value) == 64 and all(c in '0123456789abcdef' for c in value))
+        require(provenance.get('transport', 'unknown') in {'unknown', 'external_uart', 'usb_serial_jtag', 'native_usb_other'})
+        require(provenance.get('transport_basis', 'unavailable') in {'unavailable', 'inferred_from_webserial_vid_pid'})
         generation = uid()
         self.devices[device_id] = {
             'id': device_id, 'agent': agent_id, 'generation': generation, 'connected': True,
+            'provenance': copy.deepcopy(provenance), 'provenance_source': 'agent_reported',
             'http_origins': origins, 'chip': data['chip'], 'flash_size': data['flash_size'], 'capabilities': caps,
             'grant_until': 0, 'quarantined': bool(old and old['quarantined']) or data.get('hold') is True,
             'events': old['events'] if old else deque(maxlen=self.max_events),
