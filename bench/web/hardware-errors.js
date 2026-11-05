@@ -2,7 +2,7 @@
 export class HardwareError extends Error {
   constructor(code, detail = {}) { super(code); this.code = code; this.detail = detail; }
 }
-const codes = new Set(['console_required', 'external_uart_required', 'partition_table_invalid', 'physical_identity_changed',
+const codes = new Set(['capacity', 'console_required', 'external_uart_required', 'partition_table_invalid', 'physical_identity_changed',
   'operator_recovery_required', 'serial_disconnected', 'serial_timeout', 'serial_partial_packet', 'serial_invalid_packet', 'short_flash_read', 'artifact_transfer_failed', 'artifact_integrity_failed',
   'agent_disconnected', 'reservation_expired', 'grant_expired', 'execution_deadline_exceeded', 'command_start_expired']);
 const phases = new Set(['prepare', 'identify', 'flash_read', 'artifact_upload', 'artifact_download', 'flash_write', 'flash_erase', 'console', 'control']);
@@ -30,6 +30,7 @@ export const diagnostic = code => ({
   serial_partial_packet: 'Lecture série interrompue : paquet incomplet avant le délai de silence.',
   serial_invalid_packet: 'Paquet série invalide : erreur de trame SLIP.',
   short_flash_read: 'Lecture flash incomplète : aucun dump partiel publié.',
+  capacity: 'Stockage temporaire du serveur saturé ; nettoyage explicite requis.',
   artifact_transfer_failed: 'Échec du transfert d’artefact avec le serveur.',
   artifact_integrity_failed: 'Empreinte de l’artefact incorrecte.',
   agent_disconnected: 'Liaison de l’agent au serveur interrompue.',

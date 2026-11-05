@@ -81,3 +81,19 @@ test('SLIP reader decodes large escaped packets without appending/reallocating p
  const bytes=Uint8Array.from({length:65536},(_,i)=>i%256);t.buffer=FakeTransport.frame(bytes);
  assert.deepEqual(await t.read(100),bytes);assert.equal(appends,0);
 });
+
+test('artifact capacity HTTP status survives the diagnostic and visible journal', async()=>{
+ const { AgentJournal } = await import('../web/agent-journal.js');
+ const original = globalThis.fetch;
+ globalThis.fetch = async()=>({ok:false,status:503,json:async()=>({error:{code:'capacity',message:'secret'}})});
+ try {
+  const agent = new Agent({engine:{},device:{id:'board'}});
+  await assert.rejects(agent.artifact(null,new Uint8Array([1])), error=>{
+   const detail=hardwareError(error);
+   assert.equal(detail.code,'capacity'); assert.equal(detail.http_status,503);
+   const journal=new AgentJournal();journal.append({stage:'result',detail,code:detail.code});
+   assert.match(journal.rows[0].text,/HTTP 503/);
+   assert.equal(JSON.stringify(journal.rows).includes('secret'),false);return true;
+  });
+ } finally {globalThis.fetch=original;}
+});

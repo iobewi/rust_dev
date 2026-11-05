@@ -124,6 +124,12 @@ class BenchClient:
             raise
         return board
 
+    def artifacts(self):
+        return self._request("GET", "/api/v1/artifacts")
+
+    def delete_artifact(self, artifact_id):
+        return self._request("DELETE", "/api/v1/artifacts/" + quote(artifact_id, safe=""))
+
     def upload(self, source):
         """Upload once, verify metadata; source is a path or a binary buffer."""
         limit = 16 * 1024 * 1024
@@ -138,6 +144,8 @@ class BenchClient:
             raise TypeError("Expected a file path or binary buffer")
         if not 0 < len(data) <= limit:
             raise ValueError("Artifact must contain 1..16777216 bytes")
+        if len(data) > self.artifacts()["storage"]["available"]:
+            raise BenchHTTPError(503, "capacity")
         artifact = self._request("POST", "/api/v1/artifacts", data)
         if (not isinstance(artifact, dict) or not isinstance(artifact.get("id"), str) or
                 not artifact["id"] or artifact.get("size") != len(data) or

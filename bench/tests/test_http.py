@@ -175,3 +175,20 @@ class HttpTests(unittest.IsolatedAsyncioTestCase):
         await self.ws.send_json({'type':'result','id':op['id'],'state':'completed','result':{'late':True}})
         ack=await self.ws.receive_json()
         self.assertEqual(ack['type'],'result_ack');self.assertEqual(ack['state'],'indeterminate');self.assertTrue(ack['quarantined'])
+
+    async def test_storage_capacity_is_refused_before_read_and_deletion_is_owned(self):
+        from server.bench_server import BROKER
+        broker = self.client.server.app[BROKER]
+        broker.artifact_bytes = 64 * 1024 * 1024
+        r = await self.client.post('/api/v1/artifacts', headers={**ALICE, 'X-SHA256':hashlib.sha256(b'x').hexdigest()}, data=b'x')
+        self.assertEqual(r.status, 503)
+        self.assertEqual((await r.json())['error']['code'], 'capacity')
+        self.assertEqual(broker.upload_reserved, 0)
+        broker.artifact_bytes = 0
+        r = await self.client.post('/api/v1/artifacts', headers={**ALICE, 'X-SHA256':hashlib.sha256(b'x').hexdigest()}, data=b'x')
+        key = (await r.json())['id']
+        r = await self.client.delete('/api/v1/artifacts/' + key, headers=BOB)
+        self.assertEqual(r.status, 403)
+        r = await self.client.delete('/api/v1/artifacts/' + key, headers=ALICE)
+        self.assertEqual(r.status, 200)
+        self.assertEqual(broker.storage()['used'], 0)
