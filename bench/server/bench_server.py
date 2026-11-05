@@ -2,6 +2,8 @@
 """Run with `python bench/server/bench_server.py`; configuration contains no implicit credentials."""
 import asyncio
 import hmac
+import hashlib
+import subprocess
 import json
 import os
 import sys
@@ -20,6 +22,7 @@ ORIGIN = web.AppKey('origin', object)
 IDENTITY = web.RequestKey('identity', dict)
 SESSIONS = web.AppKey('ui_sessions', UISessions)
 UI_ACCESS = web.AppKey('ui_access', UIAccess)
+BUILD = web.AppKey('build', dict)
 
 PAGES = Path(__file__).resolve().parents[1] / 'web'
 
@@ -108,7 +111,8 @@ async def browser_session(request):
 
 async def health(request):
     return json_reply({'status': 'degraded' if request.app[BROKER].journal_failed else 'ok', 'protocol': 1, 'epoch': request.app[BROKER].epoch,
-                       'durability': 'sqlite-full' if request.app[BROKER].journal else 'volatile'})
+                       'durability': 'sqlite-full' if request.app[BROKER].journal else 'volatile',
+                       'build': request.app[BUILD]})
 
 
 async def devices(request):
@@ -312,7 +316,20 @@ async def dispatcher(app):
 async def static(request):
     name = request.match_info.get('name') or 'index.html'
     require(name in {p.name for p in PAGES.iterdir() if p.is_file()}, 'not_found', 'Unknown asset', 404)
+    if name == 'agent.js':
+        data = (PAGES / name).read_bytes()
+        stamp = ("\nconst SERVED_RESOURCE_SHA256 = " + json.dumps(hashlib.sha256(data).hexdigest()) +
+                 ";\nconst SERVED_ASSETS_SHA256 = " + json.dumps(source_digest(PAGES.glob('*'))) + ";\n")
+        return web.Response(body=data + stamp.encode(), content_type='text/javascript')
     return web.FileResponse(PAGES / name)
+
+
+def source_digest(paths):
+    digest = hashlib.sha256()
+    for path in sorted(paths):
+        if path.is_file():
+            digest.update(path.name.encode() + b'\0' + path.read_bytes() + b'\0')
+    return digest.hexdigest()
 
 
 def create_app(tokens, broker=None, origin=None, ui_forward_peers=()):
@@ -321,6 +338,15 @@ def create_app(tokens, broker=None, origin=None, ui_forward_peers=()):
     app = web.Application(middlewares=[errors], client_max_size=MAX_ARTIFACT + 1)
     app[TOKENS], app[BROKER], app[ORIGIN] = tokens, broker or Broker(), origin
     allowed = sorted({device for identity in tokens.values() if identity['role'] == 'agent' for device in identity['devices']}) or ['esp32-local']
+    try:
+        revision = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=PAGES.parent,
+                                           stderr=subprocess.DEVNULL, text=True, timeout=2).strip()
+    except (OSError, subprocess.SubprocessError):
+        revision = None
+    app[BUILD] = {'version': '0.2.0', 'git_sha': revision,
+        'server_sha256': source_digest(list(Path(__file__).parent.glob('*.py')) + list((PAGES.parent / 'protocol').glob('*.py'))),
+        'assets_sha256': source_digest(PAGES.glob('*')),
+        'source': 'observed_local_files', 'declared_build_sha': os.environ.get('BENCH_BUILD_SHA')}
     app[UI_ACCESS] = access
     app[SESSIONS] = UISessions(app[BROKER].clock, allowed)
     app.cleanup_ctx.append(dispatcher)

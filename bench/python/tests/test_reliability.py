@@ -84,3 +84,29 @@ def test_indeterminate_even_acknowledged_is_never_a_definitive_failure():
     with pytest.raises(PendingOperation):
         board.identify()
     assert board.client._request.call_count == 1
+
+
+def test_campaign_windows_are_explicit_and_preserve_previous_evidence(sim_bench, tmp_path):
+    from iobewi_bench import ContinuityError
+    case = Campaign(sim_bench, 'board', tmp_path / 'windows', __file__, 'windows')
+    case.start()
+    before = (case.directory / 'before.json').read_bytes()
+    with pytest.raises(ContinuityError):
+        case.open_window('must first close')
+    case.interrupt_window('planned server restart boundary')
+    case.open_window('new session after operator checks')
+    assert case.window == 1
+    assert (case.directory / 'before.json').read_bytes() == before
+    entries = [json.loads(line) for line in (case.directory / 'windows.jsonl').read_text().splitlines()]
+    assert [e['event'] for e in entries] == ['interrupted','opened']
+    case.close()
+
+
+def test_server_and_client_provenance_are_recorded(sim_bench, tmp_path):
+    case = Campaign(sim_bench,'board',tmp_path/'provenance',__file__,'provenance')
+    case.start()
+    snapshot = json.loads((case.directory/'before.json').read_text())
+    assert len(snapshot['server_observed']['server_sha256']) == 64
+    assert snapshot['server_observed']['source'] == 'observed_local_files'
+    assert snapshot['device']['provenance_source'] == 'agent_reported'
+    case.close()

@@ -108,3 +108,33 @@ then indeterminate. A result persisted before a lost acknowledgement survives,
 but does not prove console settlement. Filesystem/hardware durability depends on
 the underlying persistent volume honoring fsync; there is no distributed journal.
 The one-hour operational retention never evicts unresolved recovery records.
+
+## Browser recovery and provenance
+
+The agent retries a closed WebSocket once per second while the page remains open.
+It waits until hardware execution ends. Reconnection clears old offers/deferred
+commands and abandons unacknowledged results for explicit reconciliation; none
+are resent. Grants stay zero. A held engine registers held, under a new generation.
+Local recovery remains a separate operator action. A voluntary disconnect cancels
+reconnection. After server restart, cookie-only agents reopen a local browser
+session under the same loopback/origin checks before authenticating again.
+
+`/health.build` identifies server version, local Git HEAD (which alone does not
+prove a clean tree), actual source/asset SHA-256 and a separately labelled
+optional declared build SHA. The delivered agent module is stamped with its own
+source hash and the server's asset-set hash at delivery. Its registration reports
+those stamps, WebSerial VID/PID, and transport **inferred** from known USB IDs.
+Unknown USB IDs stay unknown; VID/PID cannot prove the physical wiring. These
+fields are labelled `agent_reported`, not independently verified server facts.
+The asset-set stamp identifies resources available at delivery, not proof that
+every dependency executed. Third-party esptool remains pinned by version, not
+attested by this stamp. No USB serial number or MAC is copied into provenance.
+
+Each campaign snapshot records available server and agent provenance; client
+source, version, recipe hash and operator declarations remain separate.
+`interrupt_window(reason)` records the old epoch/cursor and any capture failure.
+`open_window(reason, allow_quarantine=...)` opens a numbered, fresh window with
+its new epoch/generation, without reviving old Board handles or asserting
+continuity across the gap. Existing strict epoch checks still reject a silent
+restart. An intentional quarantine can be observed in a new window; successful
+campaign cleanup still requires a recovered card and revoked grant.

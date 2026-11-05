@@ -192,3 +192,13 @@ class HttpTests(unittest.IsolatedAsyncioTestCase):
         r = await self.client.delete('/api/v1/artifacts/' + key, headers=ALICE)
         self.assertEqual(r.status, 200)
         self.assertEqual(broker.storage()['used'], 0)
+
+    async def test_health_and_delivered_agent_revision(self):
+        r = await self.client.get('/health')
+        health = await r.json()
+        self.assertEqual(health['durability'], 'volatile')
+        self.assertEqual(len(health['build']['server_sha256']), 64)
+        r = await self.client.get('/agent.js')
+        source = await r.text()
+        self.assertIn('const SERVED_RESOURCE_SHA256 = ', source)
+        self.assertIn('const SERVED_ASSETS_SHA256 = ', source)
