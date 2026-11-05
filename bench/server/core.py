@@ -240,7 +240,7 @@ class Broker:
                 if isinstance(result, dict) and isinstance(result.get('artifact'), dict):
                     references.add(result['artifact'].get('id'))
             device = self.devices.get(op['device'], {})
-            if key in references or artifact.get('owner') == 'agent:' + device.get('agent', ''):
+            if key in references or artifact.get('owner') == 'agent:' + op.get('agent', device.get('agent', '')):
                 return True
         return False
 
@@ -257,7 +257,7 @@ class Broker:
         # Client uploads belong to their uploader. Agent readbacks may be cleaned
         # by the client owning the operation which produced them.
         owns_result = any(op['owner'] == owner and
-            artifact.get('owner') == 'agent:' + self.devices.get(op['device'], {}).get('agent', '') and
+            artifact.get('owner') == 'agent:' + op.get('agent', self.devices.get(op['device'], {}).get('agent', '')) and
             isinstance(op.get('result'), dict) and
             (op['result'].get('artifact') or {}).get('id') == key for op in self.operations.values())
         require(artifact.get('owner') == 'client:' + owner or owns_result,
@@ -301,7 +301,7 @@ class Broker:
         number(ttl, 0.1, 120); number(timeout, 0.1, 600)
         key = uid()
         op = {'id': key, 'owner': owner, 'lease': lease['id'], 'device': d['id'], 'generation': d['generation'],
-              'epoch': self.epoch, 'command': name, 'args': copy.deepcopy(args), 'state': 'queued', 'created': self.clock(),
+              'epoch': self.epoch, 'agent': d['agent'], 'command': name, 'args': copy.deepcopy(args), 'state': 'queued', 'created': self.clock(),
               'deadline': self.clock() + ttl, 'timeout': timeout, 'error': None, 'result': None,
               'cancel_requested': False, 'unsettled': False, 'local_control': local_control, 'requires_settle': False, 'settled': False,
               'artifact_ids': [i['artifact'] for i in args.get('images', [])]}

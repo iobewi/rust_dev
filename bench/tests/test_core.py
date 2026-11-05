@@ -331,3 +331,19 @@ class CoreTests(unittest.TestCase):
                 self.submit('flash.erase', {'chip':'esp32s3'}, allow_destructive=True)
             self.assertEqual(error.exception.code,'grant_required')
         self.assertFalse(self.b.operations)
+
+    def test_unassociated_readback_remains_pinned_when_browser_identity_changes(self):
+        op = self.start(command='flash.read', args={'address':0,'size':4096})
+        data = b'x'*4096
+        artifact = self.b.artifact(data,hashlib.sha256(data).hexdigest(),'agent:agent')
+        self.b.disconnect('agent')
+        self.b.agent('new-browser-session',object())
+        generation = self.b.register('new-browser-session',{'id':'board','chip':'esp32s3',
+            'flash_size':4194304,'capabilities':['identify']},['board'])
+        self.now += 4000
+        self.b.sweep()
+        self.assertIn(artifact['id'],self.b.artifacts)
+        self.assertTrue(self.b.artifact_pinned(artifact['id']))
+        self.b.agent_event('new-browser-session',{'type':'recover','device':'board','generation':generation})
+        self.b.sweep()
+        self.assertNotIn(artifact['id'],self.b.artifacts)
