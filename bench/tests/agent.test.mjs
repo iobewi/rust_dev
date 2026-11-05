@@ -34,6 +34,30 @@ test('privileged hardware cannot execute without live local grant',async()=>{
  await x.agent.message({type:'execute',id:'op',execution_deadline_ms:performance.now()+121000,deadline_ms:performance.now()+11000});
  assert.equal(x.runs(),0);assert.equal(x.messages.at(-1).state,'failed');
 });
+
+test('actual trigger engine disarms for its reservation after grant expiry without granting new rights',async()=>{
+ const x=setup();const engine=new EspEngine({getInfo:()=>({})},{},()=>{});x.agent.engine=engine;
+ const execute=id=>x.agent.message({type:'execute',id,execution_deadline_ms:performance.now()+121000,deadline_ms:performance.now()+11000});
+ const settle=id=>x.agent.message({type:'result_ack',id,generation:'gen',quarantined:false});
+ await x.agent.message({...x.offer(),command:'trigger',args:{action:'mark',data:'YQ==',expires_ms:10000}});
+ await execute('op');await settle('op');assert.ok(engine.trigger);assert.equal(x.agent.triggerLease,'lease');
+ x.agent.grantUntil=0;
+ await x.agent.message({...x.offer(),id:'disarm',command:'trigger',args:{action:'disarm'}});
+ await execute('disarm');assert.equal(x.messages.at(-1).state,'completed');assert.equal(engine.trigger,null);
+ await settle('disarm');assert.equal(x.agent.grantUntil,0);assert.equal(x.agent.triggerLease,null);
+ await x.agent.message({...x.offer(),id:'rearm',command:'trigger',args:{action:'mark',data:'YQ==',expires_ms:1000}});
+ await execute('rearm');assert.equal(x.messages.at(-1).error.code,'grant_expired');assert.equal(engine.trigger,null);
+});
+
+test('grantless trigger disarm refuses another reservation and a revoked lease',async()=>{
+ for(const revoked of [false,true]) {
+  const x=setup();x.agent.grantUntil=0;x.agent.triggerLease=revoked?'lease':'other-lease';
+  if(revoked)x.agent.revoked.add('lease');
+  await x.agent.message({...x.offer(),command:'trigger',args:{action:'disarm'}});
+  await x.agent.message({type:'execute',id:'op',execution_deadline_ms:performance.now()+121000,deadline_ms:performance.now()+11000});
+  assert.equal(x.runs(),0);assert.equal(x.messages.at(-1).error.code,revoked?'reservation_expired':'trigger_not_owned');
+ }
+});
 test('lease revocation cancels armed trigger and prevents delayed execution',async()=>{
  const x=setup();x.engine.trigger={};await x.agent.message(x.offer());
  await x.agent.message({type:'lease_revoked',lease:'lease'});

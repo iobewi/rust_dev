@@ -71,7 +71,33 @@ Local follow-up validation: **82 pytest PASS**, **9 hardware tests SKIP**,
 follow-up must be checked in the new GitHub run; the previous green run applies
 only to `609ae68`. No Docker host or physical board is available here.
 
-## Outstanding acceptance
+## Targeted implementation after the hardware report
+
+Two improvements are implemented on top of `42a274f`:
+
+- A client may disarm its trigger after grant expiry/revocation, with an exact
+  disarm-only schema and the active lease that armed it in the same generation.
+  Scope/owner/lease checks remain on the broker; the agent also verifies the lease
+  association. Submission and execution both check ownership. Arming, trigger
+  execution and other sensitive commands still require their original grant.
+  Quarantine and indeterminate results are unchanged.
+- `bench/tools/run_server.py` owns one child and coordinates restart through
+  SIGHUP, stop through SIGTERM/SIGINT. Replacement waits for actual child exit.
+  A bounded shutdown timeout refuses replacement without force-killing the old
+  process. Journal startup may wait for its exclusive lock with explicit bounded
+  diagnostics. Neither lock nor database is deleted. Direct startup remains
+  supported with BENCH_LOCK_TIMEOUT; no automatic crash replay/restart exists.
+
+Local software validation: **82 pytest PASS**, **9 opt-in hardware tests SKIP**,
+**83 server tests PASS**, **107 Node tests PASS**. New tests cover grant expiry
+between submission/commit, revocation, wrong lease/owner, scopes and malformed
+disarm; an HTTP/WebSocket roundtrip; the real JavaScript trigger engine; delayed
+child termination and timeout; real lock contention; and SIGHUP/SIGTERM with the
+actual server while preserving a value in its private temporary SQLite database.
+These are isolated software tests, not ESP32 qualification. The complete physical
+Campaign/program/readback/restore/close path still needs fresh hardware evidence.
+
+## Remaining physical acceptance
 
 Physical requalification remains **NOT EXECUTED** for S3/C3 and each available
 transport. Follow [the explicit protocol](../docs/requalification-reliability.md)

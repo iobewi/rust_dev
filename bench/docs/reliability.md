@@ -187,6 +187,24 @@ an unrelated static server on the bench port. Start the actual bench explicitly
 with an external credentials file. A named volume preserves BENCH_STATE_DIR.
 Docker image construction itself still requires validation on a Docker host.
 
+### Targeted trigger and process lifecycle improvements
+
+An external client may disarm a trigger without renewing an expired/revoked grant,
+using exactly `trigger` with `{"action":"disarm"}`. It still needs control scope,
+the active lease that armed the trigger, the same generation and all continuity
+checks. Both broker and agent check the lease association; rearming and sensitive
+execution still require a grant. Quarantine and indeterminate outcomes are not
+cleared by disarming.
+
+`python bench/tools/run_server.py` is a foreground launcher. Send SIGHUP to its
+printed PID to request a restart, or SIGTERM/SIGINT to stop. It terminates and
+waits only for its own child and never spawns a replacement before that child has
+exited. Shutdown timeout returns 124 without killing the remaining process or
+starting another. There is no automatic crash restart. Lock waiting is bounded
+and explicit (`--lock-timeout`, or BENCH_LOCK_TIMEOUT for direct startup); the
+journal lock and database are retained. Tests use real isolated processes and
+temporary journals, including delayed shutdown, timeout and lock contention.
+
 Browser agent uploads use `X-Bench-Artifact-Role: agent`. For cookie sessions the
 server binds this role to the authenticated session's connected WebSocket agent;
 an API client cannot provide an arbitrary agent identity. Ordinary browser client

@@ -3,6 +3,9 @@ import fcntl
 import hashlib
 import json
 import os
+import math
+import sys
+import time
 from pathlib import Path
 import sqlite3
 
@@ -25,14 +28,33 @@ def safe_result(value):
 
 
 class Journal:
-    def __init__(self, directory):
+    def __init__(self, directory, *, lock_timeout=0):
+        if type(lock_timeout) not in (int, float) or not math.isfinite(lock_timeout) or not 0 <= lock_timeout <= 600:
+            raise ValueError('Lock timeout must be between 0 and 600 seconds')
         directory = Path(directory)
         directory.mkdir(parents=True, exist_ok=True, mode=0o700)
         # One authoritative process; prevent an accidental second writer.
         self.lock = (directory / 'server.lock').open('a')
         os.chmod(directory / 'server.lock', 0o600)
         try:
-            fcntl.flock(self.lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            deadline = time.monotonic() + lock_timeout
+            waiting = False
+            while True:
+                try:
+                    fcntl.flock(self.lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    if waiting:
+                        print('Durable journal lock acquired; starting server.', file=sys.stderr, flush=True)
+                    break
+                except BlockingIOError:
+                    if not waiting:
+                        print('Durable journal locked by another process; waiting up to '
+                              f'{lock_timeout:g}s. Lock and journal are preserved.', file=sys.stderr, flush=True)
+                        waiting = True
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise BlockingIOError('Durable journal still locked; startup refused after '
+                                              f'{lock_timeout:g}s. Stop the previous server and wait for its exit.') from None
+                    time.sleep(min(.1, remaining))
         except BaseException:
             self.lock.close()
             raise

@@ -123,6 +123,68 @@ class CoreTests(unittest.TestCase):
         self.b.agent_event('agent', {'type': 'settled', 'device': 'board', 'generation': self.generation, 'id': disarm['id']})
         self.assertIsNone(self.b.view(self.b.device('board'))['reservation'])
 
+    def arm_trigger(self):
+        self.b.device('board')['capabilities'].append('trigger')
+        op = self.start(command='trigger',args={'action':'mark','data':'YQ==','expires_ms':120000})
+        self.b.finish('agent',{'id':op['id'],'state':'completed','result':{'armed':True}})
+        self.b.agent_event('agent',{'type':'settled','device':'board','generation':self.generation,'id':op['id']})
+
+    def test_trigger_owner_can_disarm_after_grant_expires_or_is_revoked(self):
+        self.arm_trigger()
+        self.b.device('board')['grant_until'] = self.now + 1
+        op = self.submit('trigger',{'action':'disarm'})
+        self.b.offer('board')
+        self.now += 2  # Grant expires between submission and execute permission.
+        self.b.commit('agent',op['id'])
+        self.b.finish('agent',{'id':op['id'],'state':'completed','result':{'armed':False}})
+        self.b.agent_event('agent',{'type':'settled','device':'board','generation':self.generation,'id':op['id']})
+        self.assertEqual(self.b.device('board')['grant_until'],101)
+        self.assertEqual(self.b.view(self.b.device('board'))['privileged_seconds'],0)
+        for command,args in [('trigger',{'action':'mark','data':'YQ==','expires_ms':1000}),('uart.write',{'data':'YQ=='})]:
+            with self.assertRaises(Fault) as error:
+                self.submit(command,args)
+            self.assertEqual((error.exception.status,error.exception.code),(403,'grant_required'))
+        self.b.device('board')['grant_until'] = 200
+        self.arm_trigger()
+        self.b.device('board')['grant_until'] = 0
+        op = self.submit('trigger',{'action':'disarm'})
+        self.b.offer('board');self.b.commit('agent',op['id'])
+        self.assertEqual(self.b.device('board')['grant_until'],0)
+
+    def test_trigger_disarm_keeps_scope_owner_schema_and_generation_guards(self):
+        self.arm_trigger()
+        self.b.device('board')['grant_until'] = 0
+        with self.assertRaises(Fault) as error:
+            self.b.submit('bob',['control'],{'lease':self.lease['id'],'command':'trigger','args':{'action':'disarm'}})
+        self.assertEqual((error.exception.status,error.exception.code),(403,'forbidden'))
+        with self.assertRaises(Fault) as error:
+            self.b.submit('alice',['read'],{'lease':self.lease['id'],'command':'trigger','args':{'action':'disarm'}})
+        self.assertEqual((error.exception.status,error.exception.code),(403,'forbidden'))
+        with self.assertRaises(Fault) as error:
+            self.submit('trigger',{'action':'disarm','data':'YQ=='})
+        self.assertEqual((error.exception.status,error.exception.code),(400,'invalid_request'))
+        self.assertNotIn(self.lease['id'],str(self.b.view(self.b.device('board'))))
+        self.b.release(self.lease['id'],'alice')
+        other = self.b.reserve('board','bob',60)
+        with self.assertRaises(Fault) as error:
+            self.b.submit('bob',['control'],{'lease':other['id'],'command':'trigger','args':{'action':'disarm'}})
+        self.assertEqual((error.exception.status,error.exception.code),(403,'trigger_not_owned'))
+        self.b.release(other['id'],'bob')
+        self.lease = self.b.reserve('board','alice',60)
+        with self.assertRaises(Fault) as error:
+            self.submit('trigger',{'action':'disarm'})
+        self.assertEqual(error.exception.code,'trigger_not_owned')
+
+    def test_trigger_disarm_ownership_is_rechecked_at_commit(self):
+        self.arm_trigger()
+        self.b.device('board')['grant_until'] = 0
+        op = self.submit('trigger',{'action':'disarm'})
+        self.b.offer('board')
+        self.b.device('board')['trigger_lease'] = None
+        with self.assertRaises(Fault) as error:
+            self.b.commit('agent',op['id'])
+        self.assertEqual(error.exception.code,'trigger_not_owned')
+
     def test_exclusive_and_owner(self):
         with self.assertRaises(Fault): self.b.reserve('board', 'bob', 10)
         with self.assertRaises(Fault): self.b.lease(self.lease['id'], 'bob')

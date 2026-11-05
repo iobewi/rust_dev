@@ -6,8 +6,9 @@ import time
 import uuid
 from functools import wraps
 from collections import deque
-from protocol import (CAPABILITIES, MAX_ARTIFACT, PRIVILEGED, PROGRAM, Fault,
-                      binary, integer, number, require, validate_command, local_origin)
+from protocol import (CAPABILITIES, MAX_ARTIFACT, PROGRAM, Fault,
+                      binary, integer, number, require, validate_command, local_origin,
+                      trigger_disarm, requires_grant)
 
 TERMINAL = {'completed', 'failed', 'expired', 'cancelled', 'indeterminate'}
 
@@ -33,7 +34,7 @@ def checkpoint(method):
 
 
 class Broker:
-    def __init__(self, clock=time.monotonic, max_events=2048, state_dir=None):
+    def __init__(self, clock=time.monotonic, max_events=2048, state_dir=None, lock_timeout=0):
         self.clock, self.max_events = clock, max_events
         self.agents, self.devices, self.leases, self.operations, self.artifacts = {}, {}, {}, {}, {}
         self.artifact_bytes = 0
@@ -42,7 +43,7 @@ class Broker:
         self.journal, self.journal_failed = None, False
         if state_dir is not None:
             from server.journal import Journal
-            self.journal = Journal(state_dir)
+            self.journal = Journal(state_dir, lock_timeout=lock_timeout)
             state, self.artifacts = self.journal.load()
             self.artifact_bytes = sum(a['size'] for a in self.artifacts.values())
             require(self.artifact_bytes <= 64 * 1024 * 1024, 'capacity', 'Durable store exceeds capacity', 503)
@@ -108,7 +109,7 @@ class Broker:
 
     def view(self, d):
         reservation = next((lease for lease in self.leases.values() if lease['device'] == d['id'] and lease['active'] and lease['until'] > self.clock()), None)
-        return {k: v for k, v in d.items() if k not in {'events', 'grant_until', 'source_seq'}} | {
+        return {k: v for k, v in d.items() if k not in {'events', 'grant_until', 'source_seq', 'trigger_lease'}} | {
             'privileged_seconds': max(0, d['grant_until'] - self.clock()),
             'reservation': {'owner': reservation['owner'], 'remaining_seconds': max(0, reservation['until'] - self.clock())} if reservation else None}
 
@@ -291,7 +292,10 @@ class Broker:
         require('control' in scopes, 'forbidden', 'Control permission required', 403)
         validate_command(name, args, d, self.artifacts)
         local_control = local_agent is not None and local_agent == d['agent']
-        if name in PRIVILEGED and not local_control:
+        if trigger_disarm(name, args) and not local_control:
+            require(d.get('trigger_lease') == lease['id'], 'trigger_not_owned',
+                    'Trigger belongs to another reservation or generation', 403)
+        if requires_grant(name, args) and not local_control:
             require(d['grant_until'] > self.clock(), 'grant_required', 'Local operator grant required', 403)
         if name in PROGRAM:
             require('program' in scopes, 'program_permission_required', 'Programming permission required', 403)
@@ -347,7 +351,10 @@ class Broker:
                 'device_quarantined', 'Device requires recovery', 409)
         require(op['state'] == 'offered', 'not_executable', 'Command no longer executable', 409)
         self.lease(op['lease'], op['owner'])
-        if op['command'] in PRIVILEGED and not op['local_control']:
+        if trigger_disarm(op['command'], op['args']) and not op['local_control']:
+            require(d.get('trigger_lease') == op['lease'], 'trigger_not_owned',
+                    'Trigger belongs to another reservation or generation', 403)
+        if requires_grant(op['command'], op['args']) and not op['local_control']:
             require(d['grant_until'] > self.clock(), 'grant_required', 'Grant expired', 403)
         op['start_remaining_ms'] = max(0, (op['deadline'] - self.clock()) * 1000)
         op['state'], op['unsettled'], op['requires_settle'] = 'running', True, True
@@ -375,6 +382,8 @@ class Broker:
         if op['state'] == 'running':
             op['state'] = state
             op['result'], op['error'] = message.get('result'), message.get('error')
+            if state == 'completed' and op['command'] == 'trigger':
+                d['trigger_lease'] = None if trigger_disarm(op['command'], op['args']) else op['lease']
         else:
             op['late_result'] = {'state': state, 'result': message.get('result'), 'error': message.get('error')}
         if state == 'indeterminate' or message.get('hold') is True:

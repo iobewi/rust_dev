@@ -384,7 +384,14 @@ if __name__ == '__main__':
         sys.exit('Set BENCH_TOKENS_FILE to an external JSON credentials file (see bench/README.md)')
     config = json.loads(Path(path).read_text())
     state_dir = os.environ.get('BENCH_STATE_DIR', str(Path.home() / '.local/state/iobewi-bench'))
-    web.run_app(create_app(config, broker=Broker(state_dir=state_dir), origin=os.environ.get('BENCH_ORIGIN'),
+    try:
+        broker = Broker(state_dir=state_dir, lock_timeout=float(os.environ.get('BENCH_LOCK_TIMEOUT', '0')))
+    except (BlockingIOError, ValueError) as error:
+        sys.exit(str(error))
+    try:
+        web.run_app(create_app(config, broker=broker, origin=os.environ.get('BENCH_ORIGIN'),
                 ui_forward_peers=[peer.strip() for peer in os.environ.get('BENCH_UI_FORWARD_PEERS', '').split(',') if peer.strip()]),
                 host=os.environ.get('BENCH_HOST', '127.0.0.1'), port=int(os.environ.get('BENCH_PORT', 8080)),
                 access_log=None)
+    finally:
+        broker.journal.close()

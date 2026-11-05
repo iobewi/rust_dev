@@ -36,14 +36,22 @@ with os.fdopen(fd, 'w') as f:
     json.dump(config, f, indent=2)
 print('Credentials written to', path)
 PY
-BENCH_TOKENS_FILE=/tmp/bench-tokens.json python3 bench/server/bench_server.py
+BENCH_TOKENS_FILE=/tmp/bench-tokens.json python3 bench/tools/run_server.py
 ```
 
 Le serveur écoute `127.0.0.1:8080`. Ouvrir `http://localhost:8080` sur le PC qui possède le port USB. La page établit automatiquement une session locale, sans token à saisir. **Connecter un port série** ouvre le sélecteur Web Serial et rattache automatiquement la carte au serveur. Cliquer ensuite directement sur Identifier, Lire, Reset ou les autres commandes : le serveur prend et libère la réservation pour chaque opération, après stabilisation du retour console. **Tous ces boutons utilisent la même API et la même file que les clients externes.** Programmation et effacement conservent une confirmation explicite ; les actions locales ne créent aucun grant pour les clients distants. Le panneau avancé sert à autoriser temporairement les opérations sensibles de Claude. Les clés de la configuration ne sont plus recopiées dans la page. La session automatique accepte l’accès direct en boucle locale et les redirections locales explicitement configurées ci-dessous ; l’authentification d’une UI par le réseau n’est pas implémentée.
 
 L’identifiant de carte est un nom logique configuré pour le banc (`esp32-local` par défaut) ; la famille et la capacité flash sont mesurées par esptool, puis revérifiées avant les opérations flash. Deux ports physiques ne doivent pas être déclarés sous deux identifiants pour une même carte.
 
-Pour les clients externes, programmer ou effacer exige un token avec `program`, une réservation, une autorisation locale temporaire et `allow_destructive:true`. Leurs transmissions UART, BOOT, déclencheurs et requêtes HTTP exigent également un grant. Les actions de la page sur son propre agent physique utilisent une autorité limitée à chaque opération et une confirmation destructive explicite, sans ouvrir ce grant distant. Le navigateur ne conserve aucune clé API ; sa session HttpOnly est éphémère. Le blocage de sécurité par identifiant de carte reste mémorisé localement.
+Pour les clients externes, programmer ou effacer exige un token avec `program`, une réservation, une autorisation locale temporaire et `allow_destructive:true`. Leurs transmissions UART, BOOT, armements de déclencheurs et requêtes HTTP exigent également un grant. Le désarmement explicite (`trigger`, `action:"disarm"`) reste possible après expiration ou révocation du grant, uniquement avec `control` et la réservation active qui a armé ce déclencheur dans la même génération. Il ne crée aucun nouveau droit. Les actions de la page sur son propre agent physique utilisent une autorité limitée à chaque opération et une confirmation destructive explicite, sans ouvrir ce grant distant. Le navigateur ne conserve aucune clé API ; sa session HttpOnly est éphémère. Le blocage de sécurité par identifiant de carte reste mémorisé localement.
+
+### Arrêt et redémarrage coordonnés
+
+Le lanceur reste au premier plan et affiche son PID ainsi que celui de son serveur enfant. Envoyer `SIGHUP` **au PID du lanceur affiché** demande un redémarrage ; `SIGTERM`, `SIGINT` ou Ctrl+C demandent l’arrêt. Le lanceur attend et récolte la fin effective de son propre enfant avant tout remplacement. Il ne recherche ni ne tue d’autres serveurs et ne redémarre pas automatiquement après un crash.
+
+`--shutdown-timeout` borne l’attente d’arrêt (30 s par défaut). Si elle expire, le lanceur sort avec le code 124, indique le PID encore vivant et refuse de démarrer un remplaçant ; aucun SIGKILL n’est envoyé. Inspecter ce processus localement avant de reprendre. `--lock-timeout` borne l’attente du verrou au démarrage (10 s par défaut). L’attente, l’acquisition ou le refus sont affichés explicitement.
+
+Le démarrage direct par `bench/server/bench_server.py` reste disponible ; `BENCH_LOCK_TIMEOUT` y configure l’attente du verrou (0 s par défaut). **Le verrou et le journal ne sont jamais supprimés pour débloquer un redémarrage.** Une seconde instance ne peut pas devenir écrivain tant que la première détient le verrou. Un redémarrage change l’epoch et conserve les règles de récupération ; le lanceur ne rejoue aucune commande.
 
 `BENCH_HOST`, `BENCH_PORT` et `BENCH_ORIGIN` configurent l’écoute et l’origine publique exacte derrière un proxy. Pour un serveur distant, utiliser HTTPS/WSS et un transfert local sécurisé ou un proxy TLS. Web Serial exige un contexte sécurisé reconnu par le navigateur. Le serveur ne fournit pas lui-même de certificat TLS. Le moteur charge **esptool-js 0.7.0** depuis unpkg ; ce chargement exige un accès Internet et garde la même dépendance navigateur que l’ancien banc.
 
@@ -77,7 +85,7 @@ BENCH_HOST=0.0.0.0 \
 BENCH_ORIGIN=http://localhost:8080 \
 BENCH_UI_FORWARD_PEERS=172.18.0.1 \
 BENCH_TOKENS_FILE=/path/to/bench-tokens.json \
-python3 bench/server/bench_server.py
+python3 bench/tools/run_server.py
 ```
 
 `172.18.0.1` est un exemple à remplacer par le pair réel du relais ; ce n’est pas une adresse présumée de votre devcontainer. `BENCH_UI_FORWARD_PEERS` accepte des adresses ou CIDR séparés par des virgules ; préférer l’adresse précise du relais. `BENCH_ORIGIN` est l’URL `localhost` visible dans le navigateur, qui peut avoir un port différent du port interne. Aucun nouveau token n’est demandé dans la page.

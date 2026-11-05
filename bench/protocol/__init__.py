@@ -14,6 +14,14 @@ PROGRAM = {'flash.write', 'flash.erase'}
 PRIVILEGED = PROGRAM | {'uart.write', 'io0', 'trigger', 'http.request'}
 
 
+def trigger_disarm(name, args):
+    return name == 'trigger' and args == {'action': 'disarm'}
+
+
+def requires_grant(name, args):
+    return name in PRIVILEGED and not trigger_disarm(name, args)
+
+
 class Fault(Exception):
     def __init__(self, code, message, status=400):
         super().__init__(message)
@@ -108,6 +116,7 @@ def validate_command(name, args, device, artifacts):
         integer(args.get('timeout_ms', 15000), 100, 30000)
     if name == 'trigger':
         if args.get('action') == 'disarm':
+            require(set(args) == {'action'}, message='Disarm accepts only action')
             return
         require(0 < len(binary(args.get('data'), 256)) <= 256)
         require(args.get('action') in {'mark', 'reset'})
