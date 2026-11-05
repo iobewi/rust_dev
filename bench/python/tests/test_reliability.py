@@ -74,3 +74,13 @@ def test_storage_inventory_and_owner_cleanup(sim_bench):
         other.delete_artifact(artifact['id'])
     sim_bench.delete_artifact(artifact['id'])
     assert sim_bench.artifacts()['storage']['used'] == before
+
+
+def test_indeterminate_even_acknowledged_is_never_a_definitive_failure():
+    from iobewi_bench import PendingOperation
+    board = fake_board(operations=[operation(state='indeterminate', settled=True)])
+    with pytest.raises(PendingOperation):
+        board.identify()
+    with pytest.raises(PendingOperation):
+        board.identify()
+    assert board.client._request.call_count == 1
