@@ -154,3 +154,24 @@ def test_waiting_for_a_not_yet_registered_board_is_passive():
     client._request = Mock()
     assert client.wait_device('board',timeout=.1,recovered=True)['connected'] is True
     client._request.assert_not_called()
+
+
+def test_proof_window_can_be_explicitly_closed_while_server_is_offline(sim_bench,tmp_path,monkeypatch):
+    case = Campaign(sim_bench,'board',tmp_path/'offline-window',__file__,'offline-window')
+    case.start()
+    monkeypatch.setattr(case.client,'_request',Mock(side_effect=BenchError('offline')))
+    case.interrupt_window('server stopped intentionally')
+    assert case.after is None
+    record = json.loads((case.directory/'windows.jsonl').read_text().splitlines()[-1])
+    assert record['capture_error'] == 'BenchError'
+    assert record['event'] == 'interrupted'
+
+
+def test_epoch_change_during_polling_stops_old_session_without_another_request():
+    from iobewi_bench import ContinuityError
+    board = fake_board(batch=operation(settled=False))
+    board.client.health.side_effect = [{'epoch':'epoch'},{'epoch':'new'}]
+    with pytest.raises(ContinuityError):
+        board.identify()
+    assert board.pending == 'op'
+    assert board.client._request.call_count == 1

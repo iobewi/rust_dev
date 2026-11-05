@@ -268,6 +268,7 @@ class Board:
             if op["state"] == "indeterminate" or time.monotonic() >= deadline:
                 raise PendingOperation(f"Operation {op['id']} is not settled; reservation retained")
             time.sleep(self.client.poll_interval)
+            self._check_target()
             op = self.client._request("GET", "/api/v1/operations/" + quote(self.pending, safe=""))
 
     def identify(self):

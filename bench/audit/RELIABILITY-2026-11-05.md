@@ -32,7 +32,7 @@ No historic recipe, private proof or flash dump was changed or committed.
 
 ## Validation
 
-Local final software suite: **73 pytest PASS**, **9 opt-in hardware tests SKIP**,
+Local final software suite: **75 pytest PASS**, **9 opt-in hardware tests SKIP**,
 **71 server unittest PASS**, **102 Node tests PASS**. Existing browser scenarios
 and a fifth real WebSocket recovery scenario run in GitHub CI, with simulated
 hardware. See PR checks for exact commit/run results. Local Chromium installation

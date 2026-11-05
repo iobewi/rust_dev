@@ -8,7 +8,7 @@ import platform
 import time
 from urllib.parse import quote
 
-from .client import BenchClient, BenchHTTPError, ContinuityError, OperationError
+from .client import BenchClient, BenchError, BenchHTTPError, ContinuityError, OperationError
 
 
 def expect_http_refusal(action, *, status, code):
@@ -185,7 +185,7 @@ class Campaign:
         if self.after is not None:
             try:
                 self.events()
-            except (AssertionError, BenchHTTPError, ContinuityError) as error:
+            except (AssertionError, BenchError) as error:
                 failure = type(error).__name__
         self.client.record("windows.jsonl", {"window": self.window, "epoch": self.epoch,
             "after": self.after, "event": "interrupted", "reason": reason, "capture_error": failure})
