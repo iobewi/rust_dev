@@ -243,6 +243,8 @@ class Board:
         deadline = time.monotonic() + start_timeout + timeout + self.client.request_timeout
         while True:
             self._record(op)
+            if op["state"] == "indeterminate":
+                raise PendingOperation(f"Operation {op['id']} has an indeterminate hardware outcome")
             if self._settled(op):
                 self.pending = None
                 self._check_target()

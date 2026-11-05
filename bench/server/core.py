@@ -4,6 +4,7 @@ import hashlib
 import json
 import time
 import uuid
+from functools import wraps
 from collections import deque
 from protocol import (CAPABILITIES, MAX_ARTIFACT, PRIVILEGED, PROGRAM, Fault,
                       binary, integer, number, require, validate_command, local_origin)
@@ -15,18 +16,60 @@ def uid():
     return uuid.uuid4().hex
 
 
+def checkpoint(method):
+    @wraps(method)
+    def durable(self, *args, **kwargs):
+        require(not self.journal_failed, 'journal_unavailable', 'Durable state unavailable; restart required', 503)
+        try:
+            return method(self, *args, **kwargs)
+        finally:
+            if self.journal:
+                try:
+                    self.journal.save(self)
+                except Exception:
+                    self.journal_failed = True
+                    raise Fault('journal_unavailable', 'Durable checkpoint failed; no execution acknowledgement', 503) from None
+    return durable
+
+
 class Broker:
-    def __init__(self, clock=time.monotonic, max_events=2048):
+    def __init__(self, clock=time.monotonic, max_events=2048, state_dir=None):
         self.clock, self.max_events = clock, max_events
         self.agents, self.devices, self.leases, self.operations, self.artifacts = {}, {}, {}, {}, {}
         self.artifact_bytes = 0
         self.upload_reserved = 0
         self.epoch = uid()
+        self.journal, self.journal_failed = None, False
+        if state_dir is not None:
+            from server.journal import Journal
+            self.journal = Journal(state_dir)
+            state, self.artifacts = self.journal.load()
+            self.artifact_bytes = sum(a['size'] for a in self.artifacts.values())
+            require(self.artifact_bytes <= 64 * 1024 * 1024, 'capacity', 'Durable store exceeds capacity', 503)
+            self.devices, self.operations, self.leases = state['devices'], state['operations'], state['leases']
+            for lease in self.leases.values():
+                lease['active'], lease['until'] = False, self.clock()
+            for d in self.devices.values():
+                d.update(connected=False, grant_until=0, source_seq=0, seq=0, events=deque(maxlen=max_events))
+            for a in self.artifacts.values():
+                a['created'] = self.clock()
+            for op in self.operations.values():
+                op['created'], op['deadline'] = self.clock(), 0
+                if op['state'] in {'queued', 'offered'}:
+                    op['state'], op['error'] = 'cancelled', {'code': 'server_restart_before_execution'}
+                elif op['state'] == 'running':
+                    op['state'], op['error'] = 'indeterminate', {'code': 'server_restart'}
+                if op['state'] == 'indeterminate' and not op.get('reconciled') or op.get('requires_settle') and not op.get('settled'):
+                    op['reconciliation_required'] = True
+                    self.devices[op['device']]['quarantined'] = True
+                op['unsettled'] = False  # Prior generation cannot report/settle. Local reconciliation only.
+            self.journal.save(self)
 
     def agent(self, agent_id, socket):
         require(agent_id not in self.agents, 'agent_connected', 'Agent already connected', 409)
         self.agents[agent_id] = socket
 
+    @checkpoint
     def register(self, agent_id, data, allowed):
         require(isinstance(data, dict))
         device_id = data.get('id')
@@ -80,6 +123,7 @@ class Broker:
         require(device in self.devices, 'not_found', 'Unknown device', 404)
         return self.devices[device]
 
+    @checkpoint
     def sweep(self):
         now = self.clock()
         for lease in list(self.leases.values()):
@@ -124,6 +168,7 @@ class Broker:
         require(lease['active'] and lease['until'] > self.clock(), 'lease_expired', 'Reservation expired', 409)
         return lease
 
+    @checkpoint
     def release(self, key, owner, reason='released'):
         lease = self.leases.get(key)
         require(lease is not None and lease['owner'] == owner, 'forbidden', 'Invalid reservation', 403)
@@ -192,6 +237,7 @@ class Broker:
                 'available': 64 * 1024 * 1024 - self.artifact_bytes - self.upload_reserved,
                 'max_artifact': MAX_ARTIFACT}
 
+    @checkpoint
     def delete_artifact(self, key, owner):
         artifact = self.artifacts.get(key)
         require(artifact is not None, 'not_found', 'Unknown artifact', 404)
@@ -208,6 +254,7 @@ class Broker:
         del self.artifacts[key]
         return {'deleted': True}
 
+    @checkpoint
     def artifact(self, data, expected, owner=None):
         require(0 < len(data) <= MAX_ARTIFACT, 'artifact_size', 'Invalid artifact size', 413)
         digest = hashlib.sha256(data).hexdigest()
@@ -218,6 +265,7 @@ class Broker:
         self.artifact_bytes += len(data)
         return {k: v for k, v in a.items() if k != 'data'}
 
+    @checkpoint
     def submit(self, owner, scopes, body, local_agent=None):
         self.sweep()
         require(isinstance(body, dict) and not (body.keys() - {'lease', 'command', 'args', 'ttl', 'timeout', 'allow_destructive'}))
@@ -240,7 +288,7 @@ class Broker:
         number(ttl, 0.1, 120); number(timeout, 0.1, 600)
         key = uid()
         op = {'id': key, 'owner': owner, 'lease': lease['id'], 'device': d['id'], 'generation': d['generation'],
-              'command': name, 'args': copy.deepcopy(args), 'state': 'queued', 'created': self.clock(),
+              'epoch': self.epoch, 'command': name, 'args': copy.deepcopy(args), 'state': 'queued', 'created': self.clock(),
               'deadline': self.clock() + ttl, 'timeout': timeout, 'error': None, 'result': None,
               'cancel_requested': False, 'unsettled': False, 'local_control': local_control, 'requires_settle': False, 'settled': False,
               'artifact_ids': [i['artifact'] for i in args.get('images', [])]}
@@ -254,6 +302,7 @@ class Broker:
         # UART transmit bytes are never returned in diagnostics.
         return {k: copy.deepcopy(v) for k, v in op.items() if k not in {'args', 'artifact_ids', 'deadline', 'created'}}
 
+    @checkpoint
     def offer(self, device):
         self.sweep()
         d = self.device(device)
@@ -274,6 +323,7 @@ class Broker:
                         'timeout_ms': op['timeout'] * 1000}
         return None
 
+    @checkpoint
     def commit(self, agent, key):
         self.sweep()
         op = self.operations.get(key)
@@ -293,6 +343,7 @@ class Broker:
                 'deadline_ms': self.clock() * 1000 + op['start_remaining_ms'],
                 'execution_deadline_ms': op['deadline'] * 1000}
 
+    @checkpoint
     def finish(self, agent, message):
         # Results can arrive between dispatcher ticks: enforce the deadline before accepting them.
         self.sweep()
@@ -319,6 +370,7 @@ class Broker:
         return {'type': 'result_ack', 'id': op['id'], 'device': d['id'], 'generation': d['generation'],
                 'state': op['state'], 'quarantined': d['quarantined']}
 
+    @checkpoint
     def cancel(self, key, owner):
         op = self.operations.get(key)
         self.operation(key, owner)
@@ -330,6 +382,7 @@ class Broker:
             op['state'] = 'cancelled'
         return None
 
+    @checkpoint
     def disconnect(self, agent):
         self.agents.pop(agent, None)
         for d in self.devices.values():
@@ -342,8 +395,12 @@ class Broker:
                     self.release(lease['id'], lease['owner'], 'agent_disconnected')
             for op in self.operations.values():
                 if op['device'] == d['id']:
-                    op['unsettled'] = False  # device quarantine, not a replay, governs future recovery
+                    op['unsettled'] = False  # prior agent cannot settle in a new generation
+                    if op.get('requires_settle') and not op.get('settled'):
+                        op['reconciliation_required'] = True
+                        d['quarantined'] = True
 
+    @checkpoint
     def agent_event(self, agent, message):
         d = self.device(message.get('device'))
         require(d['agent'] == agent and d['connected'] and message.get('generation') == d['generation'],
@@ -383,8 +440,11 @@ class Broker:
                     'still_running', 'Hardware execution is still unsettled', 409)
             d['quarantined'] = False
             for op in self.operations.values():
-                if op['device'] == d['id'] and op['state'] == 'indeterminate':
+                if op['device'] == d['id'] and (op['state'] == 'indeterminate' or op.get('reconciliation_required')):
                     op['reconciled'] = True
+                    op['reconciliation_required'] = False
+                    op['reconciled_at'] = time.time()
+                    op['reconciled_generation'] = d['generation']
                     op['settled'] = True
             self.event(d['id'], 'recovered', {})
         elif kind == 'uart':

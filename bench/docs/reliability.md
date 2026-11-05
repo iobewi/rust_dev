@@ -71,3 +71,40 @@ reconciles indeterminate operations, without changing their verdict to success.
 Recipes should download and verify readbacks, then explicitly delete disposable
 artifacts after settlement. Backups needed for restoration must be retained
 privately by the recipe; there is no implicit cleanup of those backups.
+
+## Durable operations and restart
+
+The executable server now defaults to a private SQLite journal under
+`~/.local/state/iobewi-bench`; set `BENCH_STATE_DIR` to a persistent private
+volume in containers. One process owns its lock. `/health.durability` reports
+`sqlite-full` or `volatile` (the programmatic test/simulation factory remains
+volatile unless supplied a `Broker(state_dir=...)`). Do not use volatile mode for
+qualification. SQLite uses synchronous FULL transactions. A checkpoint failure
+latches execution closed (`journal_unavailable`, 503); restart and inspect the
+storage before continuing. Health becomes degraded.
+
+Transitions are committed before emitting an offer, execution permit or result
+acknowledgement. Inputs and uploaded readbacks are retained in the same private
+database within the existing 64 MiB store limit. No UART payload, MAC address,
+HTTP request/response body, arbitrary trace or flash dump is copied into outcome
+JSON. Flash verification metadata and the digest of the original result are
+preserved; the binary artifact table remains private and bounded. The journal
+is operational recovery state, not an immutable archive of campaign evidence.
+Copy qualification evidence separately; do not publish the database.
+
+| Last durable state | State after restart | Recovery |
+| --- | --- | --- |
+| queued/offered | cancelled, never executed | fresh reservation; no replay |
+| running | indeterminate | quarantine, local reconciliation |
+| result received, not settled | original result/state retained | quarantine, local reconciliation of settlement |
+| result received and settled | original result/state retained | fresh session; grants and leases invalidated |
+
+Every restart generates a new epoch. Old device generations, sessions, leases
+and grants cannot authorize execution. Stale results cannot complete an old
+operation. Local recovery records its time and new generation without changing
+an indeterminate verdict into success. Unknown operations are never replayed.
+A crash before the durable result transaction can still lose that result; it is
+then indeterminate. A result persisted before a lost acknowledgement survives,
+but does not prove console settlement. Filesystem/hardware durability depends on
+the underlying persistent volume honoring fsync; there is no distributed journal.
+The one-hour operational retention never evicts unresolved recovery records.
