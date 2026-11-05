@@ -88,7 +88,7 @@ class ObservedClient(BenchClient):
                         "requires_settle", "settled", "unsettled") if k in response}
                 error = response.get("error") or {}
                 safe["error"] = {k: error[k] for k in ("code", "phase", "transport_kind",
-                    "received_bytes", "expected_bytes", "elapsed_ms") if k in error}
+                    "received_bytes", "expected_bytes", "elapsed_ms", "http_status") if k in error}
                 safe["has_result"] = response.get("result") is not None
                 self.record("diagnostics.jsonl", safe)
             return response
@@ -98,9 +98,12 @@ class ObservedClient(BenchClient):
 
 class Campaign:
     """Per-test record and explicit reservation factory, including independent clients."""
-    def __init__(self, source, device, directory, recipe, test_id, *, revisions=None):
+    def __init__(self, source, device, directory, recipe, test_id, *, revisions=None, allow_destructive=False):
         self.directory = Path(directory)
         self.directory.mkdir(parents=True, mode=0o700)
+        if type(allow_destructive) is not bool:
+            raise ValueError("Campaign consent must be an explicit boolean")
+        self.allow_destructive = allow_destructive
         self.device = device
         self.client = ObservedClient(source, self.directory, "primary")
         self.boards, self.clients = [], [self.client]
@@ -121,6 +124,7 @@ class Campaign:
             "client_source_sha256": sources,
             "python": platform.python_version(), "pytest": version("pytest"),
             "iobewi-bench": version("iobewi-bench"), "declared_environment": revisions or {},
+            "allow_destructive": allow_destructive,
             "started_at": datetime.now(timezone.utc).isoformat()})
 
     def write(self, filename, value):
@@ -138,12 +142,18 @@ class Campaign:
         state = self.snapshot("before")
         assert state["connected"] and not state["quarantined"], "Card is not ready"
         assert state["reservation"] is None, "Card is already reserved"
-        assert state["privileged_seconds"] == 0, "Revoke remote grant before qualification"
+        if not self.allow_destructive:
+            assert state["privileged_seconds"] == 0, "Revoke remote grant before qualification"
         batch = self.client._request("GET", f"/api/v1/devices/{quote(self.device, safe='')}/events?after=0")
         assert batch["epoch"] == self.observed_epoch, "Server epoch changed during preflight"
         self.epoch, self.after = batch["epoch"], batch["latest"]
         self.write("event-start.json", {"epoch": self.epoch, "after": self.after,
                                        "generation": state["generation"]})
+
+    def wait_grant(self, *, minimum_seconds=60, timeout=120):
+        if not self.allow_destructive:
+            raise ValueError("Destructive campaign consent required")
+        return self.client.wait_device(self.device, timeout=timeout, grant_seconds=minimum_seconds, recovered=True)
 
     def independent_client(self, token):
         source = BenchClient(self.client.url, token)
@@ -156,7 +166,7 @@ class Campaign:
         path = self.directory / ("board-" + str(self.reservation_attempts))
         self.reservation_attempts += 1
         path.mkdir(mode=0o700)
-        board = client.reserve(self.device, ttl=ttl, output_dir=path)
+        board = client.reserve(self.device, ttl=ttl, output_dir=path, allow_destructive=self.allow_destructive)
         self.boards.append(board)
         self.client.record("reservations.jsonl", {"client": client.label, "lease": board.lease_id,
                            "epoch": board.epoch, "generation": board.generation})
