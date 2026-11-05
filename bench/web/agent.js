@@ -21,13 +21,19 @@ export class Agent {
       this.reconnectTimer = null;
       if (this.stopped) return;
       if (this.active || this.engine.busy || this.awaitingResult?.finalizing) { this.retryConnection(); return; }
-      if (this.awaitingResult) {
-        this.orphanedOperation = this.awaitingResult.id;
-        this.awaitingResult = null; this.engine.setHold(true); this.activity();
-      }
-      this.pending = null; this.deferredOffer = null;
-      this.connect();
+      this.reconnectNow();
     }, 1000);
+  }
+  reconnectNow() {
+    if (this.active || this.engine.busy || this.awaitingResult?.finalizing || [0, 1, 2].includes(this.socket?.readyState)) {
+      throw new Error('Agent déjà connecté ou matériel occupé');
+    }
+    if (this.awaitingResult) {
+      this.orphanedOperation = this.awaitingResult.id;
+      this.awaitingResult = null; this.engine.setHold(true); this.activity();
+    }
+    this.pending = null; this.deferredOffer = null;
+    this.connect();
   }
   connect() {
     this.stopped = false; this.cancel(this.reconnectTimer); this.reconnectTimer = null;
@@ -75,6 +81,7 @@ export class Agent {
     this.event('grant', { seconds });
   }
   cancelTrigger() {
+    this.triggerLease = null;
     if (this.engine.cancelTrigger) this.engine.cancelTrigger();
     else this.engine.trigger = null;
   }
@@ -88,7 +95,7 @@ export class Agent {
     try {
       const response = await fetch('/api/v1/artifacts' + (id ? '/' + id : ''), {
         method: id ? 'GET' : 'POST', headers: { ...(this.token ? { Authorization: 'Bearer ' + this.token } : {}),
-          ...(bytes ? { 'X-SHA256': await sha256(bytes) } : {}) }, ...(bytes ? { body: bytes } : {}),
+          ...(bytes ? { 'X-SHA256': await sha256(bytes), 'X-Bench-Artifact-Role': 'agent' } : {}) }, ...(bytes ? { body: bytes } : {}),
       });
       if (!response.ok) {
         // Keep only a known code; never include arbitrary response text.
@@ -139,7 +146,8 @@ export class Agent {
       // Persist before touching the port; a page crash must require operator review.
       this.engine.persistHold(true);
       const generation = this.generation;
-      const privileged = ['flash.write', 'flash.erase', 'uart.write', 'io0', 'trigger', 'http.request'].includes(op.command) && !op.local_control;
+      const disarm = op.command === 'trigger' && op.args?.action === 'disarm' && Object.keys(op.args).length === 1;
+      const privileged = ['flash.write', 'flash.erase', 'uart.write', 'io0', 'trigger', 'http.request'].includes(op.command) && !disarm && !op.local_control;
       const leaseLive = () => this.generation === generation && this.socket?.readyState === 1 && !this.revoked.has(op.lease) && this.now() < op.lease_deadline_ms - this.serverOffset - 100 && (!privileged || this.now() < this.grantUntil);
       // The server starts this deadline before sending execute; network delay cannot extend it.
       const live = () => leaseLive() && this.now() < executionUntil;
@@ -169,10 +177,12 @@ export class Agent {
           if (this.now() >= until) throw new HardwareError('command_start_expired');
         };
         check();
+        if (disarm && !op.local_control && this.triggerLease !== op.lease) throw new HardwareError('trigger_not_owned');
         const result = await this.engine.execute(op.command, op.args, {
           check, checkLive, report: detail => this.log('progress', { id: op.id, command: op.command, detail }), live, triggerLive: leaseLive, deferCompletion: true,
           complete: value => { completion = value; }, device: this.device, download: id => this.artifact(id), upload: bytes => this.artifact(null, bytes),
         });
+        if (op.command === 'trigger' && (!result?.state || result.state === 'completed')) this.triggerLease = disarm ? null : op.lease;
         if (!live()) this.engine.setHold(true);
         publish({ state: result?.state || 'completed', result, ...(result?.error ? { error: typeof result.error === 'object' ? result.error : { code: result.error_kind || 'hardware_command_failed' } } : {}) });
       } catch (error) {

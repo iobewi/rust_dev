@@ -62,7 +62,7 @@ Les agents utilisent REST seulement pour uploader les dumps et télécharger les
 | `io0` | `duration_ms` 1–10 000, UART externe seulement | Oui |
 | `mark` | `label` texte ≤256 caractères | Non |
 | `trigger` | `data` base64 ≤256 octets, `action` mark/reset, `delay_ms` 0–10 000, `expires_ms` 1–120 000 | Oui |
-| `trigger` | `action:"disarm"` | Oui |
+| `trigger` | `action:"disarm"` uniquement ; réservation active ayant armé le déclencheur dans cette génération | Non ; scope `control` et propriétaire vérifiés |
 | `http.request` | `url`, `method` GET/POST, `body` texte ≤16 Kio, `timeout_ms` 100–30 000 | Oui |
 
 Les arguments inconnus sont refusés. Les opérations flash lisent la capacité mesurée ; les écritures doivent annoncer la famille de puce exactement. Les plages invalides, dépassements, chevauchements de secteurs et digests différents sont refusés avant programmation. Les familles sont normalisées (`esp32s3`, `esp32c3`). Les déclencheurs recherchent une séquence d’octets exacte, sur plusieurs chunks si nécessaire ; ils sont à usage unique, bornés par leur TTL et la réservation, et n’exécutent pas de reset pendant une opération matérielle. Le désarmement et le réarmement invalident aussi toute action différée déjà programmée après détection du motif. Ils ne portent aucune règle OTA/Wi-Fi. Le renouvellement d’une réservation ne prolonge pas un déclencheur déjà armé.
@@ -107,6 +107,8 @@ Corps JSON REST et trames WS : 64 Kio maximum ; chunk UART : 16 Kio maximum. Les
 ### Diagnostics et libération opérateur
 
 Les refus de programmation distinguent `program_permission_required` (scope `program` absent) et `destructive_consent_required` (`allow_destructive:true` absent). Le contrôle du grant reste indépendant et intervient avant ces deux refus.
+
+Le désarmement seul accepte exactement `{"action":"disarm"}` et n’exige pas de grant. Le serveur vérifie à la soumission puis à l’exécution que le déclencheur appartient à la même réservation active ; l’agent vérifie aussi son association locale à cette réservation. Un autre propriétaire, une nouvelle réservation ou génération ne reçoit pas cette exception (`trigger_not_owned`, HTTP 403 côté serveur). Authentification, scope `control`, TTL, réservation, génération et quarantaine restent contrôlés. L’autorité locale du navigateur conserve son périmètre existant sur son propre agent. L’armement et les actions sensibles du déclencheur restent soumis au grant ; désarmer ne le prolonge pas.
 
 Les erreurs matérielles connues utilisent des codes sans texte brut : `serial_disconnected`, `console_required`, `external_uart_required`, `partition_table_invalid`, `physical_identity_changed`, `operator_recovery_required`. Une table vide/vierge à l’adresse demandée est refusée ; il n’y a aucune recherche ni écriture automatique à une autre adresse. Les erreurs inconnues restent `hardware_command_failed`.
 
@@ -162,3 +164,25 @@ Si le contrôleur disparaît du bus, aucune commande USB ne peut le réinitialis
 Sources : [modes de reset Espressif](https://docs.espressif.com/projects/esptool/en/latest/esp32s3/esptool/advanced-options.html)
 et [séquence hard_reset Espressif](https://github.com/espressif/esp-pylib/blob/master/esp_pylib/serial_reset.py).
 Cette méthode doit encore être qualifiée sur la carte et le navigateur réels.
+
+## Reliability additions (protocol v1, server/client 0.2)
+
+See [reliability contracts](reliability.md) for the complete guarantees and limits.
+
+- `GET /health`: adds durability and observed/declared build provenance.
+- `GET /api/v1/identity`: authenticated client ID and effective scopes, no token.
+- `GET /api/v1/devices`: adds agent-reported provenance and local recovery time.
+- `GET /api/v1/artifacts`: adds byte capacity counters and per-artifact pins.
+- `POST /api/v1/artifacts`: requires Content-Length, reserves capacity before body
+  admission; 503 capacity is definitive refusal and not a request to retry.
+  Agent readbacks send `X-Bench-Artifact-Role: agent`; cookie authentication binds
+  this role to the session's connected agent, without accepting an agent ID from
+  the request. Bearer client credentials cannot assert this role. Uploads without
+  this header keep their authenticated client/agent ownership.
+- `DELETE /api/v1/artifacts/{id}`: control scope plus ownership; 409 artifact_in_use
+  for active/uncertain/unacknowledged execution, 403 for another owner's artifact.
+- WebSocket registered replies include quarantine. Old-generation results are
+  refused. Grants are never restored by server/browser reconnection.
+- Durable operation views preserve their original epoch/result metadata and expose
+  reconciliation_required, reconciled_at/generation, and result_sha256 where
+  applicable. Journal failure is 503 journal_unavailable and fails execution closed.

@@ -39,7 +39,7 @@ class HttpTests(unittest.IsolatedAsyncioTestCase):
         self.ws=await self.client.ws_connect('/agent/v1/ws')
         await self.ws.send_json({'type':'auth','version':1,'token':'agent-secret-12345678'})
         self.assertEqual((await self.ws.receive_json())['type'],'welcome')
-        await self.ws.send_json({'type':'register','device':{'id':'board','chip':'esp32s3','flash_size':4194304,'capabilities':['identify','flash.write','flash.read','reset']}})
+        await self.ws.send_json({'type':'register','device':{'id':'board','chip':'esp32s3','flash_size':4194304,'capabilities':['identify','flash.write','flash.read','reset','trigger']}})
         reply=await self.ws.receive_json();self.generation=reply['generation'];return self.ws
 
     async def reserve(self,headers=ALICE):
@@ -85,6 +85,52 @@ class HttpTests(unittest.IsolatedAsyncioTestCase):
         winner=next(data for r,data in results if r.status==201)
         wrong=BOB if winner['owner']=='alice' else ALICE
         r=await self.client.delete('/api/v1/leases/'+winner['id'],headers=wrong);self.assertEqual(r.status,403)
+
+    async def test_trigger_disarm_after_remote_grant_revocation_via_http_and_websocket(self):
+        await self.agent()
+        _,lease = await self.reserve()
+
+        async def grant(seconds):
+            await self.ws.send_json({'type':'grant','device':'board','generation':self.generation,'seconds':seconds})
+            for _ in range(50):
+                response = await self.client.get('/api/v1/devices',headers=ALICE)
+                observed = (await response.json())['devices'][0]['privileged_seconds']
+                if (observed>0) == (seconds>0):
+                    return
+                await asyncio.sleep(.01)
+            self.fail('Grant transition not observed')
+
+        async def execute(args):
+            response = await self.client.post('/api/v1/operations',headers=ALICE,
+                json={'lease':lease['id'],'command':'trigger','args':args})
+            self.assertEqual(response.status,202,await response.text())
+            op = await response.json()
+            offer = await self.ws.receive_json()
+            self.assertEqual(offer['id'],op['id'])
+            await self.ws.send_json({'type':'ready','id':op['id']})
+            self.assertEqual((await self.ws.receive_json())['type'],'execute')
+            await self.ws.send_json({'type':'result','id':op['id'],'state':'completed','result':{'armed':args['action']!='disarm'}})
+            self.assertEqual((await self.ws.receive_json())['type'],'result_ack')
+            await self.ws.send_json({'type':'settled','id':op['id'],'device':'board','generation':self.generation})
+            for _ in range(50):
+                response = await self.client.get('/api/v1/operations/'+op['id'],headers=ALICE)
+                if (await response.json())['settled']:
+                    return
+                await asyncio.sleep(.01)
+            self.fail('Result did not settle')
+
+        await grant(1800)
+        await execute({'action':'mark','data':'YQ==','expires_ms':120000})
+        await grant(0)
+        response = await self.client.post('/api/v1/operations',headers=BOB,
+            json={'lease':lease['id'],'command':'trigger','args':{'action':'disarm'}})
+        self.assertEqual((response.status,(await response.json())['error']['code']),(403,'forbidden'))
+        await execute({'action':'disarm'})
+        response = await self.client.post('/api/v1/operations',headers=ALICE,json={'lease':lease['id'],
+            'command':'trigger','args':{'action':'mark','data':'YQ==','expires_ms':1000}})
+        self.assertEqual((response.status,(await response.json())['error']['code']),(403,'grant_required'))
+        response = await self.client.get('/api/v1/devices',headers=ALICE)
+        self.assertEqual((await response.json())['devices'][0]['privileged_seconds'],0)
 
     async def test_command_lifecycle_and_binary_artifacts(self):
         await self.agent();_,lease=await self.reserve()

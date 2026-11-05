@@ -110,3 +110,68 @@ def test_server_and_client_provenance_are_recorded(sim_bench, tmp_path):
     assert snapshot['server_observed']['source'] == 'observed_local_files'
     assert snapshot['device']['provenance_source'] == 'agent_reported'
     case.close()
+
+
+def test_uncertain_handle_can_only_retire_in_a_new_locally_recovered_session(tmp_path):
+    from iobewi_bench import PendingOperation
+    board = fake_board()
+    board.output_dir = tmp_path
+    board.uncertain = True
+    for changes in [{}, {'generation':'new'}, {'generation':'new','quarantined':True,'recovered_at':123}]:
+        board.client.device.return_value = {'id':'board','generation':'generation','connected':True,
+            'quarantined':False,'reservation':None,**changes}
+        with pytest.raises(PendingOperation):
+            board.retire_after_recovery()
+    board.client.device.return_value.update(generation='new',quarantined=False,recovered_at=123)
+    board.retire_after_recovery()
+    assert board.closed and board.uncertain
+    assert json.loads((tmp_path/'retired.json').read_text())['outcome'] == 'not_certified'
+
+
+def test_maximum_binary_artifact_is_accepted_and_cleaned(sim_bench):
+    data = b'\xa5' * (16*1024*1024)
+    artifact = sim_bench.upload(data)
+    assert sim_bench.download(artifact) == data
+    sim_bench.delete_artifact(artifact['id'])
+
+
+def test_campaign_device_disconnection_breaks_the_proof(sim_bench,tmp_path,monkeypatch):
+    from iobewi_bench import ContinuityError
+    case = Campaign(sim_bench,'board',tmp_path/'broken-window',__file__,'broken-window')
+    case.start()
+    batch = {'epoch':case.epoch,'lost':0,'next':case.after+1,'latest':case.after+1,
+             'events':[{'kind':'disconnected','seq':case.after+1}]}
+    monkeypatch.setattr(case.client,'_request',lambda *args,**kwargs:batch)
+    with pytest.raises(ContinuityError):
+        case.events()
+    case.interrupt_window('disconnect observed')
+    assert json.loads((case.directory/'windows.jsonl').read_text().splitlines()[-1])['capture_error'] == 'ContinuityError'
+
+
+def test_waiting_for_a_not_yet_registered_board_is_passive():
+    client = BenchClient('http://localhost:8080','test-token',poll_interval=.001)
+    client.devices = Mock(side_effect=[[],[{'id':'board','connected':True,'quarantined':False,'privileged_seconds':0}]])
+    client._request = Mock()
+    assert client.wait_device('board',timeout=.1,recovered=True)['connected'] is True
+    client._request.assert_not_called()
+
+
+def test_proof_window_can_be_explicitly_closed_while_server_is_offline(sim_bench,tmp_path,monkeypatch):
+    case = Campaign(sim_bench,'board',tmp_path/'offline-window',__file__,'offline-window')
+    case.start()
+    monkeypatch.setattr(case.client,'_request',Mock(side_effect=BenchError('offline')))
+    case.interrupt_window('server stopped intentionally')
+    assert case.after is None
+    record = json.loads((case.directory/'windows.jsonl').read_text().splitlines()[-1])
+    assert record['capture_error'] == 'BenchError'
+    assert record['event'] == 'interrupted'
+
+
+def test_epoch_change_during_polling_stops_old_session_without_another_request():
+    from iobewi_bench import ContinuityError
+    board = fake_board(batch=operation(settled=False))
+    board.client.health.side_effect = [{'epoch':'epoch'},{'epoch':'new'}]
+    with pytest.raises(ContinuityError):
+        board.identify()
+    assert board.pending == 'op'
+    assert board.client._request.call_count == 1

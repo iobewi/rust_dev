@@ -97,6 +97,9 @@ class BenchClient:
         except (URLError, TimeoutError, OSError, ValueError) as error:
             raise BenchError(f"Transport or response failure ({type(error).__name__}); request not retried") from None
 
+    def identity(self):
+        return self._request("GET", "/api/v1/identity")
+
     def health(self):
         return self._request("GET", "/health")
 
@@ -111,6 +114,8 @@ class BenchClient:
 
     def reserve(self, device_id, *, ttl=900, allow_destructive=False, output_dir=None):
         _duration(ttl, 1, 3600)
+        if type(allow_destructive) is not bool:
+            raise ValueError("Destructive consent must be a boolean")
         health = self.health()
         device = self.device(device_id)
         if not device["connected"]:
@@ -123,6 +128,10 @@ class BenchClient:
             board.close()
             raise
         return board
+
+    def operation(self, operation_id):
+        """Inspect a stable operation ID; never replay or reconcile it."""
+        return self._request("GET", "/api/v1/operations/" + quote(operation_id, safe=""))
 
     def artifacts(self):
         return self._request("GET", "/api/v1/artifacts")
@@ -148,7 +157,7 @@ class BenchClient:
             raise BenchHTTPError(503, "capacity")
         artifact = self._request("POST", "/api/v1/artifacts", data)
         if (not isinstance(artifact, dict) or not isinstance(artifact.get("id"), str) or
-                not artifact["id"] or artifact.get("size") != len(data) or
+                not 1 <= len(artifact["id"]) <= 256 or type(artifact.get("size")) is not int or artifact.get("size") != len(data) or
                 artifact.get("sha256") != hashlib.sha256(data).hexdigest()):
             raise BenchError("Upload response size or SHA-256 mismatch; request not retried")
         return artifact
@@ -159,8 +168,8 @@ class BenchClient:
         _duration(grant_seconds, 0, 14400)
         deadline = time.monotonic() + timeout
         while True:
-            state = self.device(device_id)
-            if (state["connected"] and state["privileged_seconds"] >= grant_seconds and
+            state = next((d for d in self.devices() if d["id"] == device_id), None)
+            if (state is not None and state["connected"] and state["privileged_seconds"] >= grant_seconds and
                     (not recovered or not state["quarantined"])):
                 return state
             if time.monotonic() >= deadline:
@@ -183,6 +192,7 @@ class Board:
         self.uncertain = False
         self.closed = False
         self.last_operation = None
+        self.manifest = None
         self._dumps = 0
         self._last_record = None
 
@@ -200,6 +210,8 @@ class Board:
         device = self.client.device(self.device_id)
         if not device["connected"] or device["generation"] != self.generation:
             raise ContinuityError("Device disconnected or generation changed; no automatic resume")
+        if self.manifest is not None:
+            self.manifest.check_device(device)
         return device
 
     @staticmethod
@@ -226,8 +238,10 @@ class Board:
         if self.pending or self.uncertain:
             raise PendingOperation("Previous outcome is unresolved; no new command submitted")
         self._check_target()
-        if name in {"flash.write", "flash.erase"} and not (self.allow_destructive and allow_destructive is True):
+        if name in {"flash.write", "flash.erase"} and not (self.allow_destructive is True and allow_destructive is True):
             raise BenchError("Destructive command needs run-level opt-in and explicit per-command consent")
+        if self.manifest is not None:
+            self.manifest.check_command(self, name, args or {})
         # Even a lost POST response may have started hardware. Never resend or release blindly.
         self.uncertain = True
         try:
@@ -254,6 +268,7 @@ class Board:
             if op["state"] == "indeterminate" or time.monotonic() >= deadline:
                 raise PendingOperation(f"Operation {op['id']} is not settled; reservation retained")
             time.sleep(self.client.poll_interval)
+            self._check_target()
             op = self.client._request("GET", "/api/v1/operations/" + quote(self.pending, safe=""))
 
     def identify(self):
@@ -303,6 +318,21 @@ class Board:
             if error.code != "lease_expired":
                 raise
         self.closed = True
+
+    def retire_after_recovery(self):
+        """Retire an unusable handle after explicit local recovery, never certify its outcome."""
+        state, epoch = self.client.device(self.device_id), self.client.health()["epoch"]
+        if (not state["connected"] or state["quarantined"] or state.get("reservation") is not None or
+                not state.get("recovered_at") or
+                (epoch == self.epoch and state["generation"] == self.generation)):
+            raise PendingOperation("A new, locally recovered and unreserved session is required")
+        self.closed = True  # pending/uncertain remain recorded, never become success
+        if self.output_dir:
+            self.output_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+            (self.output_dir / "retired.json").write_text(json.dumps({"prior_epoch":self.epoch,
+                "prior_generation":self.generation,"epoch":epoch,"generation":state["generation"],
+                "operation":self.pending,"submission_uncertain":self.uncertain,
+                "outcome":"not_certified","recovered_at":state["recovered_at"]}))
 
     def cursor(self):
         self._check_target()

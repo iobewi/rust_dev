@@ -115,6 +115,12 @@ async def health(request):
                        'build': request.app[BUILD]})
 
 
+async def identity(request):
+    who = request[IDENTITY]
+    require(who['role'] == 'client', 'forbidden', 'Client required', 403)
+    return json_reply({'id': who['id'], 'scopes': who['scopes']})
+
+
 async def devices(request):
     b = request.app[BROKER]; b.sweep()
     return json_reply({'devices': [b.view(d) for d in b.devices.values()],
@@ -188,6 +194,14 @@ async def event_stream(request):
 async def artifacts(request):
     b = request.app[BROKER]; b.sweep()
     if request.method == 'POST':
+        identity = request[IDENTITY]
+        owner = identity['role'] + ':' + identity['id']
+        artifact_role = request.headers.get('X-Bench-Artifact-Role')
+        if artifact_role is not None:
+            require(artifact_role == 'agent', 'invalid_request', 'Invalid artifact role', 400)
+            agent_id = identity['id'] if identity['role'] == 'agent' else identity.get('local_agent')
+            require(agent_id in b.agents, 'forbidden', 'Connected authenticated agent required', 403)
+            owner = 'agent:' + agent_id
         size = request.content_length
         require(size is not None, 'length_required', 'Content-Length required', 411)
         require(0 < size <= MAX_ARTIFACT, 'artifact_size', 'Invalid artifact size', 413)
@@ -198,9 +212,7 @@ async def artifacts(request):
             require(len(data) == size, 'artifact_size', 'Incomplete artifact', 400)
         finally:
             b.upload_reserved -= size
-        identity = request[IDENTITY]
-        return json_reply(b.artifact(data, request.headers.get('X-SHA256'),
-                                     identity['role'] + ':' + identity['id']), 201)
+        return json_reply(b.artifact(data, request.headers.get('X-SHA256'), owner), 201)
     if 'id' not in request.match_info:
         require(request[IDENTITY]['role'] == 'client', 'forbidden', 'Client required', 403)
         return json_reply({'storage': b.storage(), 'artifacts': [
@@ -344,15 +356,17 @@ def create_app(tokens, broker=None, origin=None, ui_forward_peers=()):
                                            stderr=subprocess.DEVNULL, text=True, timeout=2).strip()
     except (OSError, subprocess.SubprocessError):
         revision = None
+    declared = os.environ.get("BENCH_BUILD_SHA", "")
+    declared = declared if len(declared) in {40, 64} and all(c in "0123456789abcdef" for c in declared) else None
     app[BUILD] = {'version': '0.2.0', 'git_sha': revision,
         'server_sha256': source_digest(list(Path(__file__).parent.glob('*.py')) + list((PAGES.parent / 'protocol').glob('*.py'))),
         'assets_sha256': source_digest(PAGES.glob('*')),
-        'source': 'observed_local_files', 'declared_build_sha': os.environ.get('BENCH_BUILD_SHA')}
+        'source': 'observed_local_files', 'declared_build_sha': declared}
     app[UI_ACCESS] = access
     app[SESSIONS] = UISessions(app[BROKER].clock, allowed)
     app.cleanup_ctx.append(dispatcher)
     app.add_routes([web.get('/health', health), web.get('/agent/v1/ws', websocket), web.post('/session/v1/open', browser_session),
-                    web.get('/api/v1/devices', devices), web.post('/api/v1/leases', leases),
+                    web.get('/api/v1/identity', identity), web.get('/api/v1/devices', devices), web.post('/api/v1/leases', leases),
                     web.get('/api/v1/leases/{id}', leases), web.patch('/api/v1/leases/{id}', leases),
                     web.delete('/api/v1/leases/{id}', leases),
                     web.post('/api/v1/operations', operations), web.post('/api/v1/manual-operations', operations), web.get('/api/v1/operations/{id}', operations),
@@ -370,7 +384,14 @@ if __name__ == '__main__':
         sys.exit('Set BENCH_TOKENS_FILE to an external JSON credentials file (see bench/README.md)')
     config = json.loads(Path(path).read_text())
     state_dir = os.environ.get('BENCH_STATE_DIR', str(Path.home() / '.local/state/iobewi-bench'))
-    web.run_app(create_app(config, broker=Broker(state_dir=state_dir), origin=os.environ.get('BENCH_ORIGIN'),
+    try:
+        broker = Broker(state_dir=state_dir, lock_timeout=float(os.environ.get('BENCH_LOCK_TIMEOUT', '0')))
+    except (BlockingIOError, ValueError) as error:
+        sys.exit(str(error))
+    try:
+        web.run_app(create_app(config, broker=broker, origin=os.environ.get('BENCH_ORIGIN'),
                 ui_forward_peers=[peer.strip() for peer in os.environ.get('BENCH_UI_FORWARD_PEERS', '').split(',') if peer.strip()]),
                 host=os.environ.get('BENCH_HOST', '127.0.0.1'), port=int(os.environ.get('BENCH_PORT', 8080)),
                 access_log=None)
+    finally:
+        broker.journal.close()

@@ -8,7 +8,7 @@ import platform
 import time
 from urllib.parse import quote
 
-from .client import BenchClient, BenchHTTPError, ContinuityError, OperationError
+from .client import BenchClient, BenchError, BenchHTTPError, ContinuityError, OperationError
 
 
 def expect_http_refusal(action, *, status, code):
@@ -98,12 +98,22 @@ class ObservedClient(BenchClient):
 
 class Campaign:
     """Per-test record and explicit reservation factory, including independent clients."""
-    def __init__(self, source, device, directory, recipe, test_id, *, revisions=None, allow_destructive=False):
+    def __init__(self, source, device, directory, recipe, test_id, *, revisions=None, allow_destructive=False, manifest=None, parameters=None):
+        from .manifest import CampaignManifest
+        self.manifest = CampaignManifest(manifest) if isinstance(manifest, dict) else manifest
+        if self.manifest is not None and not isinstance(self.manifest, CampaignManifest):
+            raise ValueError("Expected a validated campaign manifest")
+        self.results = []
         self.directory = Path(directory)
         self.directory.mkdir(parents=True, mode=0o700)
         if type(allow_destructive) is not bool:
             raise ValueError("Campaign consent must be an explicit boolean")
         self.allow_destructive = allow_destructive
+        if self.manifest is not None:
+            root = Path(self.manifest.document["private_evidence"]).resolve()
+            if not self.directory.resolve().is_relative_to(root):
+                raise ValueError("Campaign evidence must stay under the manifest private root")
+            self.write("manifest.json", self.manifest.document)
         self.device = device
         self.client = ObservedClient(source, self.directory, "primary")
         self.boards, self.clients = [], [self.client]
@@ -111,6 +121,9 @@ class Campaign:
         self.after = None
         self.epoch = None
         self.window = 0
+        self.started = False
+        self.manual_interruptions = 0
+        self.generation = None
         recipe = Path(recipe)
         (self.directory / "recipe.py").write_bytes(recipe.read_bytes())
         module = Path(__file__).read_bytes()
@@ -125,6 +138,8 @@ class Campaign:
             "client_source_sha256": sources,
             "python": platform.python_version(), "pytest": version("pytest"),
             "iobewi-bench": version("iobewi-bench"), "declared_environment": revisions or {},
+            "parameters_sha256": hashlib.sha256(json.dumps(parameters or {}, sort_keys=True).encode()).hexdigest(),
+            "manifest_sha256": self.manifest.sha256 if self.manifest else None,
             "allow_destructive": allow_destructive,
             "started_at": datetime.now(timezone.utc).isoformat()})
 
@@ -135,13 +150,22 @@ class Campaign:
         health, device = self.client.health(), self.client.device(self.device)
         self.observed_epoch = health["epoch"]
         safe = {k: device[k] for k in ("id", "generation", "connected", "quarantined",
-                "reservation", "privileged_seconds", "capabilities", "chip", "flash_size", "provenance", "provenance_source") if k in device}
+                "reservation", "privileged_seconds", "capabilities", "chip", "flash_size", "provenance", "provenance_source", "recovered_at") if k in device}
         self.write(name + ".json", {"epoch": health["epoch"], "device": safe,
             "server_observed": health.get("build"), "durability": health.get("durability", "unavailable")})
         return safe
 
     def start(self):
+        if self.started:
+            raise ContinuityError("Campaign already started; open a new evidence window explicitly")
+        self.started = True
+        scopes = set(self.client.identity()["scopes"])
+        assert {"read", "control"} <= scopes, "Campaign requires read/control scopes"
+        if self.allow_destructive:
+            assert "program" in scopes, "Destructive campaign requires program scope"
         state = self.snapshot("before")
+        if self.manifest is not None:
+            self.manifest.check_device(state)
         assert state["connected"] and not state["quarantined"], "Card is not ready"
         assert state["reservation"] is None, "Card is already reserved"
         if not self.allow_destructive:
@@ -149,6 +173,7 @@ class Campaign:
         batch = self.client._request("GET", f"/api/v1/devices/{quote(self.device, safe='')}/events?after=0")
         assert batch["epoch"] == self.observed_epoch, "Server epoch changed during preflight"
         self.epoch, self.after = batch["epoch"], batch["latest"]
+        self.generation = state["generation"]
         self.write("event-start.json", {"epoch": self.epoch, "after": self.after,
                                        "generation": state["generation"]})
 
@@ -160,7 +185,7 @@ class Campaign:
         if self.after is not None:
             try:
                 self.events()
-            except (AssertionError, BenchHTTPError, ContinuityError) as error:
+            except (AssertionError, BenchError) as error:
                 failure = type(error).__name__
         self.client.record("windows.jsonl", {"window": self.window, "epoch": self.epoch,
             "after": self.after, "event": "interrupted", "reason": reason, "capture_error": failure})
@@ -179,6 +204,7 @@ class Campaign:
         batch = self.client._request("GET", f"/api/v1/devices/{quote(self.device, safe='')}/events?after=0")
         assert batch["epoch"] == self.observed_epoch, "Server changed during window opening"
         self.epoch, self.after = batch["epoch"], batch["latest"]
+        self.generation = state["generation"]
         self.client.record("windows.jsonl", {"window": self.window, "event": "opened", "reason": reason,
             "epoch": self.epoch, "generation": state["generation"], "after": self.after,
             "quarantined": state["quarantined"]})
@@ -194,12 +220,18 @@ class Campaign:
         self.clients.append(client)
         return client
 
-    def reserve(self, *, client=None, ttl=900):
+    def reserve(self, *, client=None, ttl=None):
+        ttl = (1800 if self.allow_destructive else 900) if ttl is None else ttl
         client = client or self.client
+        if self.allow_destructive:
+            assert {"read", "control", "program"} <= set(client.identity()["scopes"]), "Destructive reservation requires all scopes"
         path = self.directory / ("board-" + str(self.reservation_attempts))
         self.reservation_attempts += 1
         path.mkdir(mode=0o700)
+        if self.manifest is not None:
+            self.manifest.check_device(client.device(self.device))
         board = client.reserve(self.device, ttl=ttl, output_dir=path, allow_destructive=self.allow_destructive)
+        board.manifest = self.manifest
         self.boards.append(board)
         self.client.record("reservations.jsonl", {"client": client.label, "lease": board.lease_id,
                            "epoch": board.epoch, "generation": board.generation})
@@ -219,11 +251,32 @@ class Campaign:
                         "generation", "source_lost", "seconds") if k in event}
                 self.client.record("events.jsonl", safe)
                 assert not event.get("source_lost"), "Agent UART loss; proof incomplete"
+                if event["kind"] == "disconnected" or (event["kind"] == "connected" and
+                        self.generation is not None and event.get("generation") != self.generation):
+                    raise ContinuityError("Device continuity interrupted; open a fresh proof window explicitly")
                 result.append(safe)
             self.after = batch["next"]
             if self.after >= batch["latest"]:
                 return result
         raise AssertionError("Event capture exceeded 100 pages")
+
+    def result(self, test_id, status, *, preconditions, evidence, incidents, restoration, limits):
+        """Record the recipe/pytest verdict, never infer firmware success."""
+        if status not in {"PASS", "FAIL", "SKIP", "BLOCKED", "INDETERMINATE"}:
+            raise ValueError("Invalid qualification status")
+        if any(row["id"] == test_id for row in self.results):
+            raise ValueError("A historical verdict cannot be replaced")
+        row = {"id": test_id, "status": status, "preconditions": preconditions, "evidence": evidence,
+               "incidents": incidents, "restoration": restoration, "limits": limits}
+        self.client.record("verdicts.jsonl", row)
+        self.results.append(row)
+        self.write("report.json", {"tests": self.results, "windows": self.window + 1})
+        def cell(value):
+            return str(value).replace("|", "\\|").replace("\n", " ")
+        columns = ["id", "preconditions", "status", "evidence", "incidents", "restoration", "limits"]
+        rows = ["| " + " | ".join(columns) + " |", "| " + " | ".join(["---"] * len(columns)) + " |"]
+        rows += ["| " + " | ".join(cell(row[key]) for key in columns) + " |" for row in self.results]
+        (self.directory / "report.md").write_text("\n".join(rows) + "\n")
 
     def close(self):
         errors = []
