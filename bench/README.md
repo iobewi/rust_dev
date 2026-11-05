@@ -9,6 +9,7 @@ Cette refonte part de **`bench/audit-final` (`9938b64`)**, qui contient entière
 - [Interface d’instrumentation et parcours de connexion](docs/interface.md)
 - [Couverture de l’existant et validation matérielle restante](docs/coverage.md)
 - [Recettes pytest et client Python installable](docs/pytest.md)
+- [Méthode : rédaction, revue croisée et exécution des qualifications](docs/qualification-workflow.md)
 - [Début d'une nouvelle session Claude et utilisation du banc](docs/session-startup.md)
 - [Exemple historique de client Python asynchrone](examples/client.py)
 
