@@ -5,6 +5,75 @@ server as REST/operation broker, and recipes in consumer repositories. Do not pu
 firmware assertions or OTA business logic in the bench. No physical writes without
 explicit hardware consent; never infer one from permission to change source code.
 
+## Début de chaque nouvelle session — banc IOBEWI
+
+- Lis [la procédure de session](bench/docs/session-startup.md) avant d'utiliser le
+  banc. Lance Claude depuis la racine de ce dépôt (`/workspace` dans le
+  devcontainer). `CLAUDE.md` importe ce fichier ; `/memory` permet de vérifier
+  que les consignes sont chargées. Ne duplique pas ces règles dans une mémoire
+  personnelle qui pourrait devenir périmée.
+- Relève la branche, le SHA et les modifications locales. Vérifie Python et le
+  chemin réel du module `iobewi_bench` : ne teste pas par erreur un autre clone
+  installé en mode éditable. Dans le devcontainer, les dépendances sont déjà
+  installées ; ne reconstruis pas l'image à chaque session.
+- Commence par `GET /health` sur `BENCH_URL` (défaut
+  `http://127.0.0.1:8080`). Réutilise un serveur sain ; ne le redémarre pas pour
+  commencer une conversation. Un serveur dégradé, un port occupé par un autre
+  service ou une instance distante inaccessible doivent être diagnostiqués,
+  pas remplacés par une seconde instance.
+- Si le serveur local attendu est arrêté et qu'aucun ancien processus n'est
+  encore actif, utilise uniquement `python bench/tools/run_server.py`, depuis
+  la racine, avec le fichier privé `BENCH_TOKENS_FILE` existant et le même
+  `BENCH_STATE_DIR` persistant. La procédure décrit le premier provisionnement,
+  le lancement détaché et l'attente bornée de disponibilité.
+- Consulte ensuite `identity()` et `devices()` avec le client Python officiel,
+  sans réserver de carte. Vérifie les scopes, la carte logique, sa puce, sa
+  capacité, sa génération, sa quarantaine, sa réservation et son grant.
+  L'absence de carte ne doit pas empêcher le travail logiciel indépendant.
+- Le navigateur est **sur le PC de l'opérateur**, à `http://localhost:8080`
+  (ou au port local réellement transféré par VS Code). Lui seul sélectionne et
+  possède le port USB via Web Serial. Aucun Chromium dans le devcontainer,
+  aucun transfert USB vers Docker et aucun `espflash`, esptool ou accès
+  `/dev/tty*` pour contourner le banc. Le Python dans Docker ne parle qu'à l'API.
+- Demande la sélection du port au navigateur seulement si la tâche matérielle
+  l'exige et qu'aucun agent correspondant n'est déjà prêt. Les grants et la
+  récupération restent des gestes locaux de l'opérateur. Une sélection de port
+  peut avoir un effet sur le matériel ; elle n'est pas un prérequis à une simple
+  lecture d'état serveur. Aucun identify/reset/console/write/erase automatique.
+- Annonce brièvement l'état observé et les seuls prérequis manquants. Un
+  démarrage réussi du serveur n'est pas une preuve de disponibilité matérielle.
+  La nouvelle session ne reprend jamais une ancienne campagne implicitement.
+
+## Utilisation et fin de session
+
+- Utilise `BenchClient`, le plugin pytest, `CampaignManifest`, `Campaign` et
+  `Orchestrator` ; les recettes restent dans le dépôt consommateur ou un dossier
+  privé. Lis `bench/docs/api.md`, `bench/docs/pytest.md` et
+  `bench/docs/reliability.md` pour le scénario concerné. Ne réimplémente pas
+  l'API ni les verdicts de projet dans le serveur.
+- `--bench` autorise l'accès du test au banc ; ce n'est pas un consentement
+  d'effacement ou de programmation. Ceux-ci nécessitent les consentements
+  explicites de campagne et de commande, les scopes, les secteurs approuvés,
+  la sauvegarde vérifiée et un grant local suffisant. Les autres commandes
+  matérielles doivent aussi rester dans le périmètre demandé par l'utilisateur.
+- En cas d'interruption, aucun rejeu ni nouvelle tentative implicite de mutation.
+  Conserve les issues `indeterminate`, ferme la fenêtre de preuve et procède à
+  une récupération locale explicite. Désarmer son déclencheur après expiration
+  du grant ne réaccorde aucun droit ; les contrôles de réservation restent actifs.
+- Termine la campagne par restauration/vérification quand nécessaire, libération
+  des réservations et révocation locale du grant avant `Campaign.close()`.
+  Signale immédiatement les opérations encore incertaines et les limites du
+  nettoyage ; ne les masque pas par un redémarrage serveur.
+- Laisse le serveur sain disponible entre sessions, sauf demande d'arrêt ou
+  scénario de test autorisé. Pour un arrêt/redémarrage demandé, envoie SIGTERM
+  ou SIGHUP au **lanceur identifié**, puis attends sa fin ou le changement
+  d'epoch attendu. Ne tue pas de processus par recherche large de nom.
+- Ne supprime jamais le verrou ou la base SQLite pour débloquer le banc. Ne
+  régénère pas les tokens d'une instance existante. N'affiche ni tokens,
+  fichiers de secrets, dump flash ni journaux UART bruts dans un bilan.
+- Conserve un bilan privé : révisions, epoch/génération, preuves, opérations
+  pendantes et état final. À la session suivante, vérifie de nouveau l'état réel.
+
 ## Software checks
 
 Use Python 3.12+ and Node 22+. In `bench`:
@@ -14,6 +83,12 @@ python -m pip install -r requirements.txt -e './python[pytest]'
 python -m pytest python/tests recipes -q
 npm ci --ignore-scripts
 npm test
+```
+
+Les tests navigateur suivants sont exécutés par la CI logicielle, hors du
+devcontainer courant. Ne les installe pas au démarrage d'une session :
+
+```sh
 npx playwright install --with-deps chromium
 npm run test:browser
 ```
