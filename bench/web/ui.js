@@ -225,10 +225,15 @@ function followState() {
   $('follow-state').textContent = paused ? 'Affichage en pause · capture active' : following ? 'Suivi du direct' : 'Lecture de l’historique · capture active';
   $('follow').hidden = !paused && following;
 }
-$('uart-log').addEventListener('scroll', followState);
+let consoleHeight = $('uart-log').clientHeight;
+$('uart-log').addEventListener('scroll', () => {
+  // A resize may emit scroll before ResizeObserver; preserve follow intent.
+  if ($('uart-log').clientHeight === consoleHeight) followState();
+});
 new ResizeObserver(() => {
   if ($('workspace-consoles').hidden) return;
   if (consoleFollowing && !paused) $('uart-log').scrollTop = $('uart-log').scrollHeight;
+  consoleHeight = $('uart-log').clientHeight;
   followState();
 }).observe($('uart-log'));
 hook('follow', () => { paused = false; pausedAt = Infinity; $('pause').textContent = 'Pause affichage'; renderConsole(); $('uart-log').scrollTop = $('uart-log').scrollHeight; followState(); });
