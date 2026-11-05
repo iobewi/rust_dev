@@ -23,6 +23,7 @@ import pytest
 assert sys.version_info[:2] == (3,12)
 assert Path(iobewi_bench.__file__).resolve().is_relative_to('/workspace/bench/python')
 assert Path('/root/.claude').is_dir()
+assert os.environ['CLAUDE_CONFIG_DIR'] == '/root/.claude'
 state = Path(os.environ['BENCH_STATE_DIR'])
 state.mkdir(parents=True, exist_ok=True)
 sys.path.insert(0,'/workspace/bench')

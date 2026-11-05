@@ -89,7 +89,8 @@ Le projet est monté explicitement dans `/workspace` avec `workspaceMount`.
 Deux volumes Docker nommés sont créés automatiquement : `iobewi-bench-state`
 conserve le journal du banc, `iobewi-claude-state` conserve la configuration
 Claude dans `/root/.claude`. Aucun dossier `.claude` préexistant sur le PC n’est
-requis. Ce nouveau volume ne reprend pas automatiquement la configuration d’un
+requis. `CLAUDE_CONFIG_DIR` dirige aussi sa configuration globale vers ce volume.
+Ce nouveau volume ne reprend pas automatiquement la configuration d’un
 ancien bind mount ; configurer Claude une première fois dans le conteneur si
 nécessaire. Les reconstructions suivantes conservent les deux volumes.
 

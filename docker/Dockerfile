@@ -14,6 +14,7 @@ RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
 ENV DEBIAN_FRONTEND=noninteractive
 ENV CARGO_HOME=/opt/cargo
 ENV RUSTUP_HOME=/opt/rustup
+ENV CLAUDE_CONFIG_DIR=/root/.claude
 ENV PATH=/opt/cargo/bin:${PATH}
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
