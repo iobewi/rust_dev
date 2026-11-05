@@ -97,3 +97,13 @@ npm run test:browser
 La CI exécute les tests Python, Node, le client/les fixtures pytest et Chromium. Les recettes pytest sont un composant client séparé : le serveur ne décide toujours aucun verdict de projet. Les tests navigateur utilisent le véritable agent JavaScript et le WebSocket avec **un moteur matériel simulé**. Les tests du moteur esptool et du transport utilisent des doubles contrôlés. Les tests Python comprennent un cycle API complet : réservation, upload, programmation simulée, relecture, comparaison binaire et UART.
 
 Le stockage serveur est **éphémère et borné** : 16 Mio par artefact, 64 Mio au total, 2 048 événements par carte, 4 096 opérations, rétention d’une heure pour les artefacts et résultats terminaux. Un redémarrage change `epoch` et supprime réservations, résultats et artefacts ; aucun travail n’est rejoué. Les clients doivent exporter les données nécessaires avant expiration. Le navigateur affiche uniquement un tampon UART limité et peut l’exporter manuellement.
+
+## Fiabilisation et requalification
+
+- [Nouveaux contrats : consentement, stockage, journal durable, récupération, provenance et manifeste](docs/reliability.md)
+- [Protocole matériel S3/C3 après correction — non exécuté](docs/requalification-reliability.md)
+
+Le serveur exécutable conserve son état de récupération dans `BENCH_STATE_DIR`
+(volume privé persistant). `/health` indique si le serveur est durable ou volatile.
+Les interruptions n’autorisent aucun rejeu automatique. La qualification matérielle
+reste à exécuter explicitement sur chaque transport disponible.

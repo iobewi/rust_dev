@@ -323,3 +323,11 @@ class CoreTests(unittest.TestCase):
         self.b.upload_reserved = 0
         self.b.delete_artifact(a['id'], 'alice')
         self.assertEqual(self.b.storage()['available'], 64 * 1024 * 1024)
+
+    def test_absent_expired_and_revoked_grants_refuse_programming(self):
+        for until in [0, self.now - 1, self.now]:
+            self.b.devices['board']['grant_until'] = until
+            with self.assertRaises(Fault) as error:
+                self.submit('flash.erase', {'chip':'esp32s3'}, allow_destructive=True)
+            self.assertEqual(error.exception.code,'grant_required')
+        self.assertFalse(self.b.operations)

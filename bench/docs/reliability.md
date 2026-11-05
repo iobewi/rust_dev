@@ -9,9 +9,9 @@ No physical hardware qualification or write is performed by this work.
 | Campaign rejects any grant and loses consent | Python Campaign | explicit `allow_destructive=True`; per-command consent still mandatory; final grant must be zero |
 | No public upload | Python client | bounded file/buffer upload; SHA-256 and metadata checks; no retry |
 | Implicit console return | Python Board | `read_flash(return_console=False)` and explicit `console()` |
-| Storage full / no deletion | broker/API | capacity, owner deletion, pins for active/uncertain work (next change) |
-| Operations lost at restart | broker | durable outcome journal and strict recovery (next change) |
-| WS remains disconnected | browser agent | safe reconnect without command replay (next change) |
+| Storage full / no deletion | broker/API | capacity, owner deletion, pins for active/uncertain work |
+| Operations lost at restart | broker | durable outcome journal and strict recovery |
+| WS remains disconnected | browser agent | safe reconnect without command replay |
 
 ## Client contract
 
@@ -138,3 +138,51 @@ its new epoch/generation, without reviving old Board handles or asserting
 continuity across the gap. Existing strict epoch checks still reject a silent
 restart. An intentional quarantine can be observed in a new window; successful
 campaign cleanup still requires a recovered card and revoked grant.
+
+## Manifest and pytest orchestration
+
+`CampaignManifest(document)` validates exact version-1 fields before any bench
+operation. `Campaign(..., manifest=document, allow_destructive=True)` stores its
+canonical SHA-256 and a copy. Fields: version, id, boards (id/chip/flash_size/
+transports), write_regions (board/address/size), max_interruptions, backup_policy,
+restore_policy, grant_seconds, operator_steps, start_criteria, close_criteria,
+private_evidence. Criteria/policies are declarations to be asserted by pytest;
+they are not executed as a second recipe language. Regions are disjoint whole
+4-KiB sectors. The evidence directory must lie under the declared private root.
+Every Board command validates target identity/transport and programming sectors;
+whole-chip erase, including write-with-erase, requires a whole-chip permission.
+These client constraints never replace the server scopes and physical grant.
+
+`Orchestrator(campaign)` provides passive readiness/recovery/grant observation,
+manual gesture announcements with an interruption budget, segmented verified
+backups, explicitly consented programming with independent readback, and explicitly
+consented restoration. No method starts a sensitive action merely because it was
+listed in a manifest. Programming/readback requires both a remaining grant and reservation of
+2 × timeout + 90 s; destructive Campaign reservations default to 1800 s;
+renew reservations and ask the operator to extend grants between planned lots.
+A large restoration validates the entire backup and authorised region first,
+then programs independent aligned segments. Each write has its own consent flag
+and readback. A failure stops the sequence; it is never resumed automatically.
+
+Backups keep `.partial` files after interruption and only receive complete
+metadata after the full read. Disposable server artifacts are removed after
+verified local retention/settlement. Private backup files remain available for
+restoration. The client does not atomically snapshot dynamic flash regions.
+`Campaign.result(...)` records explicit recipe verdicts in append-only JSONL and
+consolidated JSON/Markdown tables; duplicate IDs cannot replace old verdicts.
+Never pass secret payloads as incident text or evidence labels.
+
+The devcontainer uses Python 3.12 and Node 22, installs the client/pytest and
+Chromium test prerequisites, and retains the Rust/ESP tooling. It no longer starts
+an unrelated static server on the bench port. Start the actual bench explicitly
+with an external credentials file. A named volume preserves BENCH_STATE_DIR.
+Docker image construction itself still requires validation on a Docker host.
+
+`GET /api/v1/identity` exposes effective scopes without credentials. Campaign
+preflight checks read/control and, for destructive runs, program. Parameters are
+recorded by canonical SHA-256 only. After an uncertain submission loses its
+session, `retire_after_recovery()` can retire the old handle only in a new,
+locally recovered and unreserved session. The old outcome stays uncertified.
+Generation changes now also interrupt Campaign event proof; preserve old recipes
+and create a new consumer recipe version using explicit window boundaries.
+`compare(board, backup)` performs the final independent segmented SHA-256 check.

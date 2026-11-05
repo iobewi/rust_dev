@@ -1,5 +1,6 @@
 """Local test fixture. Uses only a RAM-backed agent, never browser hardware."""
 import asyncio
+import argparse
 import json
 from pathlib import Path
 import sys
@@ -17,13 +18,16 @@ TOKENS = {
 
 
 async def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--grant", type=int, default=0)
+    args = parser.parse_args()
     runner = web.AppRunner(create_app(TOKENS), access_log=None)
     await runner.setup()
     site = web.TCPSite(runner, "127.0.0.1", 0)
     await site.start()
     url = "http://127.0.0.1:" + str(site._server.sockets[0].getsockname()[1])
     print(json.dumps({"url": url}), flush=True)
-    task = asyncio.create_task(run(url, "pytest-agent-test-token", "board", grant=0))
+    task = asyncio.create_task(run(url, "pytest-agent-test-token", "board", grant=args.grant))
     try:
         await asyncio.Event().wait()
     finally:

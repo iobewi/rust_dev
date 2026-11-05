@@ -1,53 +1,43 @@
 {
-    "name": "Embewi ESP32 Rust",
-
+    "name": "IOBEWI Rust ESP and hardware bench",
     "build": {
         "dockerfile": "../docker/Dockerfile",
         "context": ".."
     },
-
     "workspaceFolder": "/workspace",
-
     "mounts": [
         "source=${localWorkspaceFolder},target=/workspace,type=bind",
-        "source=.claude,target=/root/.claude,type=bind"
+        "source=.claude,target=/root/.claude,type=bind",
+        "source=iobewi-bench-state,target=/root/.local/state/iobewi-bench,type=volume"
     ],
-
     "forwardPorts": [
         8080
     ],
-
     "portsAttributes": {
         "8080": {
-            "label": "ESP Web Tools",
+            "label": "IOBEWI hardware bench",
             "onAutoForward": "notify"
         }
     },
-
     "containerEnv": {
-        "RUST_BACKTRACE": "1"
+        "RUST_BACKTRACE": "1",
+        "BENCH_STATE_DIR": "/root/.local/state/iobewi-bench"
     },
-
     "customizations": {
         "vscode": {
             "extensions": [
                 "rust-lang.rust-analyzer",
                 "tamasfe.even-better-toml"
             ],
-
             "settings": {
                 "rust-analyzer.check.command": "check",
-
                 "git.autoRepositoryDetection": "subFolders",
                 "git.repositoryScanMaxDepth": 2,
                 "git.detectSubmodules": true
             }
         }
     },
-
-    "postCreateCommand": "bash -lc '. /opt/esp/export-esp.sh && rustc --version && cargo --version && espup --version && espflash --version && esp-generate --version'",
-
-    "postStartCommand": "bash -lc 'mkdir -p /workspace/web; [ -f /tmp/http-server.pid ] && kill $(cat /tmp/http-server.pid) 2>/dev/null; nohup setsid /usr/local/bin/http-server /workspace/web -p 8080 -c-1 > /tmp/http-server.log 2>&1 </dev/null & echo $! > /tmp/http-server.pid; exit 0'",
-
+    "postCreateCommand": "bash -lc '. /opt/esp/export-esp.sh && rustc --version && cargo --version && espup --version && espflash --version && esp-generate --version && python -m pip install -e \"/workspace/bench/python[pytest]\" && cd /workspace/bench && npm ci --ignore-scripts && npx playwright install --with-deps chromium'",
+    "postStartCommand": "python --version && node --version",
     "remoteUser": "root"
 }

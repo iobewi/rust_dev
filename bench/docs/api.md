@@ -162,3 +162,21 @@ Si le contrôleur disparaît du bus, aucune commande USB ne peut le réinitialis
 Sources : [modes de reset Espressif](https://docs.espressif.com/projects/esptool/en/latest/esp32s3/esptool/advanced-options.html)
 et [séquence hard_reset Espressif](https://github.com/espressif/esp-pylib/blob/master/esp_pylib/serial_reset.py).
 Cette méthode doit encore être qualifiée sur la carte et le navigateur réels.
+
+## Reliability additions (protocol v1, server/client 0.2)
+
+See [reliability contracts](reliability.md) for the complete guarantees and limits.
+
+- `GET /health`: adds durability and observed/declared build provenance.
+- `GET /api/v1/identity`: authenticated client ID and effective scopes, no token.
+- `GET /api/v1/devices`: adds agent-reported provenance and local recovery time.
+- `GET /api/v1/artifacts`: adds byte capacity counters and per-artifact pins.
+- `POST /api/v1/artifacts`: requires Content-Length, reserves capacity before body
+  admission; 503 capacity is definitive refusal and not a request to retry.
+- `DELETE /api/v1/artifacts/{id}`: control scope plus ownership; 409 artifact_in_use
+  for active/uncertain/unacknowledged execution, 403 for another owner's artifact.
+- WebSocket registered replies include quarantine. Old-generation results are
+  refused. Grants are never restored by server/browser reconnection.
+- Durable operation views preserve their original epoch/result metadata and expose
+  reconciliation_required, reconciled_at/generation, and result_sha256 where
+  applicable. Journal failure is 503 journal_unavailable and fails execution closed.

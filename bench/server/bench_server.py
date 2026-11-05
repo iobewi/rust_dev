@@ -115,6 +115,12 @@ async def health(request):
                        'build': request.app[BUILD]})
 
 
+async def identity(request):
+    who = request[IDENTITY]
+    require(who['role'] == 'client', 'forbidden', 'Client required', 403)
+    return json_reply({'id': who['id'], 'scopes': who['scopes']})
+
+
 async def devices(request):
     b = request.app[BROKER]; b.sweep()
     return json_reply({'devices': [b.view(d) for d in b.devices.values()],
@@ -344,15 +350,17 @@ def create_app(tokens, broker=None, origin=None, ui_forward_peers=()):
                                            stderr=subprocess.DEVNULL, text=True, timeout=2).strip()
     except (OSError, subprocess.SubprocessError):
         revision = None
+    declared = os.environ.get("BENCH_BUILD_SHA", "")
+    declared = declared if len(declared) in {40, 64} and all(c in "0123456789abcdef" for c in declared) else None
     app[BUILD] = {'version': '0.2.0', 'git_sha': revision,
         'server_sha256': source_digest(list(Path(__file__).parent.glob('*.py')) + list((PAGES.parent / 'protocol').glob('*.py'))),
         'assets_sha256': source_digest(PAGES.glob('*')),
-        'source': 'observed_local_files', 'declared_build_sha': os.environ.get('BENCH_BUILD_SHA')}
+        'source': 'observed_local_files', 'declared_build_sha': declared}
     app[UI_ACCESS] = access
     app[SESSIONS] = UISessions(app[BROKER].clock, allowed)
     app.cleanup_ctx.append(dispatcher)
     app.add_routes([web.get('/health', health), web.get('/agent/v1/ws', websocket), web.post('/session/v1/open', browser_session),
-                    web.get('/api/v1/devices', devices), web.post('/api/v1/leases', leases),
+                    web.get('/api/v1/identity', identity), web.get('/api/v1/devices', devices), web.post('/api/v1/leases', leases),
                     web.get('/api/v1/leases/{id}', leases), web.patch('/api/v1/leases/{id}', leases),
                     web.delete('/api/v1/leases/{id}', leases),
                     web.post('/api/v1/operations', operations), web.post('/api/v1/manual-operations', operations), web.get('/api/v1/operations/{id}', operations),

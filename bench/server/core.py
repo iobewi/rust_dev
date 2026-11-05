@@ -99,7 +99,7 @@ class Broker:
             'id': device_id, 'agent': agent_id, 'generation': generation, 'connected': True,
             'provenance': copy.deepcopy(provenance), 'provenance_source': 'agent_reported',
             'http_origins': origins, 'chip': data['chip'], 'flash_size': data['flash_size'], 'capabilities': caps,
-            'grant_until': 0, 'quarantined': bool(old and old['quarantined']) or data.get('hold') is True,
+            'grant_until': 0, 'recovered_at': None, 'quarantined': bool(old and old['quarantined']) or data.get('hold') is True,
             'events': old['events'] if old else deque(maxlen=self.max_events),
             'seq': old['seq'] if old else 0, 'source_seq': 0,
         }
@@ -154,7 +154,8 @@ class Broker:
             if op['state'] in TERMINAL and now - op['created'] > 3600 and not self.operation_pins(op):
                 del self.operations[key]
         for key, lease in list(self.leases.items()):
-            if not lease['active'] and now - lease['until'] > 3600:
+            if not lease['active'] and now - lease['until'] > 3600 and not any(
+                    op['lease'] == key and self.operation_pins(op) for op in self.operations.values()):
                 del self.leases[key]
         for key, art in list(self.artifacts.items()):
             if now - art['created'] > 3600 and not self.artifact_pinned(key):
@@ -451,6 +452,7 @@ class Broker:
             require(not any(o['device'] == d['id'] and o['unsettled'] for o in self.operations.values()),
                     'still_running', 'Hardware execution is still unsettled', 409)
             d['quarantined'] = False
+            d['recovered_at'] = time.time()
             for op in self.operations.values():
                 if op['device'] == d['id'] and (op['state'] == 'indeterminate' or op.get('reconciliation_required')):
                     op['reconciled'] = True
