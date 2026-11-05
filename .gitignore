@@ -21,5 +21,6 @@
 !/.github/workflows/devcontainer.yml
 
 !/AGENTS.md
+!/CLAUDE.md
 
 **/__pycache__/
