@@ -173,6 +173,10 @@ See [reliability contracts](reliability.md) for the complete guarantees and limi
 - `GET /api/v1/artifacts`: adds byte capacity counters and per-artifact pins.
 - `POST /api/v1/artifacts`: requires Content-Length, reserves capacity before body
   admission; 503 capacity is definitive refusal and not a request to retry.
+  Agent readbacks send `X-Bench-Artifact-Role: agent`; cookie authentication binds
+  this role to the session's connected agent, without accepting an agent ID from
+  the request. Bearer client credentials cannot assert this role. Uploads without
+  this header keep their authenticated client/agent ownership.
 - `DELETE /api/v1/artifacts/{id}`: control scope plus ownership; 409 artifact_in_use
   for active/uncertain/unacknowledged execution, 403 for another owner's artifact.
 - WebSocket registered replies include quarantine. Old-generation results are

@@ -5,12 +5,12 @@ import { EspEngine } from '../web/esp-engine.js';
 
 function fixture() {
  globalThis.location={href:'http://localhost:8080',protocol:'http:'};
- const sockets=[],scheduled=[],states=[];
+ const sockets=[],scheduled=[],states=[],cancelled=[];
  const engine={hold:false,busy:false,persistHold(){},setHold(v){this.hold=v;},cancelTrigger(){}};
  const agent=new Agent({engine,device:{id:'board'},token:'test-token',reconnect:true,
-  schedule:fn=>{scheduled.push(fn);return scheduled.length;},cancel(){},onState:s=>states.push(s),
-  socketFactory:()=>{const socket={readyState:1,sent:[],send(s){this.sent.push(JSON.parse(s));},close(){this.onclose();}};sockets.push(socket);return socket;}});
- return {agent,engine,sockets,scheduled,states};
+  schedule:fn=>{scheduled.push(fn);return scheduled.length;},cancel:id=>cancelled.push(id),onState:s=>states.push(s),
+  socketFactory:()=>{const socket={readyState:1,sent:[],send(s){this.sent.push(JSON.parse(s));},close(){this.readyState=3;this.onclose();}};sockets.push(socket);return socket;}});
+ return {agent,engine,sockets,scheduled,states,cancelled};
 }
 
 test('server reconnect gets a new generation, revokes grant and never replays pending/result messages', async()=>{
@@ -43,4 +43,32 @@ test('WebSerial provenance distinguishes observed identifiers from inferred tran
   const engine=new EspEngine({getInfo:()=>({usbVendorId:vid,usbProductId:pid})},{},()=>{});
   assert.deepEqual(engine.provenance(),{usb_vid:vid,usb_pid:pid,transport,transport_basis:'inferred_from_webserial_vid_pid'});
  }
+});
+
+test('manual reconnect reuses the agent and cancels its scheduled automatic retry',()=>{
+ const x=fixture();x.agent.connect();x.agent.generation='old';x.agent.awaitingResult={id:'lost-result'};
+ x.sockets[0].close();const timer=x.agent.reconnectTimer;assert.ok(timer);
+ x.agent.reconnectNow();
+ assert.ok(x.cancelled.includes(timer));assert.equal(x.agent.reconnectTimer,null);
+ assert.equal(x.sockets.length,2);assert.equal(x.engine.hold,true);
+ assert.equal(x.agent.orphanedOperation,'lost-result');assert.equal(x.agent.awaitingResult,null);
+ assert.throws(()=>x.agent.reconnectNow());assert.equal(x.sockets.length,2);
+});
+
+test('manual reconnect cannot interrupt result finalization',()=>{
+ const x=fixture();x.agent.connect();x.sockets[0].close();
+ x.agent.awaitingResult={id:'finishing',finalizing:true};
+ assert.throws(()=>x.agent.reconnectNow());assert.equal(x.sockets.length,1);
+});
+
+test('agent artifact uploads explicitly identify their role without exposing a browser identity',async()=>{
+ const original=globalThis.fetch,calls=[];
+ globalThis.fetch=async(url,options)=>{calls.push({url,options});return {ok:true,json:async()=>({id:'readback'})};};
+ try {
+  const x=fixture();x.agent.token=undefined;
+  await x.agent.artifact(null,new Uint8Array([1,2,3]));
+  assert.equal(calls[0].options.headers['X-Bench-Artifact-Role'],'agent');
+  assert.equal(calls[0].options.headers.Authorization,undefined);
+  assert.deepEqual(Object.keys(calls[0].options.headers).sort(),['X-Bench-Artifact-Role','X-SHA256']);
+ } finally {globalThis.fetch=original;}
 });

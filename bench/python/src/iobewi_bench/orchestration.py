@@ -1,9 +1,23 @@
 """Small explicit Python primitives for pytest recipes, without a recipe language."""
 import hashlib
 import json
+import os
 from pathlib import Path
 
 from .client import BenchError, _duration
+
+
+def _sync_directory(path):
+    descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _sync_file(stream):
+    stream.flush()
+    os.fsync(stream.fileno())
 
 
 class Orchestrator:
@@ -33,26 +47,48 @@ class Orchestrator:
         if type(size) is not int or size <= 0 or type(segment_size) is not int or not 1 <= segment_size <= 16*1024*1024:
             raise ValueError('Invalid backup size or segment size')
         path = board.output_dir / filename if board.output_dir else None
-        if path is None or Path(filename).name != filename:
+        if path is None or Path(filename).name != filename or filename in {'.', '..'} or path.suffix == '.json':
             raise ValueError('Backup requires a private output directory and a plain filename')
         if path.exists() or path.with_suffix('.json').exists():
             raise FileExistsError('Backup evidence already exists')
         digest, segments = hashlib.sha256(), []
         partial = path.with_name(path.name + '.partial')
-        with partial.open('xb') as stream:
+        progress = path.with_name(path.name + '.partial.jsonl')
+        with partial.open('x+b') as stream, progress.open('x') as journal:
+            _sync_directory(path.parent)
             for offset in range(0,size,segment_size):
                 count = min(segment_size,size-offset)
                 data = board.read_flash(address=address+offset,size=count,timeout=timeout,return_console=False)
-                stream.write(data);digest.update(data)
+                if len(data) != count:
+                    raise BenchError('Backup segment size mismatch')
+                stream.write(data)
+                _sync_file(stream)
+                stream.seek(offset)
+                if stream.read(count) != data:
+                    raise BenchError('Local backup segment readback mismatch')
+                digest.update(data)
                 artifact = board.last_operation['result']['artifact']
                 segments.append({'address':address+offset,'size':count,'sha256':hashlib.sha256(data).hexdigest(),
                                  'operation':board.last_operation['id']})
-                # Local verified bytes are now retained; only settled disposable artifacts are deleted.
+                journal.write(json.dumps(segments[-1]) + '\n')
+                _sync_file(journal)
+                # Durable bytes and their region/hash are retained before server cleanup.
                 board.client.delete_artifact(artifact['id'])
-        partial.rename(path)
+        # Publish without replacing any evidence created since preflight.
+        os.link(partial, path)
+        _sync_directory(path.parent)
         metadata = {'address':address,'size':size,'sha256':digest.hexdigest(),'complete':True,
                     'consistency':'sequential_observations','segments':segments}
-        path.with_suffix('.json').write_text(json.dumps(metadata,indent=2))
+        sidecar = path.with_suffix('.json')
+        temporary = sidecar.with_name(sidecar.name + '.partial')
+        with temporary.open('x') as file:
+            file.write(json.dumps(metadata,indent=2))
+            _sync_file(file)
+        os.link(temporary, sidecar)
+        _sync_directory(path.parent)
+        for retained in (partial, progress, temporary):
+            retained.unlink()
+        _sync_directory(path.parent)
         return path, metadata
 
     def program(self, board, *, address, source, sha256, allow_destructive=False, timeout=600):
@@ -97,21 +133,25 @@ class Orchestrator:
         if not metadata.get('complete'):
             raise BenchError('Backup is incomplete')
         # Validate the entire original before executing the first restoration segment.
-        digest = hashlib.sha256()
-        with path.open('rb') as stream:
-            for chunk in iter(lambda:stream.read(1024*1024),b''):
-                digest.update(chunk)
-        if path.stat().st_size != metadata['size'] or digest.hexdigest() != metadata['sha256']:
-            raise BenchError('Backup integrity mismatch')
         if metadata['address'] % 4096 or metadata['size'] % 4096:
             raise BenchError('Restoration requires a complete set of backed-up erase sectors')
         self.campaign.manifest.check_region(board.device_id,metadata['address'],metadata['size'])
         with path.open('rb') as stream:
+            digest, checked_segments, checked_size = hashlib.sha256(), [], 0
+            for data in iter(lambda:stream.read(4*1024*1024),b''):
+                digest.update(data)
+                checked_size += len(data)
+                checked_segments.append(hashlib.sha256(data).hexdigest())
+            if checked_size != metadata['size'] or digest.hexdigest() != metadata['sha256']:
+                raise BenchError('Backup integrity mismatch')
+            stream.seek(0)
             offset = 0
-            while offset < metadata['size']:
+            for expected_hash in checked_segments:
                 data = stream.read(min(4*1024*1024,metadata['size']-offset))
+                if hashlib.sha256(data).hexdigest() != expected_hash:
+                    raise BenchError('Backup changed after integrity verification')
                 self.program(board,address=metadata['address']+offset,source=data,
-                    sha256=hashlib.sha256(data).hexdigest(),allow_destructive=True,timeout=timeout)
+                    sha256=expected_hash,allow_destructive=True,timeout=timeout)
                 offset += len(data)
         return {'restored':True,'size':metadata['size'],'sha256':metadata['sha256']}
 

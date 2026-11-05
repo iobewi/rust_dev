@@ -21,13 +21,19 @@ export class Agent {
       this.reconnectTimer = null;
       if (this.stopped) return;
       if (this.active || this.engine.busy || this.awaitingResult?.finalizing) { this.retryConnection(); return; }
-      if (this.awaitingResult) {
-        this.orphanedOperation = this.awaitingResult.id;
-        this.awaitingResult = null; this.engine.setHold(true); this.activity();
-      }
-      this.pending = null; this.deferredOffer = null;
-      this.connect();
+      this.reconnectNow();
     }, 1000);
+  }
+  reconnectNow() {
+    if (this.active || this.engine.busy || this.awaitingResult?.finalizing || [0, 1, 2].includes(this.socket?.readyState)) {
+      throw new Error('Agent déjà connecté ou matériel occupé');
+    }
+    if (this.awaitingResult) {
+      this.orphanedOperation = this.awaitingResult.id;
+      this.awaitingResult = null; this.engine.setHold(true); this.activity();
+    }
+    this.pending = null; this.deferredOffer = null;
+    this.connect();
   }
   connect() {
     this.stopped = false; this.cancel(this.reconnectTimer); this.reconnectTimer = null;
@@ -88,7 +94,7 @@ export class Agent {
     try {
       const response = await fetch('/api/v1/artifacts' + (id ? '/' + id : ''), {
         method: id ? 'GET' : 'POST', headers: { ...(this.token ? { Authorization: 'Bearer ' + this.token } : {}),
-          ...(bytes ? { 'X-SHA256': await sha256(bytes) } : {}) }, ...(bytes ? { body: bytes } : {}),
+          ...(bytes ? { 'X-SHA256': await sha256(bytes), 'X-Bench-Artifact-Role': 'agent' } : {}) }, ...(bytes ? { body: bytes } : {}),
       });
       if (!response.ok) {
         // Keep only a known code; never include arbitrary response text.

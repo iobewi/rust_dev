@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import sys
 import unittest
 from pathlib import Path
@@ -6,7 +7,7 @@ from types import SimpleNamespace
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from aiohttp import CookieJar
 from aiohttp.test_utils import TestClient, TestServer
-from server.bench_server import create_app, SESSIONS
+from server.bench_server import create_app, SESSIONS, BROKER
 from server.ui_sessions import local_request
 from protocol import Fault
 from test_http import TOKENS, ALICE, BOB
@@ -35,7 +36,7 @@ class BrowserSessionTests(unittest.IsolatedAsyncioTestCase):
         await self.ws.send_json({'type': 'auth', 'version': 1})
         self.assertEqual((await self.ws.receive_json())['type'], 'welcome')
         await self.ws.send_json({'type': 'register', 'device': {'id': 'board', 'chip': 'esp32s3', 'flash_size': 4194304,
-            'capabilities': ['identify', 'reset', 'flash.erase']}})
+            'capabilities': ['identify', 'reset', 'flash.erase', 'flash.read']}})
         self.generation = (await self.ws.receive_json())['generation']
 
     async def test_client_only_config_needs_no_agent_token_for_the_local_page(self):
@@ -118,6 +119,53 @@ class BrowserSessionTests(unittest.IsolatedAsyncioTestCase):
         r = await self.client.get('/api/v1/devices'); self.assertEqual(r.status, 401)
         frame = await self.ws.receive(timeout=2)
         self.assertNotEqual(frame.type.name, 'TEXT')
+
+    async def test_cookie_agent_readback_is_pinned_then_cleanable_by_api_operation_owner(self):
+        await self.agent()
+        r = await self.client.post('/api/v1/leases',json={'device':'board','ttl':60},headers=ALICE)
+        lease = await r.json()
+        r = await self.client.post('/api/v1/operations',headers=ALICE,json={'lease':lease['id'],
+            'command':'flash.read','args':{'address':0,'size':4096}})
+        self.assertEqual(r.status,202)
+        op = await r.json()
+        offer = await self.ws.receive_json()
+        await self.ws.send_json({'type':'ready','id':offer['id']})
+        self.assertEqual((await self.ws.receive_json())['type'],'execute')
+        data = b'x'*4096
+        headers = {**self.headers,'X-SHA256':hashlib.sha256(data).hexdigest(),
+            'X-Bench-Artifact-Role':'agent'}
+        r = await self.client.post('/api/v1/artifacts',data=data,headers=headers)
+        self.assertEqual(r.status,201)
+        artifact = await r.json()
+        broker = self.app[BROKER]
+        self.assertTrue(broker.artifact_pinned(artifact['id']))
+        r = await self.client.delete('/api/v1/artifacts/'+artifact['id'],headers=self.headers)
+        self.assertNotEqual(r.status,200)
+        await self.ws.send_json({'type':'result','id':op['id'],'state':'completed','result':{'artifact':artifact}})
+        self.assertEqual((await self.ws.receive_json())['type'],'result_ack')
+        await self.ws.send_json({'type':'settled','device':'board','generation':self.generation,'id':op['id']})
+        for _ in range(50):
+            r = await self.client.get('/api/v1/operations/'+op['id'],headers=ALICE)
+            if (await r.json())['settled']: break
+            await asyncio.sleep(.01)
+        r = await self.client.delete('/api/v1/artifacts/'+artifact['id'],headers=BOB)
+        self.assertEqual(r.status,403)
+        r = await self.client.delete('/api/v1/artifacts/'+artifact['id'],headers=ALICE)
+        self.assertEqual(r.status,200)
+
+    async def test_artifact_role_cannot_forge_agent_identity_or_relabel_client_uploads(self):
+        await self.agent()
+        data = b'x'
+        digest = hashlib.sha256(data).hexdigest()
+        for headers in [{**ALICE,'X-Bench-Artifact-Role':'agent'},
+                        {**self.headers,'X-Bench-Artifact-Role':'arbitrary-agent'}]:
+            r = await self.client.post('/api/v1/artifacts',data=data,headers={**headers,'X-SHA256':digest})
+            self.assertIn(r.status,{400,403})
+        r = await self.client.post('/api/v1/artifacts',data=data,headers={**self.headers,'X-SHA256':digest})
+        self.assertEqual(r.status,201)
+        artifact = await r.json()
+        r = await self.client.delete('/api/v1/artifacts/'+artifact['id'],headers=self.headers)
+        self.assertEqual(r.status,200)
 
 class LocalBoundaryTests(unittest.TestCase):
     def test_private_network_and_rebinding_hosts_cannot_bootstrap_a_privileged_session(self):

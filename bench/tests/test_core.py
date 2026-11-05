@@ -324,6 +324,26 @@ class CoreTests(unittest.TestCase):
         self.b.delete_artifact(a['id'], 'alice')
         self.assertEqual(self.b.storage()['available'], 64 * 1024 * 1024)
 
+    def test_recovery_releases_terminal_unsettled_result_without_changing_verdict(self):
+        for state in ['completed','failed','cancelled']:
+            with self.subTest(state=state):
+                self.setUp()
+                artifact = self.b.artifact(b'x',hashlib.sha256(b'x').hexdigest(),'client:alice')
+                op = self.start(command='flash.write',args={'chip':'esp32s3','images':[
+                    {'artifact':artifact['id'],'sha256':artifact['sha256'],'address':65536}]},allow_destructive=True)
+                self.b.finish('agent',{'id':op['id'],'state':state,'result':{'verified':state=='completed'}})
+                self.b.disconnect('agent')
+                self.b.agent('agent',object())
+                generation = self.b.register('agent',{'id':'board','chip':'esp32s3',
+                    'flash_size':4194304,'capabilities':['identify']},['board'])
+                self.assertTrue(self.b.artifact_pinned(artifact['id']))
+                self.b.agent_event('agent',{'type':'recover','device':'board','generation':generation})
+                observed = self.b.operation(op['id'],'alice')
+                self.assertEqual(observed['state'],state)
+                self.assertEqual(observed['result'],{'verified':state=='completed'})
+                self.assertTrue(observed['settled'])
+                self.b.delete_artifact(artifact['id'],'alice')
+
     def test_absent_expired_and_revoked_grants_refuse_programming(self):
         for until in [0, self.now - 1, self.now]:
             self.b.devices['board']['grant_until'] = until

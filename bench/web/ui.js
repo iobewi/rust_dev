@@ -411,6 +411,7 @@ async function attach(port, expectedIdentity = null) {
 function connectAgent() {
   if (!engine || !localDevice || !portConnected) throw new Error('Connectez d’abord un port Web Serial');
   if (!session) throw new Error('Session locale du banc indisponible');
+  if (agent) { agent.reconnectNow(); return; }
   if (engine.busy || agent?.active || [0, 1, 2].includes(agent?.socket?.readyState)) throw new Error('Agent déjà connecté ou matériel occupé');
   if (agent?.awaitingResult) engine.setHold(true);
   agent = new Agent({ engine, device: localDevice, onLog: logAgent, onActivity: activity, onState: state => {

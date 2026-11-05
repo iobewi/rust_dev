@@ -168,6 +168,15 @@ Backups keep `.partial` files after interruption and only receive complete
 metadata after the full read. Disposable server artifacts are removed after
 verified local retention/settlement. Private backup files remain available for
 restoration. The client does not atomically snapshot dynamic flash regions.
+Each segment is flushed, synchronized with `fsync`, and read back locally before
+deleting its server artifact. A synchronized `.partial.jsonl` records its region,
+operation and digest; disk failures stop cleanup. Final binary and JSON files are
+published without replacing existing evidence, with directory synchronization.
+Backup names ending in `.json` are refused before hardware access because that
+suffix is reserved for metadata. Interrupted files stay available for inspection;
+they do not become a complete backup automatically. Restoration also checks each
+segment against the hashes captured during full-file verification, so modifying
+the source between segments stops the next write.
 `Campaign.result(...)` records explicit recipe verdicts in append-only JSONL and
 consolidated JSON/Markdown tables; duplicate IDs cannot replace old verdicts.
 Never pass secret payloads as incident text or evidence labels.
@@ -177,6 +186,14 @@ Chromium test prerequisites, and retains the Rust/ESP tooling. It no longer star
 an unrelated static server on the bench port. Start the actual bench explicitly
 with an external credentials file. A named volume preserves BENCH_STATE_DIR.
 Docker image construction itself still requires validation on a Docker host.
+
+Browser agent uploads use `X-Bench-Artifact-Role: agent`. For cookie sessions the
+server binds this role to the authenticated session's connected WebSocket agent;
+an API client cannot provide an arbitrary agent identity. Ordinary browser client
+uploads keep client ownership. This protects readbacks before result association
+and lets the operation's API owner clean them after settlement. Manual server
+reconnection reuses the existing Agent and cancels its automatic retry, preserving
+holds and never replaying an abandoned result or command.
 
 `GET /api/v1/identity` exposes effective scopes without credentials. Campaign
 preflight checks read/control and, for destructive runs, program. Parameters are

@@ -194,6 +194,14 @@ async def event_stream(request):
 async def artifacts(request):
     b = request.app[BROKER]; b.sweep()
     if request.method == 'POST':
+        identity = request[IDENTITY]
+        owner = identity['role'] + ':' + identity['id']
+        artifact_role = request.headers.get('X-Bench-Artifact-Role')
+        if artifact_role is not None:
+            require(artifact_role == 'agent', 'invalid_request', 'Invalid artifact role', 400)
+            agent_id = identity['id'] if identity['role'] == 'agent' else identity.get('local_agent')
+            require(agent_id in b.agents, 'forbidden', 'Connected authenticated agent required', 403)
+            owner = 'agent:' + agent_id
         size = request.content_length
         require(size is not None, 'length_required', 'Content-Length required', 411)
         require(0 < size <= MAX_ARTIFACT, 'artifact_size', 'Invalid artifact size', 413)
@@ -204,9 +212,7 @@ async def artifacts(request):
             require(len(data) == size, 'artifact_size', 'Incomplete artifact', 400)
         finally:
             b.upload_reserved -= size
-        identity = request[IDENTITY]
-        return json_reply(b.artifact(data, request.headers.get('X-SHA256'),
-                                     identity['role'] + ':' + identity['id']), 201)
+        return json_reply(b.artifact(data, request.headers.get('X-SHA256'), owner), 201)
     if 'id' not in request.match_info:
         require(request[IDENTITY]['role'] == 'client', 'forbidden', 'Client required', 403)
         return json_reply({'storage': b.storage(), 'artifacts': [

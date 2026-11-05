@@ -45,7 +45,33 @@ PRs: [#6](https://github.com/iobewi/rust_dev/pull/6) client;
 [#9](https://github.com/iobewi/rust_dev/pull/9) browser/provenance;
 [#10](https://github.com/iobewi/rust_dev/pull/10) orchestration/devcontainer.
 
-## Remaining acceptance
+## Follow-up review
+
+The final stacked branch also corrects the remaining review findings:
+
+- Refuse `.json` backup names before reading hardware, preventing binary/metadata
+  aliasing. Publish binary and sidecar without overwriting concurrent evidence.
+- Sync and independently reread each local segment, then sync its region/hash
+  record before deleting the server artifact. Injected directory/data/journal
+  sync failures preserve the server artifact. Interrupted files remain partial.
+- Recheck restoration segments against the initial full-file verification; a
+  reference changed between segments cannot supply a newly accepted write hash.
+- Bind cookie-authenticated readback uploads to their connected browser agent
+  using an explicit role header. Preserve ordinary client upload ownership and
+  refuse role assertion by external bearer clients. HTTP tests cover pre-result
+  pinning, cross-owner refusal, settlement and API-owner cleanup.
+- Reuse the existing agent for manual reconnection and cancel its pending retry;
+  do not replace it with a second competing agent. Block result finalization.
+- Confirm by regression test that completed/failed/cancelled results awaiting
+  settlement can be reconciled locally after a generation change, retaining their
+  verdicts/results and releasing artifact pins. The implementation is in PR #8.
+
+Local follow-up validation: **82 pytest PASS**, **9 hardware tests SKIP**,
+**74 server tests PASS**, **105 Node tests PASS**. Browser validation for this
+follow-up must be checked in the new GitHub run; the previous green run applies
+only to `609ae68`. No Docker host or physical board is available here.
+
+## Outstanding acceptance
 
 Physical requalification remains **NOT EXECUTED** for S3/C3 and each available
 transport. Follow [the explicit protocol](../docs/requalification-reliability.md)
