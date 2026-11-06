@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {EspEngine} from '../web/esp-engine.js';
 import {fakeLoader} from './fakes.mjs';
 import {sha256} from '../web/protocol.js';
+import {HardwareError} from '../web/hardware-errors.js';
 
 async function setup(overrides={}){
  const engine=new EspEngine({getInfo:()=>({})},{},()=>{});const loader=fakeLoader(overrides);
@@ -144,4 +145,50 @@ test('a rejected reader cancellation does not skip Web Serial close',async()=>{
  let closes=0;const port={getInfo:()=>({}),async close(){closes++;}};
  const engine=new EspEngine(port,{},()=>{});engine.mode='console';engine.reader={cancel:async()=>{throw new Error('reader already lost');}};engine.readDone=Promise.resolve();
  await engine.close();assert.equal(closes,1);assert.equal(engine.mode,'off');
+});
+
+// ---- boot.download: atomic IO0 + EN sequence (external UART bridge only). SIMULATION: no real signal is driven. ----
+const uartPort=(signals,{failAt=null,failRelease=false}={})=>({getInfo:()=>({usbVendorId:0x10c4,usbProductId:0xea60}),
+ setSignals:async value=>{signals.push(value);if(failAt===signals.length)throw new Error('signal failed');
+  if(failRelease&&value.dataTerminalReady===false&&value.requestToSend===false)throw new Error('release failed');}});
+
+test('boot.download drives IO0 low, resets EN with IO0 still low, holds, then releases both lines',async()=>{
+ const signals=[],engine=new EspEngine(uartPort(signals),{},()=>{});engine.mode='console';
+ assert.equal(engine.capabilities().includes('boot.download'),true);
+ const result=await engine.execute('boot.download',{hold_ms:100},{check(){}});
+ assert.deepEqual(result,{download_mode_requested:true,method:'en+io0',hold_ms:100,boot_verified:false});
+ assert.deepEqual(signals,[{dataTerminalReady:true,requestToSend:true},{dataTerminalReady:true,requestToSend:false},{dataTerminalReady:false,requestToSend:false}]);
+ assert.equal(engine.busy,false);assert.equal(engine.mode,'console');assert.equal(engine.hold,false);
+});
+
+test('boot.download is never offered nor attempted on a native USB port, and needs the console',async()=>{
+ for(const info of [{usbVendorId:0x303a,usbProductId:0x1001},{usbVendorId:0x303a},{usbVendorId:0x303a,usbProductId:0x4001}]){
+  const signals=[],engine=new EspEngine({getInfo:()=>info,setSignals:async v=>signals.push(v)},{},()=>{});engine.mode='console';
+  assert.equal(engine.capabilities().includes('boot.download'),false);
+  await assert.rejects(engine.execute('boot.download',{hold_ms:100},{check(){}}),e=>e.code==='external_uart_required');
+  assert.deepEqual(signals,[]);
+ }
+ const signals=[],engine=new EspEngine(uartPort(signals),{},()=>{});engine.mode='loader';
+ await assert.rejects(engine.execute('boot.download',{hold_ms:100},{check(){}}),e=>e.code==='console_required');assert.deepEqual(signals,[]);
+});
+
+test('boot.download releases both lines when the lease or grant ends during the hold, without retrying',async()=>{
+ const signals=[],engine=new EspEngine(uartPort(signals),{},()=>{});engine.mode='console';
+ let calls=0;
+ await assert.rejects(engine.execute('boot.download',{hold_ms:3000},{check(){if(++calls>3)throw new HardwareError('grant_expired');}}),e=>e.code==='grant_expired');
+ assert.deepEqual(signals.at(-1),{dataTerminalReady:false,requestToSend:false});
+ assert.equal(signals.filter(s=>s.dataTerminalReady===true&&s.requestToSend===true).length,1);
+ assert.equal(engine.busy,false);
+});
+
+test('boot.download releases both lines when a signal write fails midway',async()=>{
+ const signals=[],engine=new EspEngine(uartPort(signals,{failAt:2}),{},()=>{});engine.mode='console';
+ await assert.rejects(engine.execute('boot.download',{hold_ms:100},{check(){}}),e=>e.code==='hardware_command_failed');
+ assert.deepEqual(signals.at(-1),{dataTerminalReady:false,requestToSend:false});assert.equal(engine.hold,false);
+});
+
+test('a failed release puts the engine in operator recovery instead of reporting an idle card',async()=>{
+ const signals=[],engine=new EspEngine(uartPort(signals,{failRelease:true}),{},()=>{});engine.mode='console';
+ await assert.rejects(engine.execute('boot.download',{hold_ms:100},{check(){}}),e=>e.code==='signal_release_failed');
+ assert.equal(engine.hold,true);
 });

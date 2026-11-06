@@ -11,7 +11,7 @@ import time
 from aiohttp import ClientSession
 
 CAPS = ['identify', 'reset', 'partitions', 'flash.read', 'flash.write', 'flash.erase',
-        'uart.write', 'uart.configure', 'console', 'io0', 'mark', 'trigger']
+        'uart.write', 'uart.configure', 'console', 'io0', 'boot.download', 'mark', 'trigger']
 
 
 class SimFailure(Exception):
@@ -64,6 +64,8 @@ class SimDevice:
             if not rows:
                 raise SimFailure('partition_table_invalid')
             return {'partitions': rows, 'simulated': True}
+        if name == 'boot.download':
+            return {'download_mode_requested': True, 'method': 'en+io0', 'hold_ms': args['hold_ms'], 'boot_verified': False, 'simulated': True}
         return {'command': name, 'simulated': True}
 
 
@@ -112,9 +114,11 @@ async def run(url, token, device_id, grant=0, stop=None, script=(), chip='esp32s
                         continue
                     try:
                         result = await sim.execute(op['command'], op['args'], download, upload)
-                        if op['command'] in {'reset', 'uart.write'}:
+                        if op['command'] in {'reset', 'uart.write', 'boot.download'}:
                             seq += 1
-                            data = ('SIM boot\r\nESP-ROM:%s-sim\r\n' % chip).encode() if op['command'] == 'reset' else base64.b64decode(op['args']['data'])
+                            data = (('SIM boot\r\nESP-ROM:%s-sim\r\n' % chip).encode() if op['command'] == 'reset' else
+                                    ('SIM download mode\r\nESP-ROM:%s-sim\r\nSIM-DOWNLOAD-MODE\r\n' % chip).encode() if op['command'] == 'boot.download'
+                                    else base64.b64decode(op['args']['data']))
                             await event('uart', seq=seq, data=base64.b64encode(data).decode(), at=time.time()*1000)
                         await ws.send_json({'type': 'result', 'id': op['id'], 'state': 'completed', 'result': result})
                     except Exception as error:

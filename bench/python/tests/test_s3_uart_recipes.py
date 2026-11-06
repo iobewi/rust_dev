@@ -64,3 +64,67 @@ def test_without_the_reset_opt_in_nothing_runs(sim, tmp_path, monkeypatch):
     proc = subprocess.run([sys.executable, "-m", "pytest", f"recipes/qualification_campaign/{RECIPE}", "--bench", "--qual-allow-dirty",
                            "-q", "-rs", "-p", "no:cacheprovider"], cwd=bench, env=env, capture_output=True, text=True, timeout=120)
     assert "--qual-allow-reset not given" in proc.stdout and not list((tmp_path / "evidence").glob("*/report.json"))
+
+
+# --- S3R-2: boot.download -------------------------------------------------------------------------------------------
+BOOT = "test_s3_uart_boot.py"
+BOOT_SESSION = {**S3, "consent": {"scenarios": ["S3R-BOOT"]}, "bootloader": {"marker": "SIM-DOWNLOAD-MODE", "hold_ms": 100, "marker_timeout_s": 5}}
+
+
+def run_boot(sim, tmp_path, *, script=((4, 15), ), allow=True, **change):
+    import os
+    import subprocess
+    url, client = sim(script=list(script), chip="esp32s3")
+    session = {**base(), "evidence_root": str(tmp_path / "evidence"), **{**BOOT_SESSION, **change}}
+    (tmp_path / "session.json").write_text(json.dumps(session))
+    env = {**os.environ, "BENCH_CLIENT_TOKEN": "pytest-client-test-token", "BENCH_URL": url, "BENCH_QUAL_SESSION": str(tmp_path / "session.json")}
+    bench = Path(__file__).resolve().parents[2]
+    argv = [sys.executable, "-m", "pytest", f"recipes/qualification_campaign/{BOOT}", "--bench", "--qual-allow-dirty", "-q", "-rs",
+            "-p", "no:cacheprovider", "--tb=short", "--bench-results", str(tmp_path / "runs")] + (["--qual-allow-bootloader"] if allow else [])
+    proc = subprocess.run(argv, cwd=bench, env=env, capture_output=True, text=True, timeout=180)
+    reports = {}
+    for path in (tmp_path / "evidence").glob("*/report.json"):
+        for item in json.loads(path.read_text())["tests"]:
+            reports[item["id"]] = item
+    return proc, reports, client
+
+
+def test_boot_download_passes_when_the_marker_follows_the_command(sim, tmp_path):
+    proc, reports, client = run_boot(sim, tmp_path, script=[(4, 15)])
+    assert proc.returncode == 0 and reports["S3R-2"]["status"] == "PASS", proc.stdout[-1500:]
+    assert any("marker observed after the command" in e for e in reports["S3R-2"]["evidence"])
+    assert client.device("board")["reservation"] is None and client.device("board")["privileged_seconds"] == 0
+    ops = [json.loads(l)["command"] for path in (tmp_path / "evidence").glob("*/board-*/operations.jsonl") for l in path.read_text().splitlines()]
+    assert set(ops) == {"boot.download"}
+
+
+def test_boot_download_without_the_marker_is_a_fail(sim, tmp_path):
+    proc, reports, _ = run_boot(sim, tmp_path, script=[(4, 15)], bootloader={"marker": "NEVER-EMITTED", "hold_ms": 100, "marker_timeout_s": 2})
+    assert reports["S3R-2"]["status"] == "FAIL" and "marker was not seen" in " ".join(reports["S3R-2"]["incidents"])
+
+
+@pytest.mark.parametrize("change,allow,why", [
+    ({}, False, "--qual-allow-bootloader not given"),
+    ({"consent": {"scenarios": ["S3R-RESET"]}}, True, "S3R-BOOT consent"),
+    ({"bootloader": {"hold_ms": 100}}, True, "no bootloader.marker"),
+    ({"chip": "esp32c3"}, True, "targets an esp32s3"),
+    ({"transport": "usb_serial_jtag"}, True, "targets the external_uart transport"),
+])
+def test_boot_recipe_is_blocked_before_any_command(sim, tmp_path, change, allow, why):
+    proc, reports, _ = run_boot(sim, tmp_path, allow=allow, **change)
+    assert not reports and why in proc.stdout, proc.stdout[-800:]
+    assert not list((tmp_path / "evidence").glob("*/requests.jsonl"))
+
+
+def test_no_grant_means_blocked_and_no_boot_command(sim, tmp_path):
+    proc, reports, _ = run_boot(sim, tmp_path, script=[], operator_timeout_s=2)
+    assert reports["S3R-2"]["status"] == "BLOCKED"
+    ops = [json.loads(l)["command"] for path in (tmp_path / "evidence").glob("*/board-*/operations.jsonl") for l in path.read_text().splitlines()]
+    assert "boot.download" not in ops
+
+
+def test_the_session_validator_bounds_the_bootloader_section():
+    from qualification_campaign.session import SessionError, validate_session
+    for bad in [{"hold_ms": 99}, {"hold_ms": 3001}, {"marker": ""}, {"marker_timeout_s": 0}, {"x": 1}]:
+        with pytest.raises(SessionError):
+            validate_session({**base(), "bootloader": bad})
