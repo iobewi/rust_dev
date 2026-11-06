@@ -12,13 +12,13 @@ from iobewi_bench import CampaignManifest
 
 CHIPS = {"esp32s3", "esp32c3"}
 TRANSPORTS = {"external_uart", "usb_serial_jtag", "native_usb_other", "unknown"}
-SCENARIOS = {"Q1", "Q2", "Q3", "C3R-READ", "C3R-RESET", "S3R-RESET", "S3R-BOOT"}
+SCENARIOS = {"Q1", "Q2", "Q3", "C3R-READ", "C3R-RESET", "S3R-RESET", "S3R-BOOT", "S3R-READ", "R4"}
 TOP_LEVEL = {"version", "board_id", "chip", "flash_size", "transport", "partition_table_offset",
              "approved_regions", "evidence_root", "operation_timeout_s", "operator_timeout_s",
-             "consent", "q2", "q3", "readonly", "bootloader", "accept_unknown_transport"}
+             "consent", "q2", "q3", "readonly", "bootloader", "r4", "accept_unknown_transport"}
 DEFAULTS = {"operation_timeout_s": 120, "operator_timeout_s": 900, "approved_regions": [],
             "consent": {"scenarios": [], "note": ""}, "q2": {}, "q3": {},
-            "readonly": {}, "bootloader": {}, "accept_unknown_transport": False}
+            "readonly": {}, "bootloader": {}, "r4": {}, "accept_unknown_transport": False}
 Q2_DEFAULTS = {"trigger_pattern_b64": "SU9CRVdJLVEyLU5FVkVSLVNUSU1VTEFURUQ=",  # inert, never stimulated
                "expires_ms": 120000, "reservation_ttl_s": 600}
 Q3_DEFAULTS = {"allow_restart": False, "launcher_pid_file": None, "state_dir": None, "launcher_log": None,
@@ -26,6 +26,7 @@ Q3_DEFAULTS = {"allow_restart": False, "launcher_pid_file": None, "state_dir": N
 READONLY_KEYS = {"table_candidates", "reads", "reset"}
 RESET_KEYS = {"marker", "marker_timeout_s", "reconnect_timeout_s"}
 BOOTLOADER_KEYS = {"marker", "hold_ms", "marker_timeout_s"}
+R4_KEYS = {"owned_partitions", "control_windows"}
 
 
 class SessionError(ValueError):
@@ -75,6 +76,7 @@ def validate_session(document):
         raise SessionError("q2.expires_ms must be 1..120000")
     cfg["readonly"] = validate_readonly(cfg["readonly"], cfg)
     cfg["bootloader"] = validate_bootloader(cfg["bootloader"])
+    cfg["r4"] = validate_r4(cfg["r4"], cfg)
     regions = cfg["approved_regions"]
     if not isinstance(regions, list):
         raise SessionError("approved_regions must be a list")
@@ -128,6 +130,31 @@ def validate_bootloader(section):
     if type(out["marker_timeout_s"]) is not int or not 1 <= out["marker_timeout_s"] <= 300:
         raise SessionError("bootloader.marker_timeout_s must be 1..300 seconds")
     return out
+
+
+def validate_r4(section, cfg):
+    """R4 (multi-image) parameters. Nothing is presumed: no default control window, no partition allowed to overlap a region.
+
+    owned_partitions: labels of partitions the operator OWNS for the test (a dedicated scratch partition); only those may overlap a region.
+    control_windows: explicit zones read before and after to show that nothing outside the approved regions changed.
+    They are the "no implicit global erase" oracle, so they must be spread over the flash and must not intersect an approved region."""
+    if not isinstance(section, dict) or section.keys() - R4_KEYS:
+        raise SessionError(f"r4 accepts only {sorted(R4_KEYS)}")
+    owned = section.get("owned_partitions", [])
+    if not isinstance(owned, list) or len(owned) > 8 or any(not isinstance(x, str) or not 1 <= len(x) <= 16 for x in owned):
+        raise SessionError("r4.owned_partitions: at most 8 partition labels (1..16 characters)")
+    windows = section.get("control_windows", [])
+    if not isinstance(windows, list) or len(windows) > 8:
+        raise SessionError("r4.control_windows: at most 8 zones")
+    for item in windows:
+        if (not isinstance(item, dict) or set(item) != {"address", "size"} or type(item["address"]) is not int or type(item["size"]) is not int
+                or item["address"] % 4096 or item["size"] % 4096 or not 0 < item["size"] <= 65536 or item["address"] < 0
+                or item["address"] + item["size"] > cfg["flash_size"]):
+            raise SessionError("r4.control_windows: {address, size} 4-KiB aligned, size <= 64 KiB, inside the flash")
+        for region in cfg["approved_regions"]:
+            if item["address"] < region["address"] + region["size"] and region["address"] < item["address"] + item["size"]:
+                raise SessionError("r4.control_windows must not intersect an approved region")
+    return {"owned_partitions": owned, "control_windows": windows}
 
 
 def table_candidates(cfg):

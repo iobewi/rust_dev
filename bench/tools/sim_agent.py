@@ -37,13 +37,15 @@ class SimDevice:
                 start = i['address']
                 if start < 0 or start + len(data) > len(self.flash):
                     raise ValueError('bounds')
-            if args.get('erase'):
+            if args.get('erase') or os.environ.get('SIM_FAULT_GLOBAL_ERASE') == '1':      # the env var SIMULATES an implicit global erase (test oracle)
                 self.flash[:] = b'\xff' * len(self.flash)
             for i, data in images:
                 start = i['address']
                 lo, hi = start // 4096 * 4096, (start + len(data) + 4095) // 4096 * 4096
                 self.flash[lo:hi] = b'\xff' * (hi-lo)
                 self.flash[start:start+len(data)] = data
+                if os.environ.get('SIM_FAULT_CORRUPT_WRITE') == '1' and len(images) > 1:   # SIMULATES a multi-image write that does not read back as written
+                    self.flash[start] ^= 0xFF
             self.writes += 1
             return {'written': len(images), 'simulated': True}
         if name == 'flash.read':
@@ -67,6 +69,10 @@ class SimDevice:
         if name == 'boot.download':
             return {'download_mode_requested': True, 'method': 'en+io0', 'hold_ms': args['hold_ms'], 'boot_verified': False, 'simulated': True}
         return {'command': name, 'simulated': True}
+
+
+def args_return_console(args):
+    return args.get('return_console', True) is True
 
 
 async def run(url, token, device_id, grant=0, stop=None, script=(), chip='esp32s3'):
@@ -120,6 +126,8 @@ async def run(url, token, device_id, grant=0, stop=None, script=(), chip='esp32s
                                     ('SIM download mode\r\nESP-ROM:%s-sim\r\nSIM-DOWNLOAD-MODE\r\n' % chip).encode() if op['command'] == 'boot.download'
                                     else base64.b64decode(op['args']['data']))
                             await event('uart', seq=seq, data=base64.b64encode(data).decode(), at=time.time()*1000)
+                        if op['command'] == 'flash.read' and args_return_console(op['args']) and os.environ.get('SIM_CONSOLE_EVENT') == '1':
+                            await event('transport', detail='console opened')
                         await ws.send_json({'type': 'result', 'id': op['id'], 'state': 'completed', 'result': result})
                     except Exception as error:
                         await ws.send_json({'type': 'result', 'id': op['id'], 'state': 'failed', 'error': {'code': getattr(error, 'code', 'simulated_failure')}})

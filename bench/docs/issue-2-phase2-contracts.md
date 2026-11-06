@@ -13,7 +13,7 @@ Trois recettes séparées (un effet matériel par recette, chacune avec son cons
 |---|---|---|---|
 | **S3R-1** | un reset EN (RTS), bannière ROM `ESP-ROM:esp32s3` dans la même fenêtre de preuve | `S3R-RESET`, `--qual-allow-reset` | code, testé en simulation |
 | **S3R-2** | entrée en mode téléchargement par la commande atomique `boot.download` | `S3R-BOOT`, `--qual-allow-bootloader`, grant local | code (moteur + recette), testé en simulation |
-| **S3R-3** | retour console après une opération du chargeur | `C3R-READ`-équivalent S3 (à définir à la revue) | contrat, code non écrit |
+| **S3R-3** | retour console après une opération du chargeur | `S3R-READ` | code (`test_s3_uart_console_return.py`), testé en simulation |
 
 ### S3R-1
 Prérequis : session `esp32s3` / `external_uart`, `S3R-RESET`, `--qual-allow-reset`, `--bench`. Sinon BLOCKED **avant** toute preuve ni commande.
@@ -48,15 +48,18 @@ Un événement UART quelconque ne prouve pas que le chargeur a rendu la main à 
 1. l'opération `flash.read` (région déjà qualifiée en lecture seule, `return_console=true`) est **réglée** et son accusé accepté par le serveur ;
 2. un événement de transport **explicite** de retour console (« console opened ») postérieur au curseur ;
 3. le texte UART n'est qu'un indice : si l'on veut une sortie console effective, il faut un **marqueur déterministe distinct**, fixé avant le run ; aucun marqueur applicatif n'est supposé et `boot_verified` n'est jamais invoqué.
-PASS = 1 + 2 (preuve de **transport**) ; FAIL si l'opération est réglée et qu'aucun événement de retour n'arrive ; INDETERMINATE si continuité rompue ou issue inconnue.
+Code : `test_s3_uart_console_return.py` (consentement `S3R-READ`, une plage de `readonly.reads` déjà qualifiée stable, aucun geste, aucun grant). PASS = 1 + 2 (preuve de **transport**) ; FAIL si l'opération est réglée et qu'aucun événement de retour n'arrive ; INDETERMINATE si continuité rompue ou issue inconnue.
 
 ## 2. R4, exigence 4 : programmation multi-images et manifeste réel
 
-À écrire après revue de ce contrat.
+Code : `test_r4_multi_image.py` ; testé en **simulation** (le simulateur sait injecter un effacement global implicite pour vérifier que l'oracle le voit). Session : 2 à 4 `approved_regions`, consentement `R4`, `--bench-allow-destructive`, `r4.control_windows` (au moins une fenêtre non vide avant le run, sinon BLOCKED : un oracle tout `0xFF` ne détecte pas un effacement) et `r4.owned_partitions` (seules partitions pouvant recouvrir une région).
 - **Région possédée et sauvegardée** : chaque région d'essai est explicitement approuvée par l'opérateur, sauvegardée (deux lectures égales), **hors** bootloader, table de partitions et données actives. Une partition de test **dédiée** qu'il possède peut servir ; il n'y a pas d'exclusion absolue des partitions.
 - **Manifeste** : `CampaignManifest` v1 avec plusieurs `write_regions` ; politique de sauvegarde et de restauration ; `max_interruptions: 0`.
 - **Unité atomique** : l'unité d'approbation et de restauration est la **région** (secteurs de 4 Kio entiers), jamais l'image ; le plan `flash.write` multi-images est un seul envoi qui écrit toutes les images ou aucune garantie d'atomicité n'est revendiquée (le résultat partiel reste INDETERMINATE).
 - **Oracle « pas d'effacement global »** : une fenêtre locale ne suffit pas. Avant et après l'essai, lecture et SHA-256 par segments de **toute la flash lisible** (ou de toutes les zones hors régions approuvées que l'opérateur déclare), comparaison aux sauvegardes d'avant ; seules les régions approuvées ont changé.
+- **Relectures et artefacts** : toutes les relectures de R4 (régions, fenêtres) passent par `ReadbackRetention` : l'artefact serveur n'est libéré qu'après relecture de la copie privée et égalité de sa taille et de son SHA-256 ; une copie absente ou différente **conserve** l'artefact serveur. Limite connue, hors de cette PR : `Orchestrator.backup` re-vérifie sa copie locale avant de supprimer l'artefact, mais `Orchestrator.compare` supprime l'artefact après calcul du SHA sans re-vérifier la copie privée que `read_flash` a écrite.
+- **Portée de l'oracle** : les fenêtres de contrôle détectent une modification **uniquement dans les zones qu'elles couvrent** ; elles ne démontrent **pas** l'intégrité de toute la flash, et aucune affirmation « pas d'effacement global » ne va au-delà d'elles.
+- **Échec après le début de l'écriture** : **une seule** restauration contrôlée (restaurer chaque région depuis sa sauvegarde vérifiée, puis comparer), **seulement** si toutes les opérations sont réglées et le handle intact. Avec une opération non résolue ou indéterminée, une continuité rompue ou un échec de la restauration elle-même, **rien n'est rejoué** : la récupération reste à l'opérateur et le champ de restauration l'indique. Les fenêtres de contrôle ne sont jamais « restaurées » (non approuvées en écriture). Si le grant est encore actif après l'échec, la recette le signale.
 - **PASS** : chaque région égale à son motif puis à sa sauvegarde, zones hors régions inchangées, aucune opération non résolue, grant révoqué. **FAIL** : toute différence. **INDETERMINATE** : issue inconnue d'une écriture ; restauration locale explicite, jamais de rejeu.
 - Autorisations : carte, régions, procédure de restauration, grant local par run.
 
@@ -74,7 +77,14 @@ Objet : injection de fautes **déterministes** (exigences 5 et 6). Constats qui 
 8. **Arrêt immédiat** : opération non résolue après récupération, restauration différente, quarantaine persistante, signal de relâche en échec (`signal_release_failed`), erreur de la ROM.
 Questions pour la revue : choix des points d'injection ; forme de l'instrumentation agent ; faut-il une carte sacrifiable ; validation du chemin de restauration local.
 
+### 3 bis. Conception proposée de l'injection côté agent (à relire ; aucun code)
+- **Opt-in triple** : option d'agent explicite au démarrage de la page, scénario de campagne `FAULT-*` et consentement par essai ; absent par défaut, inerte sans les trois ; refusé si la carte n'est pas déclarée sacrifiable.
+- **Points nommés** et un seul actif par essai : `before_erase`, `after_erase`, `after_n_blocks(n)`, `before_readback`. L'agent s'arrête **au point** et lève une panne simulée côté transport (fermeture du port) ou côté liaison serveur (fermeture du WebSocket), jamais une coupure d'alimentation.
+- **Journal de l'injection** : l'agent consigne dans ses événements le point atteint, l'action et l'absence de rejeu (compteur d'exécutions par opération), ce qui fournit la preuve indépendante d'absence de rejeu exigée par le critère 7.
+- **Aucune coupure du serveur** avec cette méthode : l'arrêt du serveur pendant une écriture reste une étape séparée, non synchronisée sur une phase, à décider avec la procédure de redémarrage coordonné.
+- **À trancher en revue** : forme du consentement, carte sacrifiable, chemin de restauration local (point 4), réconciliation du journal après coupure.
+
 ## 4. Critères épinglés
 
-`qualification_criteria.json` (SHA `2dfc47e2…760760c`) et les anciens runs restent **inchangés**. Les scénarios `S3R-*` y sont inconnus. Il faut une **nouvelle version candidate** des critères (nouveau fichier ou nouvelle version
+`qualification_criteria.json` (SHA `2dfc47e2…760760c`) et les anciens runs restent **inchangés**. Les scénarios `S3R-*` et `R4` y sont inconnus, et le comparateur n'a pas de contrôle propre à ces scénarios : l'étendre (critères **et** vérifications) est un travail séparé, à relire, avant tout run. Il faut une **nouvelle version candidate** des critères (nouveau fichier ou nouvelle version
 explicite), revue avant tout run `S3R-*`, avec son propre SHA épinglé ; les campagnes déjà produites restent comparables à l'ancienne version.

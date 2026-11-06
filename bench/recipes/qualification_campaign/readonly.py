@@ -74,12 +74,12 @@ class ReadbackRetention:
     def __init__(self, board, out):
         self.board, self.out, self.held = board, out, []
 
-    def read(self, *, address, size, timeout=600):
+    def read(self, *, address, size, timeout=600, return_console=False):
         """Track the artifact even when read_flash fails AFTER the operation settled (download, size or disk error):
         the server copy then exists without a verified local copy, so release() keeps it and says so."""
         before = (self.board.last_operation or {}).get("id")
         try:
-            return self.board.read_flash(address=address, size=size, timeout=timeout, return_console=False)
+            return self.board.read_flash(address=address, size=size, timeout=timeout, return_console=return_console)
         finally:
             operation = self.board.last_operation or {}
             artifact = (operation.get("result") or {}).get("artifact")

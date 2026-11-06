@@ -1,0 +1,308 @@
+"""Software checks of S3R-3 (console return) and R4 (multi-image). SIMULATION ONLY: a RAM simulator that DECLARES itself an esp32s3.
+Proves the decisions of the recipes (BLOCKED / PASS / FAIL) and that the control-window oracle sees a simulated implicit erase.
+It proves nothing about a card, a UART bridge or a real flash."""
+import json
+import os
+import selectors
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+import pytest
+
+from iobewi_bench import BenchClient
+
+BENCH = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from test_c3_read_only import table_image                       # noqa: E402
+
+S3 = {"version": 1, "board_id": "board", "chip": "esp32s3", "flash_size": 4 * 1024 * 1024, "transport": "external_uart",
+      "accept_unknown_transport": True, "partition_table_offset": 0x10000, "operator_timeout_s": 90}
+RECIPES = "recipes/qualification_campaign"
+
+
+@pytest.fixture
+def sim():
+    started = []
+
+    def start(script=(), env=None):
+        process = subprocess.Popen([sys.executable, str(BENCH / "python/tests/sim_server.py"), "--script", json.dumps(list(script)), "--chip", "esp32s3"],
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env={**os.environ, **(env or {})})
+        started.append(process)
+        selector = selectors.DefaultSelector()
+        selector.register(process.stdout, selectors.EVENT_READ)
+        assert selector.select(10)
+        url = json.loads(process.stdout.readline())["url"]
+        client = BenchClient(url, "pytest-client-test-token")
+        deadline = time.monotonic() + 10
+        while not client.devices():
+            assert time.monotonic() < deadline
+            time.sleep(0.02)
+        return url, client
+    yield start
+    for process in started:
+        process.terminate()
+        process.communicate(timeout=5)
+
+
+def write_table(client, entries):
+    image = table_image(entries)
+    artifact = client.upload(image)
+    with client.reserve("board", ttl=120, allow_destructive=True) as board:
+        board.command("flash.write", {"chip": "esp32s3", "return_console": False,
+                                      "images": [{"address": 0x10000, "artifact": artifact["id"], "sha256": artifact["sha256"]}]}, allow_destructive=True)
+    client.delete_artifact(artifact["id"])
+
+
+def wait_grant(client, positive, deadline):
+    while (client.device("board")["privileged_seconds"] > 0) != positive:
+        assert time.monotonic() < deadline
+        time.sleep(0.05)
+
+
+def run(tmp_path, url, selector, session, *args):
+    (tmp_path / "session.json").write_text(json.dumps({**S3, "evidence_root": str(tmp_path / "evidence"), **session}))
+    env = {**os.environ, "BENCH_CLIENT_TOKEN": "pytest-client-test-token", "BENCH_URL": url, "BENCH_QUAL_SESSION": str(tmp_path / "session.json")}
+    proc = subprocess.run([sys.executable, "-m", "pytest", f"{RECIPES}/{selector}", "--bench", "--qual-allow-dirty", "--bench-results", str(tmp_path / "runs"),
+                           "-q", "-rs", "-p", "no:cacheprovider", "--tb=short", *args], cwd=BENCH, env=env, capture_output=True, text=True, timeout=240)
+    reports = {}
+    for path in (tmp_path / "evidence").glob("*/report.json"):
+        for item in json.loads(path.read_text())["tests"]:
+            reports[item["id"]] = item
+    return proc, reports
+
+
+# --- S3R-3 ------------------------------------------------------------------------------------------------------------
+READ = {"consent": {"scenarios": ["S3R-READ"]}, "readonly": {"reads": [{"address": 0, "size": 4096}]}}
+
+
+def test_console_return_passes_with_a_transport_event_after_the_settled_read(sim, tmp_path):
+    url, client = sim(env={"SIM_CONSOLE_EVENT": "1"})
+    proc, reports = run(tmp_path, url, "test_s3_uart_console_return.py", READ)
+    assert proc.returncode == 0 and reports["S3R-3"]["status"] == "PASS", proc.stdout[-1500:]
+    assert any("TRANSPORT proof only" in e for e in reports["S3R-3"]["evidence"])
+    assert client.device("board")["reservation"] is None
+
+
+def test_a_settled_read_without_a_console_event_is_a_fail_even_if_uart_text_arrives(sim, tmp_path):
+    url, client = sim()                                           # no transport event emitted
+    proc, reports = run(tmp_path, url, "test_s3_uart_console_return.py", READ)
+    assert reports["S3R-3"]["status"] == "FAIL" and "console return is not shown" in " ".join(reports["S3R-3"]["incidents"])
+
+
+@pytest.mark.parametrize("change,why", [
+    ({"consent": {"scenarios": []}}, "S3R-READ consent"),
+    ({"readonly": {}}, "no readonly.reads"),
+    ({"chip": "esp32c3"}, "targets an esp32s3"),
+    ({"transport": "usb_serial_jtag"}, "external_uart transport"),
+])
+def test_console_return_is_blocked_before_any_command(sim, tmp_path, change, why):
+    url, _ = sim()
+    proc, reports = run(tmp_path, url, "test_s3_uart_console_return.py", {**READ, **change})
+    assert not reports and why in proc.stdout
+    assert not list((tmp_path / "evidence").glob("*/requests.jsonl"))
+
+
+# --- R4 ---------------------------------------------------------------------------------------------------------------
+R4 = {"consent": {"scenarios": ["R4"]},
+      "approved_regions": [{"address": 0x200000, "size": 8192}, {"address": 0x210000, "size": 8192}],
+      "r4": {"control_windows": [{"address": 0x10000, "size": 4096}, {"address": 0x300000, "size": 4096}]}}
+TABLE = [("factory", 0x20000, 0x100000)]
+SCRIPT = [[0.1, 600], [4, 0], [6, 1800], [40, 0]]             # setup grant, setup revoke, R4 grant, R4 revoke
+
+
+def prepared(sim, env=None):
+    url, client = sim(SCRIPT, env=env)
+    deadline = time.monotonic() + 20
+    wait_grant(client, True, deadline)
+    write_table(client, TABLE)
+    wait_grant(client, False, deadline + 10)
+    return url, client
+
+
+def test_multi_image_passes_and_restores_every_region(sim, tmp_path):
+    url, client = prepared(sim)
+    proc, reports = run(tmp_path, url, "test_r4_multi_image.py", R4, "--bench-allow-destructive")
+    assert proc.returncode == 0 and reports["R4"]["status"] == "PASS", proc.stdout[-2000:]
+    evidence = " ".join(reports["R4"]["evidence"])
+    assert "single multi-image write" in evidence and "byte-identical after the write" in evidence and "after the restoration" in evidence
+    flash = client.device("board")
+    assert flash["privileged_seconds"] == 0 and flash["reservation"] is None
+
+
+def regions_are_blank(client):
+    """The simulated flash starts all 0xFF: a restored region must read back as it was."""
+    with client.reserve("board", ttl=60) as board:
+        return all(set(board.read_flash(address=r["address"], size=r["size"], return_console=False)) == {0xFF} for r in R4["approved_regions"])
+
+
+def test_r4_leaves_no_server_artifact_after_verified_private_copies(sim, tmp_path):
+    url, client = prepared(sim)
+    proc, reports = run(tmp_path, url, "test_r4_multi_image.py", R4, "--bench-allow-destructive")
+    assert reports["R4"]["status"] == "PASS", proc.stdout[-1500:]
+    assert client.artifacts()["artifacts"] == []                         # released after their private copy matched ...
+    copies = list((tmp_path / "evidence").glob("R4-*/board-*/flash-*.json"))
+    assert copies, "private copies of the readbacks must exist"          # ... and those private copies are there
+    assert any("deleted after its private copy was re-read and matched" in e for e in reports["R4"]["evidence"])
+
+
+class RetentionBoard:
+    """Minimal board: read_flash records a server artifact and (optionally) a private copy with its sidecar."""
+    def __init__(self, directory, *, keep_copy):
+        self.output_dir, self.keep_copy, self.uncertain, self.pending, self.closed = directory, keep_copy, False, None, False
+        self.last_operation, self.deleted, self.client = None, [], self
+        self.n = 0
+
+    def delete_artifact(self, artifact_id):
+        self.deleted.append(artifact_id)
+
+    def read_flash(self, *, address, size, timeout, return_console):
+        import hashlib
+        data = bytes([self.n + 1]) * size
+        artifact = {"id": f"artifact-{self.n}", "size": size, "sha256": hashlib.sha256(data).hexdigest()}
+        self.last_operation = {"id": f"op-{self.n}", "result": {"artifact": artifact}}
+        if self.keep_copy:
+            (self.output_dir / f"flash-{self.n:03d}.bin").write_bytes(data)
+            (self.output_dir / f"flash-{self.n:03d}.json").write_text(json.dumps({"artifact": artifact["id"], "sha256": artifact["sha256"]}))
+        self.n += 1
+        return data
+
+
+def _retention(tmp_path, keep_copy):
+    sys.path.insert(0, str(BENCH / "recipes"))
+    from qualification_campaign.harness import Outcome
+    from qualification_campaign.readonly import ReadbackRetention
+    from qualification_campaign.test_r4_multi_image import read_window
+    board, out = RetentionBoard(tmp_path, keep_copy=keep_copy), Outcome()
+    keeper = ReadbackRetention(board, out)
+    read_window(keeper, {"address": 0, "size": 4096}, 60)
+    assert board.deleted == [], "read_window must never delete a server artifact itself"
+    return board, out, keeper.release()
+
+
+def test_a_server_artifact_is_kept_when_the_private_copy_is_not_verifiable(tmp_path):
+    board, out, problems = _retention(tmp_path, keep_copy=False)
+    assert board.deleted == [] and any("KEPT" in p for p in problems)
+
+
+def test_a_server_artifact_is_released_only_once_its_private_copy_matches(tmp_path):
+    board, out, problems = _retention(tmp_path, keep_copy=True)
+    assert board.deleted == ["artifact-0"] and not problems
+
+
+def test_a_tampered_private_copy_keeps_the_server_artifact(tmp_path):
+    board, out, _ = _retention(tmp_path, keep_copy=True)
+    board2 = RetentionBoard(tmp_path / "x", keep_copy=True) if (tmp_path / "x").mkdir() is None else None
+    sys.path.insert(0, str(BENCH / "recipes"))
+    from qualification_campaign.readonly import ReadbackRetention
+    from qualification_campaign.test_r4_multi_image import read_window
+    keeper = ReadbackRetention(board2, out)
+    read_window(keeper, {"address": 0, "size": 4096}, 60)
+    (tmp_path / "x" / "flash-000.bin").write_bytes(b"\x00" * 4096)          # the private copy no longer matches
+    problems = keeper.release()
+    assert board2.deleted == [] and any("KEPT" in p for p in problems)
+
+
+def test_a_simulated_implicit_global_erase_is_seen_by_the_control_windows_and_regions_are_restored(sim, tmp_path):
+    url, client = prepared(sim, env={"SIM_FAULT_GLOBAL_ERASE": "1"})
+    proc, reports = run(tmp_path, url, "test_r4_multi_image.py", R4, "--bench-allow-destructive")
+    report = reports["R4"]
+    assert report["status"] == "FAIL" and "control window changed after the write" in " ".join(report["incidents"]), proc.stdout[-1500:]
+    assert "restored after a failure" in report["restoration"] and "not touched" in report["restoration"]
+    assert regions_are_blank(client)
+
+
+def test_a_write_that_does_not_read_back_fails_and_the_regions_are_restored(sim, tmp_path):
+    url, client = prepared(sim, env={"SIM_FAULT_CORRUPT_WRITE": "1"})
+    proc, reports = run(tmp_path, url, "test_r4_multi_image.py", R4, "--bench-allow-destructive")
+    report = reports["R4"]
+    assert report["status"] == "FAIL" and "readback differs from its pattern" in " ".join(report["incidents"]), proc.stdout[-1500:]
+    assert "restored after a failure" in report["restoration"]
+    assert regions_are_blank(client)
+
+
+class FakeRunner:
+    def __init__(self, fail=False):
+        self.calls, self.fail = [], fail
+
+    def restore(self, board, path, **kwargs):
+        self.calls.append(("restore", path))
+        if self.fail:
+            raise RuntimeError("restore failed")
+
+    def compare(self, board, path, **kwargs):
+        self.calls.append(("compare", path))
+        return {"equal": True}
+
+
+class FakeBoard:
+    def __init__(self, **flags):
+        self.closed = self.uncertain = False
+        self.pending = None
+        self.__dict__.update(flags)
+
+
+@pytest.mark.parametrize("board_flags,error", [
+    ({"uncertain": True}, RuntimeError("x")),
+    ({"pending": "op1"}, RuntimeError("x")),
+    ({"closed": True}, RuntimeError("x")),
+    ({}, "continuity"),
+    ({}, "pending"),
+])
+def test_no_automatic_restoration_while_an_operation_is_uncertain(board_flags, error):
+    sys.path.insert(0, str(BENCH / "recipes"))
+    from iobewi_bench.client import ContinuityError, PendingOperation
+    from qualification_campaign.harness import Outcome
+    from qualification_campaign.test_r4_multi_image import recover_after_failure
+    error = {"continuity": ContinuityError("c"), "pending": PendingOperation("p")}.get(error, error)
+    runner, out = FakeRunner(), Outcome()
+    recover_after_failure(FakeBoard(**board_flags), runner, [("a.bin", {}), ("b.bin", {})], 60, out, error)
+    assert runner.calls == [] and out.restoration.startswith("UNKNOWN")
+
+
+def test_a_certain_failure_gets_exactly_one_restore_and_compare_per_region_and_a_failed_restore_is_not_retried():
+    sys.path.insert(0, str(BENCH / "recipes"))
+    from qualification_campaign.harness import Outcome
+    from qualification_campaign.test_r4_multi_image import recover_after_failure
+    runner, out = FakeRunner(), Outcome()
+    recover_after_failure(FakeBoard(), runner, [("a.bin", {}), ("b.bin", {})], 60, out, AssertionError("readback"))
+    assert runner.calls == [("restore", "a.bin"), ("compare", "a.bin"), ("restore", "b.bin"), ("compare", "b.bin")]
+    assert out.restoration.startswith("restored after a failure")
+    runner, out = FakeRunner(fail=True), Outcome()
+    recover_after_failure(FakeBoard(), runner, [("a.bin", {}), ("b.bin", {})], 60, out, AssertionError("readback"))
+    assert runner.calls == [("restore", "a.bin")] and out.restoration.startswith("UNKNOWN") and out.incidents
+
+
+@pytest.mark.parametrize("change,flag,why", [
+    ({}, False, "--bench-allow-destructive not given"),
+    ({"consent": {"scenarios": []}}, True, "lacks the R4 consent"),
+    ({"approved_regions": [{"address": 0x200000, "size": 8192}]}, True, "needs 2..4"),
+    ({"approved_regions": [{"address": 0x200000, "size": 8192}, {"address": 0x201000, "size": 8192}]}, True, "overlap each other"),
+    ({"r4": {}}, True, "no r4.control_windows"),
+    ({"partition_table_offset": None}, True, "partition_table_offset unknown"),
+])
+def test_r4_is_blocked_before_any_mutation(sim, tmp_path, change, flag, why):
+    url, client = sim()
+    proc, reports = run(tmp_path, url, "test_r4_multi_image.py", {**R4, **change}, *(["--bench-allow-destructive"] if flag else []))
+    assert not reports and why in proc.stdout, proc.stdout[-800:]
+
+
+def test_all_ff_control_windows_cannot_detect_an_erase_so_r4_is_blocked(sim, tmp_path):
+    url, client = prepared(sim)                                    # a valid table exists, but the only window is all 0xFF
+    proc, reports = run(tmp_path, url, "test_r4_multi_image.py",
+                        {**R4, "r4": {"control_windows": [{"address": 0x300000, "size": 4096}]}}, "--bench-allow-destructive")
+    assert reports["R4"]["status"] == "BLOCKED" and "all 0xFF" in " ".join(reports["R4"]["incidents"]), proc.stdout[-1200:]
+    ops = [json.loads(l)["command"] for path in (tmp_path / "evidence").glob("*/board-*/operations.jsonl") for l in path.read_text().splitlines()]
+    assert "flash.write" not in ops
+
+
+def test_the_session_validator_bounds_the_r4_section():
+    sys.path.insert(0, str(BENCH / "recipes"))
+    from qualification_campaign.session import SessionError, validate_session
+    base = {**S3, "evidence_root": "/private/evidence", "approved_regions": R4["approved_regions"]}
+    for bad in [{"x": 1}, {"control_windows": [{"address": 1, "size": 4096}]}, {"control_windows": [{"address": 0x200000, "size": 4096}]},
+                {"control_windows": [{"address": 0, "size": 131072}]}, {"owned_partitions": [""]}, {"control_windows": [{"address": 0}]}]:
+        with pytest.raises(SessionError):
+            validate_session({**base, "r4": bad})
+    assert validate_session({**base, "r4": {"control_windows": [{"address": 0x10000, "size": 4096}]}})
