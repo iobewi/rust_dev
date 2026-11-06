@@ -190,6 +190,14 @@
         "grant": 0,
         "revoke": 0,
         "other": 0
+      },
+      "submitted_args": {
+        "reset": {}
+      },
+      "uart_match": {
+        "command": "reset",
+        "requests": "reset-requests.jsonl",
+        "pattern_sha256": "50e5d07d26964fa69998b5bbda1213b091ebc1116811b72ccfaa949fba418d5a"
       }
     },
     "S3R-2": {
@@ -231,6 +239,15 @@
         "grant": 1,
         "revoke": 0,
         "other": 0
+      },
+      "submitted_args": {
+        "boot.download": {
+          "hold_ms": "*"
+        }
+      },
+      "uart_match": {
+        "command": "boot.download",
+        "requests": "bootloader-requests.jsonl"
       }
     },
     "S3R-3": {
@@ -245,7 +262,8 @@
         "flash.read": 1
       },
       "extra_files": [
-        "transport.json"
+        "transport.json",
+        "console-events.jsonl"
       ],
       "continuity": "unchanged",
       "needs_transport": true,
@@ -267,6 +285,16 @@
         "grant": 0,
         "revoke": 0,
         "other": 0
+      },
+      "submitted_args": {
+        "flash.read": {
+          "address": "*",
+          "size": "*",
+          "return_console": true
+        }
+      },
+      "console_return": {
+        "command": "flash.read"
       }
     },
     "R4": {
@@ -282,7 +310,9 @@
       "min_regions": 2,
       "max_regions": 4,
       "flash_write_count": "1_plus_regions",
-      "extra_files": [],
+      "extra_files": [
+        "r4-windows.json"
+      ],
       "continuity": "unchanged",
       "no_interrupted_window": true,
       "grant_revoked_locally": true,
@@ -318,7 +348,8 @@
         "grant": 1,
         "revoke": 1,
         "other": 0
-      }
+      },
+      "r4_correlation": true
     }
   },
   "requirements": [

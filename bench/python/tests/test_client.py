@@ -163,3 +163,31 @@ def test_unsettled_completed_operation_hits_a_bounded_client_deadline():
     with pytest.raises(PendingOperation):
         board.command("identify", timeout=.1, start_timeout=.1)
     assert board.pending == "op"
+
+
+def test_submitted_arguments_cursors_and_matches_are_recorded_as_raw_evidence(sim_bench, tmp_path):
+    import json
+    with sim_bench.reserve("board", output_dir=tmp_path) as board:
+        cursor = board.cursor()
+        board.read_flash(address=0x10000, size=4096)
+        board.identify()
+    commands = [json.loads(l) for l in (tmp_path / "commands.jsonl").read_text().splitlines()]
+    assert [(c["seq"], c["command"]) for c in commands] == [(0, "flash.read"), (1, "identify")]
+    assert commands[0]["args"] == {"address": 0x10000, "size": 4096, "return_console": True}
+    assert commands[0]["args_sha256"] == hashlib.sha256(b'{"address":65536,"return_console":true,"size":4096}').hexdigest()
+    ops = [json.loads(l) for l in (tmp_path / "operations.jsonl").read_text().splitlines()]
+    assert {o["submit_seq"] for o in ops if o["command"] == "flash.read"} == {0}
+    assert (cursor.index, cursor.submitted) == (0, 0)
+    assert json.loads((tmp_path / "cursors.jsonl").read_text())["submitted"] == 0
+    assert "pytest-client-test-token" not in (tmp_path / "commands.jsonl").read_text()
+
+
+def test_the_submission_is_recorded_even_when_the_response_is_lost(tmp_path):
+    import json
+    board = fake_board(operations=[RuntimeError("connection lost")])
+    board.output_dir = tmp_path
+    with pytest.raises(RuntimeError):
+        board.command("reset")
+    assert board.uncertain
+    assert [json.loads(l)["command"] for l in (tmp_path / "commands.jsonl").read_text().splitlines()] == ["reset"]
+    assert not (tmp_path / "operations.jsonl").exists()

@@ -12,6 +12,7 @@ BENCH = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(BENCH / "tools"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import qualification_compare as qc                                   # noqa: E402
+import qualification_fixtures as qf                                     # noqa: E402
 from qualification_fixtures import make_run, write_json, write_jsonl   # noqa: E402
 
 V1_PATH, V2_PATH = BENCH / "tools" / "qualification_criteria.json", BENCH / "tools" / "qualification_criteria_v2.json"
@@ -89,6 +90,57 @@ def add_op(command):
     return edit
 
 
+def edit_args(run, n, **changes):
+    """Change the arguments the client recorded as SUBMITTED for operation n (a None value removes the key)."""
+    def edit(rows):
+        for r in rows:
+            if r["seq"] == n:
+                r["args"] = {**r["args"], **changes}
+                r["args"] = {k: v for k, v in r["args"].items() if v is not None}
+        return rows
+    rewrite_jsonl(run / "board-0" / "commands.jsonl", edit)
+
+
+def edit_images(run, n, edit):
+    def go(rows):
+        for r in rows:
+            if r["seq"] == n:
+                edit(r["args"]["images"])
+        return rows
+    rewrite_jsonl(run / "board-0" / "commands.jsonl", go)
+
+
+def set_read(run, n, data):
+    """Replace what read operation n returned, keeping blob and sidecar consistent (a plausible, self-consistent tamper)."""
+    import hashlib
+    for sidecar in (run / "board-0").glob("flash-*.json"):
+        meta = json.loads(sidecar.read_text())
+        if meta["operation"] == f"op{n}":
+            sidecar.with_suffix(".bin").write_bytes(data)
+            write_json(sidecar, {**meta, "size": len(data), "sha256": hashlib.sha256(data).hexdigest()})
+            return
+    raise AssertionError(f"no read for op{n}")
+
+
+def drop_read(run, n):
+    for sidecar in (run / "board-0").glob("flash-*.json"):
+        if json.loads(sidecar.read_text())["operation"] == f"op{n}":
+            sidecar.unlink()
+            sidecar.with_suffix(".bin").unlink()
+
+
+def edit_matches(run, **changes):
+    rewrite_jsonl(run / "board-0" / "uart-matches.jsonl", lambda rows: [{**rows[0], **changes}])
+
+
+def edit_cursor(run, **changes):
+    rewrite_jsonl(run / "board-0" / "cursors.jsonl", lambda rows: [{**rows[0], **changes}])
+
+
+def edit_console_event(run, **changes):
+    rewrite_jsonl(run / "console-events.jsonl", lambda rows: [{**rows[0], **changes}])
+
+
 MUTATIONS = [
     # (scenario, label, mutate(run), failing check)
     ("S3R-1", "wrong chip in the manifest", lambda run: rewrite_json(run / "manifest.json", lambda d: d["boards"][0].update(chip="esp32c3")), "context_matches"),
@@ -101,8 +153,8 @@ MUTATIONS = [
     ("S3R-1", "a flash write sneaks in", lambda run: rewrite_jsonl(ops_path(run), add_op("flash.write")), "commands_allowed"),
     ("S3R-1", "transport not recorded", lambda run: (run / "transport.json").unlink(), "transport_declared_and_inferred"),
     ("S3R-2", "the grant was revoked (not a natural expiry)", lambda run: rewrite_jsonl(run / "events.jsonl", lambda rows: rows + [{"seq": 9, "epoch": "e0000001", "at": 2000.0, "kind": "grant", "seconds": 0}]), "natural_expiry"),
-    ("S3R-2", "hold_ms out of bounds", lambda run: write_jsonl(run / "bootloader-requests.jsonl", [{"hold_ms": 5000}]), "hold_ms_bounded"),
-    ("S3R-2", "two boot requests", lambda run: write_jsonl(run / "bootloader-requests.jsonl", [{"hold_ms": 500}, {"hold_ms": 500}]), "hold_ms_bounded"),
+    ("S3R-2", "hold_ms out of bounds", lambda run: edit_args(run, 0, hold_ms=5000), "hold_ms_bounded"),
+    ("S3R-2", "two boot requests", lambda run: write_jsonl(run / "bootloader-requests.jsonl", [{"hold_ms": 500}, {"hold_ms": 500}]), "hold_ms_matches_request"),
     ("S3R-2", "two boot.download operations", lambda run: rewrite_jsonl(ops_path(run), add_op("boot.download")), "exactly_1_boot.download"),
     ("S3R-2", "a reset instead", lambda run: rewrite_jsonl(ops_path(run), lambda rows: [{**rows[0], "command": "reset"}]), "commands_allowed"),
     ("S3R-2", "no download marker evidence", lambda run: rewrite_report(run, lambda t: t.update(evidence=[e for e in t["evidence"] if "download-mode marker" not in e])), "download_marker_same_window"),
@@ -125,6 +177,51 @@ MUTATIONS = [
     ("R4", "an interrupted window", lambda run: write_jsonl(run / "windows.jsonl", [{"window": 0, "event": "interrupted"}]), "no_continuity_break"),
     ("R4", "erase command sneaks in", lambda run: rewrite_jsonl(ops_path(run), add_op("flash.erase")), "commands_allowed"),
     ("R4", "server readback not released", lambda run: rewrite_report(run, lambda t: t.update(evidence=[e for e in t["evidence"] if "deleted after" not in e])), "server_readback_released"),
+    # --- raw-data correlation (PR #23 review): what was SUBMITTED, what was READ, which cursor, which operation ---
+    ("S3R-1", "reset submitted with arguments", lambda run: edit_args(run, 0, hold_ms=5), "submitted_args_reset"),
+    ("S3R-1", "commands.jsonl absent", lambda run: (run / "board-0" / "commands.jsonl").unlink(), "submitted_args_reset"),
+    ("S3R-1", "no UART match record", lambda run: (run / "board-0" / "uart-matches.jsonl").unlink(), "uart_match_correlated"),
+    ("S3R-1", "the matched pattern is another marker", lambda run: edit_matches(run, pattern_sha256="1" * 64), "uart_match_correlated"),
+    ("S3R-1", "the recipe declared another marker", lambda run: rewrite_jsonl(run / "reset-requests.jsonl", lambda rows: [{**rows[0], "marker_sha256": "2" * 64}]), "uart_match_correlated"),
+    ("S3R-1", "match recorded after another operation", lambda run: edit_matches(run, operation="op99"), "uart_match_correlated"),
+    ("S3R-1", "matching event does not follow the cursor", lambda run: edit_matches(run, matched_seq=5), "uart_match_correlated"),
+    ("S3R-1", "cursor taken after the submission", lambda run: edit_cursor(run, submitted=1), "uart_match_correlated"),
+    ("S3R-1", "match of another generation", lambda run: edit_matches(run, generation="g0000009"), "uart_match_correlated"),
+    ("S3R-1", "match of another epoch", lambda run: edit_matches(run, epoch="e0000009"), "uart_match_correlated"),
+    ("S3R-1", "two match records", lambda run: rewrite_jsonl(run / "board-0" / "uart-matches.jsonl", lambda rows: rows + rows), "uart_match_correlated"),
+    ("S3R-1", "operation not completed", lambda run: rewrite_jsonl(ops_path(run), lambda rows: [{**rows[0], "state": "indeterminate"}]), "uart_match_correlated"),
+    ("S3R-2", "executed hold_ms is not an integer", lambda run: edit_args(run, 0, hold_ms="500"), "hold_ms_bounded"),
+    ("S3R-2", "executed hold_ms differs from the request", lambda run: edit_args(run, 0, hold_ms=600), "hold_ms_matches_request"),
+    ("S3R-2", "boot.download carries an extra argument", lambda run: edit_args(run, 0, return_console=True), "submitted_args_boot.download"),
+    ("S3R-2", "hold_ms missing from the executed command", lambda run: edit_args(run, 0, hold_ms=None), "submitted_args_boot.download"),
+    ("S3R-2", "marker matched is not the declared one", lambda run: edit_matches(run, pattern_sha256="3" * 64), "uart_match_correlated"),
+    ("S3R-2", "marker too short to mean anything", lambda run: edit_matches(run, pattern_len=1), "uart_match_correlated"),
+    ("S3R-3", "read did not request the console return", lambda run: edit_args(run, 0, return_console=False), "submitted_args_flash.read"),
+    ("S3R-3", "console-events.jsonl absent", lambda run: (run / "console-events.jsonl").unlink(), "console_return_correlated"),
+    ("S3R-3", "the event does not follow the cursor", lambda run: edit_console_event(run, seq=4), "console_return_correlated"),
+    ("S3R-3", "cursor taken after the submission", lambda run: edit_cursor(run, submitted=1), "console_return_correlated"),
+    ("S3R-3", "event of another operation", lambda run: edit_console_event(run, operation="op9"), "console_return_correlated"),
+    ("S3R-3", "event is not a console opening", lambda run: edit_console_event(run, detail="port reopened later"), "console_return_correlated"),
+    ("S3R-3", "two console openings", lambda run: rewrite_jsonl(run / "console-events.jsonl", lambda rows: rows + rows), "console_return_correlated"),
+    ("R4", "commands.jsonl absent", lambda run: (run / "board-0" / "commands.jsonl").unlink(), "r4_images_match_manifest"),
+    ("R4", "multi-image write carries one image only", lambda run: edit_images(run, 3, lambda imgs: imgs.pop()), "r4_images_match_manifest"),
+    ("R4", "an image targets an unapproved address", lambda run: edit_images(run, 3, lambda imgs: imgs[1].update(address=0x300000)), "r4_images_match_manifest"),
+    ("R4", "two images share one hash", lambda run: edit_images(run, 3, lambda imgs: imgs[1].update(sha256=imgs[0]["sha256"])), "r4_images_match_manifest"),
+    ("R4", "an image equals the reference", lambda run: edit_images(run, 3, lambda imgs: imgs[0].update(sha256=qf.sha(qf.FF8K))), "r4_images_match_manifest"),
+    ("R4", "the write asked for the console", lambda run: edit_args(run, 3, return_console=True), "r4_images_match_manifest"),
+    ("R4", "a region read back differs from its image", lambda run: set_read(run, 4, b"\x33" * 8192), "r4_readbacks_equal_submitted_images"),
+    ("R4", "no readback of a region after the write", lambda run: drop_read(run, 5), "r4_readbacks_equal_submitted_images"),
+    ("R4", "restoration wrote another content", lambda run: edit_images(run, 7, lambda imgs: imgs[0].update(sha256="4" * 64)), "r4_restoration_matches_backups"),
+    ("R4", "restoration of a region written twice", lambda run: edit_images(run, 9, lambda imgs: imgs[0].update(address=0x200000)), "r4_restoration_matches_backups"),
+    ("R4", "comparing read differs from the backup", lambda run: set_read(run, 8, b"\x44" * 8192), "r4_restoration_matches_backups"),
+    ("R4", "no comparing read after a restoration", lambda run: drop_read(run, 10), "r4_restoration_matches_backups"),
+    ("R4", "a control window changed after the write", lambda run: set_read(run, 6, b"\x07" * 4096), "r4_control_windows_unchanged"),
+    ("R4", "a control window changed after the restoration", lambda run: set_read(run, 11, b"\x07" * 4096), "r4_control_windows_unchanged"),
+    ("R4", "a control window was erased before the first comparison", lambda run: set_read(run, 2, b"\xff" * 4096), "r4_control_windows_unchanged"),
+    ("R4", "no post-write read of the window", lambda run: drop_read(run, 6), "r4_control_windows_unchanged"),
+    ("R4", "no post-restore read of the window", lambda run: drop_read(run, 11), "r4_control_windows_unchanged"),
+    ("R4", "window overlaps an approved region", lambda run: write_json(run / "r4-windows.json", [{"address": 0x200000, "size": 0x1000}]), "r4_control_windows_unchanged"),
+    ("R4", "r4-windows.json absent", lambda run: (run / "r4-windows.json").unlink(), "r4_control_windows_unchanged"),
 ]
 
 

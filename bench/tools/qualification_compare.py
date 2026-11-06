@@ -98,6 +98,7 @@ class Run:
                 for line in path.read_text().splitlines():
                     if line.strip():
                         row = json.loads(line)
+                        row["_board"] = path.parent.name
                         if row["id"] not in last:
                             order.append(row["id"])
                         last[row["id"]] = row
@@ -381,11 +382,31 @@ def driven_checks(run, scenario, params, lines, ops, grants):
     if params.get("grant_timeline") == "natural_expiry":
         add("natural_expiry", grants is not None and len(grants) == 1 and grants[0][1] > 0,
             f"grant events: {[s for _, s in grants or []]} (expiry means one positive event and no zero)", grants is None)
+    for command, shape in (params.get("submitted_args") or {}).items():
+        for op in [o for o in ops or [] if o["command"] == command]:
+            sub = submission(run, op)
+            if sub is None:
+                add(f"submitted_args_{command}", False, f"no recorded submission for {command} operation {op['id']}", True)
+                continue
+            args = sub.get("args")
+            ok = isinstance(args, dict) and set(args) == set(shape) and all(v == "*" or args.get(k) == v for k, v in shape.items())
+            add(f"submitted_args_{command}", ok, f"{command} was submitted with {sorted(args) if isinstance(args, dict) else args!r}, the contract allows exactly {sorted(shape)}")
+        if ops is None:
+            add(f"submitted_args_{command}", False, "operations unreadable", True)
     if params.get("hold_ms"):
-        requests = run.jsonl("bootloader-requests.jsonl")
         low, high = params["hold_ms"]
-        ok = requests is not None and len(requests) == 1 and type(requests[0].get("hold_ms")) is int and low <= requests[0]["hold_ms"] <= high
-        add("hold_ms_bounded", ok, f"exactly one boot.download request with hold_ms in {low}..{high} expected", requests is None)
+        requests = run.jsonl("bootloader-requests.jsonl")
+        boots = [o for o in ops or [] if o["command"] == "boot.download"]
+        sub = submission(run, boots[0]) if len(boots) == 1 else None
+        executed = ((sub or {}).get("args") or {}).get("hold_ms")
+        ok = len(boots) == 1 and type(executed) is int and low <= executed <= high
+        add("hold_ms_bounded", ok, f"the EXECUTED boot.download must carry one integer hold_ms in {low}..{high}, got {executed!r}", sub is None)
+        intent = requests[0].get("hold_ms") if requests and len(requests) == 1 else None
+        add("hold_ms_matches_request", sub is not None and executed == intent, f"executed hold_ms {executed!r} != recipe request {intent!r}", sub is None or requests is None)
+    if params.get("uart_match"):
+        checks.extend(uart_match_checks(run, params["uart_match"], ops))
+    if params.get("console_return"):
+        checks.extend(console_return_checks(run, params["console_return"], ops))
     if params.get("grant_revoked_locally"):
         add("grant_revoked_locally", bool(grants) and grants[-1][1] == 0 and any(s > 0 for _, s in grants),
             "no positive grant followed by a zero (revocation)", grants is None)
@@ -396,6 +417,8 @@ def driven_checks(run, scenario, params, lines, ops, grants):
         if params.get("flash_write_count") == "1_plus_regions" and ops is not None:
             seen = sum(1 for o in ops if o["command"] == "flash.write")
             add("flash_write_count", seen == 1 + n, f"{seen} flash.write operation(s): expected one multi-image write plus one restoration per region ({1 + n})")
+        if params.get("r4_correlation"):
+            checks.extend(r4_correlation_checks(run, regions, ops))
         problems = []
         for i, region in enumerate(regions):
             a, b = run.json(f"board-0/ref-{i}-a.json"), run.json(f"board-0/ref-{i}-b.json")
@@ -411,6 +434,224 @@ def driven_checks(run, scenario, params, lines, ops, grants):
         checks.append(Check("restored_and_compared", "OK" if str((test or {}).get("restoration", "")).startswith(params["restoration_prefix"]) else "MISSING",
                             "restoration not proven"))
     return checks
+
+
+
+# ---- raw-execution correlation (criteria v2) ----------------------------------------------------------------------------
+HEX64 = re.compile(r"^[0-9a-f]{64}$")
+
+
+def submission(run, op):
+    """The arguments the client actually submitted for an operation (board-N/commands.jsonl, written BEFORE the POST)."""
+    seq, board = op.get("submit_seq"), op.get("_board")
+    rows = run.jsonl(f"{board}/commands.jsonl") if board else None
+    if rows is None or type(seq) is not int:
+        return None
+    found = [r for r in rows if r.get("seq") == seq]
+    return found[0] if len(found) == 1 and found[0].get("command") == op.get("command") else None
+
+
+def uart_match_checks(run, spec, ops):
+    """Ties the console/ROM observation to the operation and to the cursor taken BEFORE its submission (no UART content is stored)."""
+    out = []
+
+    def add(name, ok, detail, missing=False):
+        out.append(Check(name, "MISSING" if missing else ("OK" if ok else "FAIL"), detail))
+    targets = [o for o in ops or [] if o["command"] == spec["command"]]
+    if len(targets) != 1:
+        add("uart_match_correlated", False, f"{len(targets)} {spec['command']} operation(s): cannot correlate", ops is None or not targets)
+        return out
+    op = targets[0]
+    board = op.get("_board")
+    matches, cursors = run.jsonl(f"{board}/uart-matches.jsonl"), run.jsonl(f"{board}/cursors.jsonl")
+    requests, before = run.jsonl(spec["requests"]), run.json("before.json") or {}
+    sub = submission(run, op)
+    if matches is None or cursors is None or requests is None or sub is None:
+        add("uart_match_correlated", False, "uart-matches.jsonl, cursors.jsonl, the requests file or the submission is absent", True)
+        return out
+    if len(matches) != 1 or len(requests) != 1:
+        add("uart_match_correlated", False, f"{len(matches)} UART match record(s) and {len(requests)} request record(s): exactly one of each expected")
+        return out
+    m, req = matches[0], requests[0]
+    cur = [c for c in cursors if c.get("index") == m.get("cursor_index")]
+    problems = []
+    if len(cur) != 1:
+        problems.append("the matching cursor has no record")
+    else:
+        c = cur[0]
+        if type(c.get("submitted")) is not int or type(op.get("submit_seq")) is not int or not c["submitted"] <= op["submit_seq"]:
+            problems.append("the cursor was not taken before the command was submitted")
+        if c.get("after") != m.get("cursor_after") or c.get("generation") != op.get("generation") or m.get("generation") != op.get("generation"):
+            problems.append("cursor, match and operation disagree on generation or position")
+    if not (type(m.get("matched_seq")) is int and type(m.get("cursor_after")) is int and m["matched_seq"] > m["cursor_after"]):
+        problems.append("the matching UART event does not follow the cursor")
+    if m.get("epoch") != before.get("epoch"):
+        problems.append("the match belongs to another epoch")
+    if m.get("operation") != op["id"]:
+        problems.append(f"the match was recorded after another operation ({m.get('operation')!r}), not {op['id']}")
+    pinned = spec.get("pattern_sha256")
+    if not (isinstance(m.get("pattern_sha256"), str) and HEX64.match(m["pattern_sha256"]) and m["pattern_sha256"] == req.get("marker_sha256")):
+        problems.append("the matched pattern differs from the marker the recipe declared")
+    if pinned and m.get("pattern_sha256") != pinned:
+        problems.append("the matched pattern is not the one pinned by the criteria")
+    if not (type(m.get("pattern_len")) is int and m["pattern_len"] >= spec.get("min_pattern_len", 4)):
+        problems.append("the pattern is too short to be a marker")
+    if op.get("state") != "completed":
+        problems.append(f"the operation is {op.get('state')!r}, not completed")
+    add("uart_match_correlated", not problems, "; ".join(problems))
+    return out
+
+
+def console_return_checks(run, spec, ops):
+    """The 'console opened' transport event must follow a cursor taken before the read was submitted, and be recorded after that read."""
+    targets = [o for o in ops or [] if o["command"] == spec["command"]]
+    if len(targets) != 1:
+        return [Check("console_return_correlated", "MISSING", f"{len(targets)} {spec['command']} operation(s): cannot correlate")]
+    op = targets[0]
+    board = op.get("_board")
+    events, cursors = run.jsonl("console-events.jsonl"), run.jsonl(f"{board}/cursors.jsonl")
+    if events is None or cursors is None:
+        return [Check("console_return_correlated", "MISSING", "console-events.jsonl or cursors.jsonl absent")]
+    opened = [e for e in events if "console opened" in str(e.get("detail", "")) and e.get("kind") == "transport"]
+    problems = []
+    if len(opened) != 1:
+        problems.append(f"{len(opened)} 'console opened' transport event(s), exactly one expected")
+    else:
+        e = opened[0]
+        cur = [c for c in cursors if c.get("index") == e.get("cursor_index")]
+        if len(cur) != 1 or type(cur[0].get("submitted")) is not int or type(op.get("submit_seq")) is not int or not cur[0]["submitted"] <= op["submit_seq"]:
+            problems.append("the cursor was not taken before the read was submitted")
+        elif cur[0].get("after") != e.get("cursor_after_start") or cur[0].get("generation") != op.get("generation"):
+            problems.append("cursor and operation disagree on position or generation")
+        if not (type(e.get("seq")) is int and type(e.get("cursor_after_start")) is int and e["seq"] > e["cursor_after_start"]):
+            problems.append("the transport event does not follow the cursor")
+        if e.get("operation") != op["id"]:
+            problems.append("the event was gathered after another operation")
+    if op.get("state") != "completed":
+        problems.append(f"the read is {op.get('state')!r}, not completed")
+    return [Check("console_return_correlated", "FAIL" if problems else "OK", "; ".join(problems))]
+
+
+def read_observations(run, ops):
+    """Every flash read sidecar: (op index, address, size, sha256), ordered by the operation sequence."""
+    order = {o["id"]: i for i, o in enumerate(ops)}
+    rows = []
+    for sidecar in sorted(run.path.glob("board-*/flash-*.json")):
+        meta = run.json(str(sidecar.relative_to(run.path)))
+        if isinstance(meta, dict) and meta.get("operation") in order and HEX64.match(str(meta.get("sha256", ""))):
+            rows.append({"idx": order[meta["operation"]], "address": meta.get("address"), "size": meta.get("size"), "sha256": meta["sha256"],
+                         "blob": sidecar.with_suffix(".bin")})
+    return sorted(rows, key=lambda r: r["idx"])
+
+
+def overlaps(a, size_a, b, size_b):
+    return a < b + size_b and b < a + size_a
+
+
+def r4_correlation_checks(run, regions, ops):
+    """Independent R4 evidence: what was submitted, what was read back, and the control windows - from raw files, not from report text."""
+    out = []
+
+    def add(name, ok, detail, missing=False):
+        out.append(Check(name, "MISSING" if missing else ("OK" if ok else "FAIL"), detail))
+    if ops is None:
+        add("r4_images_match_manifest", False, "operations unreadable", True)
+        return out
+    writes = [(i, o) for i, o in enumerate(ops) if o["command"] == "flash.write"]
+    subs = [submission(run, o) for _, o in writes]
+    if not writes or any(s is None for s in subs):
+        add("r4_images_match_manifest", False, "flash.write submissions are not recorded (commands.jsonl)", True)
+        return out
+    refs = []
+    for i in range(len(regions)):
+        a = run.json(f"board-0/ref-{i}-a.json")
+        refs.append(a if isinstance(a, dict) else None)
+    if any(r is None for r in refs):
+        add("r4_images_match_manifest", False, "region reference sidecars unreadable", True)
+        return out
+    first = (subs[0].get("args") or {})
+    images = first.get("images") if isinstance(first, dict) else None
+    problems = []
+    if not isinstance(images, list) or not images or not all(isinstance(x, dict) for x in images):
+        problems.append("the first flash.write carries no image list")
+        images = []
+    got = sorted((x.get("address"), x.get("sha256")) for x in images)
+    if sorted(x.get("address") for x in images) != sorted(r["address"] for r in regions) or len(images) != len(regions):
+        problems.append(f"the first flash.write programmed {sorted(x.get('address') for x in images)}, the manifest approves {sorted(r['address'] for r in regions)}")
+    if not all(isinstance(x.get("sha256"), str) and HEX64.match(x["sha256"]) for x in images) or len({x.get("sha256") for x in images}) != len(images):
+        problems.append("image hashes are missing, malformed or not pairwise distinct")
+    if first.get("return_console") is not False:
+        problems.append("the multi-image write did not set return_console=false")
+    for region, ref in zip(regions, refs):
+        mine = [x for x in images if x.get("address") == region["address"]]
+        if mine and mine[0].get("sha256") == ref.get("sha256"):
+            problems.append(f"image at {region['address']:#x} equals the region's reference: nothing would be proven")
+    add("r4_images_match_manifest", not problems, "; ".join(problems))
+    reads = read_observations(run, ops)
+    w0 = writes[0][0]
+    w1 = writes[1][0] if len(writes) > 1 else None
+    # (b) every region was read back after the multi-image write, before any restoration, and equals ITS image
+    rb = []
+    for region in regions:
+        want = next((x.get("sha256") for x in images if x.get("address") == region["address"]), None)
+        seen = [r for r in reads if r["address"] == region["address"] and r["size"] == region["size"] and r["idx"] > w0 and (w1 is None or r["idx"] < w1)]
+        if not seen or any(r["sha256"] != want for r in seen):
+            rb.append(f"region {region['address']:#x}: {'no readback after the write' if not seen else 'readback differs from the submitted image'}")
+    add("r4_readbacks_equal_submitted_images", not rb, "; ".join(rb))
+    # (c) restoration: one write per region, carrying the backup's own hash, then a comparing read equal to the backup
+    rs = []
+    restores = writes[1:]
+    restore_subs = subs[1:]
+    covered = []
+    for (idx, op), sub in zip(restores, restore_subs):
+        imgs = ((sub.get("args") or {}).get("images")) or []
+        if len(imgs) != 1:
+            rs.append(f"restoration write {op['id']} carries {len(imgs)} image(s)")
+            continue
+        covered.append((imgs[0].get("address"), imgs[0].get("sha256"), idx))
+    for region, ref in zip(regions, refs):
+        mine = [c for c in covered if c[0] == region["address"]]
+        if len(mine) != 1 or mine[0][1] != ref.get("sha256"):
+            rs.append(f"region {region['address']:#x}: restoration write missing, duplicated or not the backup's hash")
+            continue
+        later = [r for r in reads if r["address"] == region["address"] and r["size"] == region["size"] and r["idx"] > mine[0][2]]
+        if not later or later[0]["sha256"] != ref.get("sha256"):
+            rs.append(f"region {region['address']:#x}: no comparing read equal to the backup after its restoration")
+    if len(restores) != len(regions):
+        rs.append(f"{len(restores)} restoration write(s) for {len(regions)} region(s)")
+    add("r4_restoration_matches_backups", not rs, "; ".join(rs))
+    # (d) control windows: declared in r4-windows.json, hashes from the sidecars of the reads themselves
+    declared = run.json("r4-windows.json")
+    if not isinstance(declared, list) or not declared:
+        add("r4_control_windows_unchanged", False, "r4-windows.json absent or empty", True)
+        return out
+    last_write = writes[-1][0]
+    wp = []
+    informative = False
+    for win in declared:
+        a, n = win.get("address"), win.get("size")
+        if type(a) is not int or type(n) is not int or n <= 0:
+            wp.append(f"malformed window {win!r}")
+            continue
+        if any(overlaps(a, n, r["address"], r["size"]) for r in regions):
+            wp.append(f"window {a:#x} overlaps an approved region: it cannot be an oracle")
+        seen = [r for r in reads if r["address"] == a and r["size"] == n]
+        pre = [r for r in seen if r["idx"] < w0]
+        mid = [r for r in seen if r["idx"] > w0 and (w1 is None or r["idx"] < w1)]
+        post = [r for r in seen if r["idx"] > last_write]
+        if len(pre) < 2 or not mid or not post:
+            wp.append(f"window {a:#x}: reads before/after-write/after-restore = {len(pre)}/{len(mid)}/{len(post)} (needs >=2/1/1)")
+            continue
+        if len({r["sha256"] for r in pre + mid + post}) != 1:
+            wp.append(f"window {a:#x}: its digest changed between the reads")
+        try:
+            informative = informative or any(b != 0xFF for b in pre[0]["blob"].read_bytes())
+        except OSError:
+            wp.append(f"window {a:#x}: blob unreadable")
+    if not informative and not wp:
+        wp.append("every window is all 0xFF: an erase could not be seen")
+    add("r4_control_windows_unchanged", not wp, "; ".join(wp))
+    return out
 
 
 # ---- assessment, fingerprint --------------------------------------------------------------------------------------------

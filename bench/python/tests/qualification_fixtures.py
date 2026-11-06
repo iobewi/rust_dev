@@ -11,6 +11,9 @@ SERVER_SHA = "7de247710401117f" + "0" * 48
 AGENT_SHA = "6db0030b11e5" + "0" * 52
 PATTERN_SHA = "7e9a1cfda00bc6ee" + "0" * 48
 FF8K = b"\xff" * 8192
+P0, P1 = b"\x11" * 8192, b"\x22" * 8192                 # R4 region patterns (distinct, not equal to the 0xFF reference)
+WINDOW = b"\x01\x02" * 2048                            # R4 control window content (4 KiB, not all 0xFF)
+MARKERS = {"S3R-1": b"ESP-ROM:esp32s3", "S3R-2": b"DOWNLOAD(USB/UART0)"}
 
 
 def sha(data):
@@ -33,7 +36,8 @@ CONTEXTS = {"esp32s3": ("external_uart", 16 * 1024 * 1024, 0x400000), "esp32c3":
 COMMANDS = {"Q1": ["partitions", "flash.read", "flash.write"], "Q2a": ["trigger"], "Q2b": ["trigger"], "Q2c": ["trigger"], "Q2d": ["trigger"],
             "Q3": [], "C3R-0": ["identify"], "C3R-1": ["flash.read", "console"], "C3R-2": ["partitions", "flash.read", "console"], "C3R-3": ["reset"],
             "S3R-1": ["reset"], "S3R-2": ["boot.download"], "S3R-3": ["flash.read"],
-            "R4": ["partitions"] + ["flash.read"] * 6 + ["flash.write"] * 3}
+            "R4": ["partitions", "flash.read", "flash.read", "flash.write", "flash.read", "flash.read", "flash.read", "flash.write", "flash.read",
+                   "flash.write", "flash.read", "flash.read"]}
 SUBMISSIONS = {"Q1": {"primary": 10}, "Q2a": {"primary": 3}, "Q2b": {"primary": 3}, "Q2c": {"primary": 2}, "Q2d": {"primary": 1, "secondary-1": 1},
                "Q3": {"primary": 0}, "C3R-0": {"primary": 1}, "C3R-1": {"primary": 3}, "C3R-2": {"primary": 4}, "C3R-3": {"primary": 1},
                "S3R-1": {"primary": 1}, "S3R-2": {"primary": 2}, "S3R-3": {"primary": 2}, "R4": {"primary": 20}}
@@ -111,9 +115,9 @@ def make_run(root, scenario, *, ts="20261106T100000Z", chip="esp32s3", status="P
                 (run / "board-0" / f"ref-{i}-{name}.bin").write_bytes(FF8K)
                 write_json(run / "board-0" / f"ref-{i}-{name}.json", {"address": 0x200000 + i * 0x10000, "size": 8192, "sha256": sha(FF8K), "complete": True, "segments": []})
         evidence = ["partition_count=5; 2 regions disjoint from the table and from non-owned partitions",
-                    "region 0 ref sha256=" + sha(FF8K) + " size=8192; pattern sha256=" + sha(b"p0"),
-                    "region 1 ref sha256=" + sha(FF8K) + " size=8192; pattern sha256=" + sha(b"p1"),
-                    "control windows (stable, outside the regions): 0x10000+0x1000=" + sha(b"w")[:16],
+                    "region 0 ref sha256=" + sha(FF8K) + " size=8192; pattern sha256=" + sha(P0),
+                    "region 1 ref sha256=" + sha(FF8K) + " size=8192; pattern sha256=" + sha(P1),
+                    "control windows (stable, outside the regions): 0x10000+0x1000=" + sha(WINDOW)[:16],
                     "single multi-image write; every region equal to its own pattern",
                     "control windows byte-identical after the write (no implicit erase seen where we looked)",
                     "control windows byte-identical after the restoration",
@@ -124,10 +128,10 @@ def make_run(root, scenario, *, ts="20261106T100000Z", chip="esp32s3", status="P
         write_json(run / "transport.json", {"declared_by_operator": transport, "inferred_by_agent": transport, "provenance_source": "agent_reported"})
         evidence = [f"transport declared={transport} inferred={transport} (inferred_from_webserial_vid_pid; agent_reported)"]
         if scenario == "S3R-1":
-            write_jsonl(run / "reset-requests.jsonl", [{"marker": "ESP-ROM:esp32s3"}])
+            write_jsonl(run / "reset-requests.jsonl", [{"marker": "ESP-ROM:esp32s3", "marker_sha256": sha(MARKERS["S3R-1"])}])
             evidence += ["reset settled; result fields: boot_verified, method, reset", "'ESP-ROM:esp32s3' observed after the reset, same proof window"]
         elif scenario == "S3R-2":
-            write_jsonl(run / "bootloader-requests.jsonl", [{"hold_ms": 500, "marker_len": 17}])
+            write_jsonl(run / "bootloader-requests.jsonl", [{"hold_ms": 500, "marker_len": 19, "marker_sha256": sha(MARKERS["S3R-2"])}])
             evidence += ["boot.download settled; result fields: boot_verified, download_mode_requested, hold_ms, method",
                          "download-mode marker observed after the command, same proof window", "the grant expired naturally; the card is left in ROM download mode"]
             grants = [(t0 + 10, 60)]
@@ -163,13 +167,49 @@ def make_run(root, scenario, *, ts="20261106T100000Z", chip="esp32s3", status="P
     for n, command in enumerate(COMMANDS[scenario] * (2 if scenario == "Q2a" or scenario == "Q2b" else 1)):
         ops.append({"id": f"op{n}", "device": "esp32-local", "generation": generation, "command": command, "state": "completed", "settled": True,
                     "unsettled": False, "error_code": None, "http_status": None})
+    for n, op in enumerate(ops):
+        op["submit_seq"] = n
     write_jsonl(run / "board-0" / "operations.jsonl", ops)
+    raw_execution(run, scenario, ops, epoch, generation, region)
     write_json(run / "cleanup.json", {"errors": [], "submissions": SUBMISSIONS[scenario]})
     test = {"id": scenario, "status": status, "preconditions": f"{chip} / {transport}", "evidence": evidence, "incidents": [] if status == "PASS" else ["[bench] simulated"],
             "restoration": restoration, "limits": "simulated"}
     write_json(run / "report.json", {"tests": [test], "windows": 1})
     write_jsonl(run / "verdicts.jsonl", [test])
     return run
+
+
+def raw_execution(run, scenario, ops, epoch, generation, region):
+    """The client's raw execution evidence (commands.jsonl, cursors.jsonl, uart-matches.jsonl, flash sidecars) - SIMULATED."""
+    board = run / "board-0"
+    args = {n: {} for n in range(len(ops))}
+    if scenario == "S3R-2":
+        args[0] = {"hold_ms": 500}
+    elif scenario == "S3R-3":
+        args[0] = {"address": 0, "size": 4096, "return_console": True}
+    elif scenario == "R4":
+        regions = [0x200000, 0x210000]
+        args[3] = {"chip": "esp32s3", "return_console": False, "images": [{"address": regions[0], "artifact": "a0", "sha256": sha(P0)},
+                                                                            {"address": regions[1], "artifact": "a1", "sha256": sha(P1)}]}
+        args[7] = {"chip": "esp32s3", "return_console": False, "images": [{"address": regions[0], "artifact": "r0", "sha256": sha(FF8K)}]}
+        args[9] = {"chip": "esp32s3", "return_console": False, "images": [{"address": regions[1], "artifact": "r1", "sha256": sha(FF8K)}]}
+    write_jsonl(board / "commands.jsonl", [{"seq": n, "command": ops[n]["command"], "args": args[n], "args_sha256": sha(json.dumps(args[n], sort_keys=True).encode()),
+                                            "allow_destructive": ops[n]["command"] == "flash.write", "generation": generation, "epoch": epoch} for n in range(len(ops))])
+    if scenario in MARKERS:
+        write_jsonl(board / "cursors.jsonl", [{"index": 0, "after": 5, "submitted": 0, "epoch": epoch, "generation": generation}])
+        write_jsonl(board / "uart-matches.jsonl", [{"cursor_index": 0, "cursor_after": 5, "cursor_submitted": 0, "matched_seq": 9, "pattern_sha256": sha(MARKERS[scenario]),
+                                                    "pattern_len": len(MARKERS[scenario]), "epoch": epoch, "generation": generation, "operation": ops[0]["id"]}])
+    if scenario == "S3R-3":
+        write_jsonl(board / "cursors.jsonl", [{"index": 0, "after": 5, "submitted": 0, "epoch": epoch, "generation": generation}])
+        write_jsonl(run / "console-events.jsonl", [{"seq": 8, "kind": "transport", "detail": "console opened", "cursor_index": 0, "cursor_after_start": 5, "operation": ops[0]["id"]}])
+    if scenario == "R4":
+        write_json(run / "r4-windows.json", [{"address": 0x10000, "size": 0x1000}])
+        reads = {1: (0x10000, WINDOW), 2: (0x10000, WINDOW), 4: (regions[0], P0), 5: (regions[1], P1), 6: (0x10000, WINDOW),
+                 8: (regions[0], FF8K), 10: (regions[1], FF8K), 11: (0x10000, WINDOW)}
+        for count, (n, (address, data)) in enumerate(sorted(reads.items()), 1):
+            stem = board / f"flash-{count:03d}-{address:08x}"
+            stem.with_suffix(".bin").write_bytes(data)
+            write_json(stem.with_suffix(".json"), {"address": address, "size": len(data), "sha256": sha(data), "artifact": f"art{n}", "operation": ops[n]["id"]})
 
 
 def tree_digest(root):

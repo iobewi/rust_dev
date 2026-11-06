@@ -127,6 +127,8 @@ def test_r4_multi_image_without_global_erase(bench_client, qual_session, pytestc
             out.evidence.append("control windows (stable, outside the regions): " +
                                 "; ".join(f"{w['address']:#x}+{w['size']:#x}={hashlib.sha256(b).hexdigest()[:16]}" for w, b in zip(windows, before)))
 
+            # Declaration only (addresses/sizes): the comparator takes the hashes from the flash sidecars, never from here.
+            case.write("r4-windows.json", [{"address": w["address"], "size": w["size"]} for w in windows])
             operator_gesture(case, "GRANT 1800 s locally in the page", timeout=cfg["operator_timeout_s"])
             try:
                 case.wait_grant(minimum_seconds=budget + 60, timeout=cfg["operator_timeout_s"])

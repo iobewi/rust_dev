@@ -259,7 +259,7 @@ def reset_and_observe(case, board, client, cfg, out):
         raise Blocked("the card exposes no reset capability on this interface")
     generation = device["generation"]
     cursor = board.cursor()
-    case.client.record("reset-requests.jsonl", {"marker": reset["marker"], "generation": generation[:8]})
+    case.client.record("reset-requests.jsonl", {"marker": reset["marker"], "marker_sha256": hashlib.sha256(reset["marker"].encode()).hexdigest(), "generation": generation[:8]})
     try:
         result = board.command("reset", {}, timeout=60)
         out.evidence.append("reset settled; result fields: " + ", ".join(sorted(result or {})))
