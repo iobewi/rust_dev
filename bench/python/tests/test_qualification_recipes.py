@@ -15,7 +15,7 @@ from types import SimpleNamespace
 import pytest
 
 from iobewi_bench import BenchClient
-from iobewi_bench.client import BenchError, PendingOperation
+from iobewi_bench.client import BenchError, ContinuityError, PendingOperation
 from iobewi_bench.qualification import Campaign
 
 BENCH = Path(__file__).resolve().parents[2]
@@ -305,9 +305,10 @@ def test_uncertainty_only_visible_at_close_is_not_a_pass_or_a_fail(sim, tmp_path
     case.start()
     board = case.reserve(ttl=3)
     out = Outcome()
-    with pytest.raises(PendingOperation):
+    with pytest.raises(BaseException) as raised:
         with recorded(case, "T", out, preconditions="sim", limits="sim"):
             board.uncertain = True                                  # body "succeeds", outcome unknown
+    assert any(isinstance(e, PendingOperation) for e in harness.flatten(raised.value))   # close error preserved
     assert _verdict(case) == "INDETERMINATE"
 
 
@@ -434,3 +435,84 @@ def test_q3_failure_after_the_signal_abandons_the_stale_handle_without_touching_
         "close() must not try to release the stale handle"
     assert client.device("board")["reservation"] is not None      # simulated server never restarted: lease still there
     assert _verdict(case) == "FAIL"
+
+
+# --- continuity loss is INDETERMINATE (body, nested groups, close) -------------------------------------
+def _recorded_case(sim, tmp_path):
+    url, client = sim()
+    case = Campaign(client, "board", tmp_path / "run", __file__, "T")
+    case.start()
+    case.reserve(ttl=3)
+    return case, Outcome()
+
+
+@pytest.mark.parametrize("make", [
+    lambda: ContinuityError("Bench epoch changed"),
+    lambda: BaseExceptionGroup("window", [ValueError("x"), ExceptionGroup("inner", [ContinuityError("generation changed")])])])
+def test_continuity_loss_in_the_body_is_indeterminate_and_the_first_error_is_kept(sim, tmp_path, make):
+    case, out = _recorded_case(sim, tmp_path)
+    error = make()
+    with pytest.raises(type(error)) as raised:
+        with recorded(case, "T", out, preconditions="sim", limits="sim"):
+            raise error
+    assert raised.value is error                                       # not replaced, not replayed
+    assert _verdict(case) == "INDETERMINATE" and any("continuity" in i for i in out.incidents)
+
+
+def test_continuity_loss_reported_by_close_is_indeterminate(sim, tmp_path):
+    case, out = _recorded_case(sim, tmp_path)
+
+    def failing_close():
+        raise BaseExceptionGroup("Qualification cleanup/evidence failed", [ExceptionGroup("events", [ContinuityError("epoch")])])
+    case.close = failing_close
+    with pytest.raises(BaseException) as raised:
+        with recorded(case, "T", out, preconditions="sim", limits="sim"):
+            pass                                                      # body succeeds
+    assert any(isinstance(e, ContinuityError) for e in harness.flatten(raised.value))
+    assert _verdict(case) == "INDETERMINATE"
+
+
+def test_a_plain_failure_is_still_a_fail(sim, tmp_path):
+    case, out = _recorded_case(sim, tmp_path)
+    with pytest.raises(AssertionError):
+        with recorded(case, "T", out, preconditions="sim", limits="sim"):
+            assert False, "ordinary assertion"
+    assert _verdict(case) == "FAIL"
+
+
+# --- Q3 nominal path across the epoch change, with the REAL Board -----------------------------------------
+def test_q3_flow_crosses_the_epoch_change_and_proves_the_old_real_board_invalid(sim, tmp_path):
+    url, client, cfg, case, log = _q3_case(sim, tmp_path)
+    cfg["q3"]["agent_reconnect_timeout_s"] = 5
+    state = {"restarted": False}
+    original = case.client._request
+
+    def seen(method, path, *args, **kwargs):                        # the server "restarted": new epoch everywhere
+        result = original(method, path, *args, **kwargs)
+        if state["restarted"] and isinstance(result, dict) and "epoch" in result:
+            result = {**result, "epoch": "restarted-epoch"}
+        return result
+    case.client._request = seen
+    released_out_of_band = []
+
+    def hup(launcher):
+        lease = case.boards[0].lease_id
+        client._request("DELETE", f"/api/v1/leases/{lease}")          # a restart voids leases (other client, not the handle)
+        released_out_of_band.append(lease)
+        state["restarted"] = True
+        with log.open("a") as stream:
+            stream.write("Server PID 2 exited (0).\nBench server child started (PID 4242).\n")
+    reserved, real_reserve = [], case.reserve
+    case.reserve = lambda **kw: reserved.append(real_reserve(**kw)) or reserved[-1]
+    out = Outcome()
+    with recorded(case, "Q3", out, preconditions="sim", limits="sim"):
+        coordinated_restart(case, case.client, cfg, url, out, ops=fake_ops(tmp_path, request=hup, log=log),
+                            reconnect_gesture=False, durability="volatile")
+    assert _verdict(case) == "PASS", out.incidents
+    assert any("old Board handle rejected" in e for e in out.evidence)   # a ContinuityError, not 'Reservation is closed'
+    board = reserved[0]
+    assert board.closed is True and not case.boards                      # sealed AFTER the proof, never released by us
+    requests = [json.loads(line) for line in (case.directory / "requests.jsonl").read_text().splitlines()]
+    assert not [r for r in requests if r.get("method") == "DELETE"], "the stale handle was released by the case"
+    assert (case.directory / "abandoned-handles.jsonl").exists() and released_out_of_band
+    assert [w for w in (case.directory / "windows.jsonl").read_text().splitlines() if '"opened"' in w]   # fresh window

@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from iobewi_bench.client import PendingOperation
+from iobewi_bench.client import ContinuityError, PendingOperation
 from iobewi_bench.qualification import Campaign
 
 PACKAGE = Path(__file__).resolve().parent
@@ -110,12 +110,18 @@ def wait_until(predicate, *, timeout, interval=1.0, what):
 
 
 def abandon_stale(case, board, out, reason):
-    """Explicitly give up a handle made stale by an interruption: no release attempt, no resumption."""
+    """Stop tracking a handle made stale by an interruption: Campaign.close() will never release it and
+    nothing is resumed. The handle is NOT sealed here so that the epoch-based invalidation proof
+    (`Board._check_target`, read-only GETs) can still be observed; call seal() once that proof is done."""
     if board in case.boards:
         case.boards.remove(board)
-    board.closed = True
     case.client.record("abandoned-handles.jsonl", {"lease": board.lease_id, "reason": reason})
     out.evidence.append(f"stale handle abandoned explicitly: {reason}")
+
+
+def seal(board):
+    """Final state of an abandoned handle: closed, so no later code can submit or release through it."""
+    board.closed = True
 
 
 # --- verdict ------------------------------------------------------------------------------------
@@ -124,8 +130,8 @@ def recorded(case, test_id, out, *, preconditions, limits):
     """Run a scenario body, then record exactly one verdict and close the campaign.
 
     Verdict rules:
-      * unresolved submission/operation on ANY tracked Board, or a PendingOperation anywhere in the
-        close errors (also inside exception groups) => INDETERMINATE, whatever the body returned/raised;
+      * unresolved submission/operation on ANY tracked Board, or a PendingOperation / ContinuityError anywhere
+        in the body or close errors (also inside nested exception groups) => INDETERMINATE, whatever else happened;
       * otherwise PASS only if the body succeeded AND Campaign.close() succeeded.
     The first error is always preserved and re-raised; close errors are added to the incidents.
     """
@@ -136,12 +142,18 @@ def recorded(case, test_id, out, *, preconditions, limits):
     except Blocked as error:
         out.status, first_error = "BLOCKED", error
         out.incident("operator", str(error))
-    except PendingOperation as error:
-        out.status, first_error = "INDETERMINATE", error
-        out.incident("bench", f"unresolved outcome: {error}")
     except BaseException as error:  # noqa: BLE001 - recorded then re-raised
-        out.status, first_error = "FAIL", error
-        out.incident("unclassified", "classify from evidence - " + describe(error))
+        first_error = error
+        kinds = list(flatten(error))        # also looks inside (nested) exception groups
+        if any(isinstance(e, PendingOperation) for e in kinds):
+            out.status = "INDETERMINATE"
+            out.incident("bench", f"unresolved outcome: {describe(error)}")
+        elif any(isinstance(e, ContinuityError) for e in kinds):
+            out.status = "INDETERMINATE"
+            out.incident("infrastructure", f"proof-window continuity lost: {describe(error)}")
+        else:
+            out.status = "FAIL"
+            out.incident("unclassified", "classify from evidence - " + describe(error))
     finally:
         unresolved = [b for b in case.boards if getattr(b, "uncertain", False) or getattr(b, "pending", None)]
         close_errors = []
@@ -151,20 +163,25 @@ def recorded(case, test_id, out, *, preconditions, limits):
             close_errors.append(error)
             out.incident("infrastructure", "close: " + ", ".join(describe(e) for e in flatten(error)
                                                                    if not hasattr(e, "exceptions")))
-        pending_in_close = any(isinstance(e, PendingOperation) for error in close_errors for e in flatten(error))
-        if unresolved or pending_in_close:
-            out.incident("bench", f"{len(unresolved)} handle(s) with unresolved submission/operation; "
-                         "reservation retained; no replay")
+        closing = [e for error in close_errors for e in flatten(error)]
+        pending_in_close = any(isinstance(e, PendingOperation) for e in closing)
+        continuity_in_close = any(isinstance(e, ContinuityError) for e in closing)
+        if unresolved or pending_in_close or continuity_in_close:
+            out.incident("bench", f"{len(unresolved)} unresolved handle(s); pending in close={pending_in_close}; "
+                         f"continuity lost in close={continuity_in_close}; no replay")
             out.status = "INDETERMINATE"
-            out.restoration = "UNKNOWN - reconcile locally before any further mutation (was: " + out.restoration + ")"
+            if "UNKNOWN" not in out.restoration:
+                out.restoration = "UNKNOWN - reconcile locally before any further mutation (was: " + out.restoration + ")"
         elif close_errors and out.status == "PASS":
             out.status = "FAIL"
         case.result(test_id, out.status or "INDETERMINATE", preconditions=preconditions,
                     evidence=out.evidence, incidents=out.incidents,
                     restoration=out.restoration, limits=limits)
-    if out.status == "INDETERMINATE" and not isinstance(first_error, PendingOperation):
-        raise PendingOperation("INDETERMINATE: unresolved hardware outcome; first error: "
-                               + (describe(first_error) if first_error else "none")) from first_error
+    culprit = first_error if first_error is not None else (close_errors[0] if close_errors else None)
+    if out.status == "INDETERMINATE" and not any(isinstance(e, (PendingOperation, ContinuityError))
+                                                  for e in (flatten(culprit) if culprit else ())):
+        raise PendingOperation("INDETERMINATE: unresolved outcome; first error: "
+                               + (describe(culprit) if culprit else "none")) from culprit
     if isinstance(first_error, Blocked):
         pytest.skip("BLOCKED: " + str(first_error))
     if first_error is not None:
