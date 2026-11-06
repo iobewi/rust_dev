@@ -222,4 +222,4 @@ session, `retire_after_recovery()` can retire the old handle only in a new,
 locally recovered and unreserved session. The old outcome stays uncertified.
 Generation changes now also interrupt Campaign event proof; preserve old recipes
 and create a new consumer recipe version using explicit window boundaries.
-`compare(board, backup)` performs the final independent segmented SHA-256 check.
+`compare(board, backup)` performs the final independent segmented SHA-256 check. Each server readback is deleted only after its private copy (`flash-NNN` sidecar and blob) was re-read and matched its size and SHA-256; a differing comparison, a failed read, an unresolved operation, a missing or different private copy or a failing delete KEEPS the server artifact. The result lists the kept ids in `retained_artifacts`; qualification recipes turn a non-empty list into an incident (`compare_released`), so such a run cannot be a plain PASS.

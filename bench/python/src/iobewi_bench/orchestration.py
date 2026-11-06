@@ -166,13 +166,62 @@ class Orchestrator:
         if (not metadata.get('complete') or path.stat().st_size != metadata['size'] or
                 reference.hexdigest() != metadata['sha256']):
             raise BenchError('Backup integrity mismatch')
-        digest = hashlib.sha256()
+        digest, held = hashlib.sha256(), []
+        before = (board.last_operation or {}).get('id')
+        # Any exception below leaves every server readback in place: nothing is released blindly.
         for offset in range(0,metadata['size'],4*1024*1024):
-            data = board.read_flash(address=metadata['address']+offset,
-                size=min(4*1024*1024,metadata['size']-offset),timeout=timeout,return_console=False)
+            try:
+                data = board.read_flash(address=metadata['address']+offset,
+                    size=min(4*1024*1024,metadata['size']-offset),timeout=timeout,return_console=False)
+            finally:
+                # Track the server copy even when read_flash fails AFTER the operation settled: it then exists without
+                # a verified local copy and must stay (it may be the only evidence).
+                operation = board.last_operation or {}
+                artifact = (operation.get('result') or {}).get('artifact')
+                if operation.get('id') != before and artifact:
+                    held.append(dict(artifact))
+                    before = operation.get('id')
             digest.update(data)
-            board.client.delete_artifact(board.last_operation['result']['artifact']['id'])
-        if digest.hexdigest() != metadata['sha256']:
-            raise BenchError('Final flash comparison differs from the verified backup')
+        equal = digest.hexdigest() == metadata['sha256']
+        if not equal:
+            # A differing readback is evidence: keep every server copy and say which ones.
+            raise BenchError('Final flash comparison differs from the verified backup; server readbacks KEPT: '
+                             + ', '.join(str(a.get('id')) for a in held))
+        retained = self._release_readbacks(board,held)
         return {'equal':True,'sha256':digest.hexdigest(),'size':metadata['size'],
-                'consistency':'sequential_observations'}
+                'consistency':'sequential_observations','retained_artifacts':retained}
+
+    @staticmethod
+    def _local_copy_matches(board, artifact):
+        """True only if a private copy (flash-NNN sidecar + blob) of exactly this artifact exists, is re-read and matches."""
+        directory = getattr(board,'output_dir',None)
+        if directory is None:
+            return False
+        for sidecar in sorted(Path(directory).glob('flash-*.json')):
+            try:
+                meta = json.loads(sidecar.read_text())
+                if not isinstance(meta,dict) or meta.get('artifact') != artifact.get('id'):
+                    continue
+                raw = sidecar.with_suffix('.bin').read_bytes()
+            except (OSError,ValueError):
+                continue
+            digest = hashlib.sha256(raw).hexdigest()
+            return (len(raw) == artifact.get('size',len(raw)) and digest == artifact.get('sha256',digest) == meta.get('sha256')
+                    and len(raw) == meta.get('size',len(raw)))
+        return False
+
+    def _release_readbacks(self, board, held):
+        """Delete a server readback only after its private copy was re-read and matched; return the ids that were KEPT."""
+        if getattr(board,'uncertain',False) or getattr(board,'pending',None):
+            return [a.get('id') for a in held]
+        retained = []
+        for artifact in held:
+            # Without a private output directory the download itself was size/SHA-verified and the comparison is equal: nothing to protect.
+            if getattr(board,'output_dir',None) is not None and not self._local_copy_matches(board,artifact):
+                retained.append(artifact.get('id'))
+                continue
+            try:
+                board.client.delete_artifact(artifact['id'])
+            except Exception:                      # noqa: BLE001 - the artifact stays; reported, not hidden
+                retained.append(artifact.get('id'))
+        return retained

@@ -14,7 +14,7 @@ import pytest
 from iobewi_bench import Orchestrator
 from iobewi_bench.client import BenchError
 
-from .harness import Blocked, Outcome, make_campaign, operator_gesture, recorded, wait_until
+from .harness import Blocked, Outcome, compare_released, make_campaign, operator_gesture, recorded, wait_until
 from .session import build_manifest
 
 pytestmark = pytest.mark.bench
@@ -91,7 +91,7 @@ def test_q1_full_cycle(bench_client, qual_session, pytestconfig):
         out.evidence.append("programmed; independent readback equal to pattern sha256=" + digest)
 
         runner.restore(board, a, allow_destructive=True, timeout=timeout)
-        assert runner.compare(board, a, timeout=timeout)["equal"] is True
+        assert compare_released(runner, board, a, out, timeout)["equal"] is True
         out.restoration = f"restored; independent compare equal to {a.name}"
 
         operator_gesture(case, "REVOKE the grant locally in the page", timeout=cfg["operator_timeout_s"])

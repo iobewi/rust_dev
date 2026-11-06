@@ -29,7 +29,7 @@ import pytest
 from iobewi_bench import Orchestrator
 from iobewi_bench.client import BenchError
 
-from .harness import Blocked, Outcome, make_campaign, operator_gesture, recorded, wait_until
+from .harness import Blocked, Outcome, compare_released, make_campaign, operator_gesture, recorded, wait_until
 from .readonly import retained_reads
 from .session import build_manifest
 from .test_q1_campaign_cycle import SECTOR, deterministic_pattern, overlaps
@@ -48,7 +48,7 @@ def recover_after_failure(board, runner, refs, timeout, out, error):
     try:
         for path, _ in refs:
             runner.restore(board, path, allow_destructive=True, timeout=timeout)
-            if runner.compare(board, path, timeout=timeout)["equal"] is not True:
+            if compare_released(runner, board, path, out, timeout)["equal"] is not True:
                 raise AssertionError("restored region differs from its backup")
     except BaseException as again:                                   # noqa: BLE001 - reported, the first error stays the verdict
         out.restoration = "UNKNOWN: the controlled restoration failed; do not retry blindly - local recovery from the verified backups is required"
@@ -157,7 +157,7 @@ def test_r4_multi_image_without_global_erase(bench_client, qual_session, pytestc
                 phase = "restoring"               # a failure from here on is NOT followed by a second automatic restore
                 for number, (path, _) in enumerate(refs):
                     runner.restore(board, path, allow_destructive=True, timeout=timeout)
-                    assert runner.compare(board, path, timeout=timeout)["equal"] is True
+                    assert compare_released(runner, board, path, out, timeout)["equal"] is True
                 phase = "restored"
                 out.restoration = "restored; independent compare equal to every verified backup"
                 after_restore = [read_window(reads, item, timeout) for item in windows]
