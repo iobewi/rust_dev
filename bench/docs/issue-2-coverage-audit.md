@@ -44,7 +44,7 @@ jamais mesuré ; l'égalité du SHA d'une région vierge n'identifie pas une car
 
 Légende : ✅ démontré sur matériel (réf.) · 🟡 partiel · ❌ non démontré sur matériel · 🧪 couvert en simulation seulement (le logiciel n'est pas une qualification matérielle).
 
-| # | Exigence (coverage.md) | Sous-exigence | État | Preuve existante | Écart / limite |
+| # | Exigence (issue #2) | Sous-exigence | État | Preuve existante | Écart / limite |
 |---|---|---|---|---|---|
 | 1 | S3 + pont UART | ouverture du port, identification, partitions | ✅ | A, B (Q1 : table de partitions, lectures) ; E | |
 | 1 | | capture de la ROM au démarrage | ❌ | aucune sur S3 (la bannière `ESP-ROM:` est observée sur C3, réf. D) | à qualifier sur S3 |
@@ -140,5 +140,5 @@ Les contrôles purement logiciels (politiques de sécurité, erreurs de protocol
 
 - Les références logicielles (🧪) sont des constats par domaine d'après les fichiers de tests existants ; elles n'ont **pas** été relues cas par cas et doivent
   être confrontées par le réviseur avant de s'y appuyer.
-- Le texte exact de l'issue #2 n'a été lu que par résumé ; les dix exigences suivent `coverage.md`.
+- Le texte exact de l'issue #2 n'a été lu que par résumé, complété par la liste du reviewer pour les numéros 6 à 10 ; à confronter à l'issue avant fusion.
 - Aucun accès matériel : aucun résultat nouveau n'est rapporté ici.
