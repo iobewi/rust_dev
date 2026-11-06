@@ -137,6 +137,7 @@ def write_table(client, address, entries):
         board.command("flash.write", {"chip": "esp32c3", "return_console": False,
                                       "images": [{"address": address, "artifact": artifact["id"], "sha256": artifact["sha256"]}]},
                       allow_destructive=True)
+    client.delete_artifact(artifact["id"])                      # the test's own upload must not linger on the server
 
 
 def run_recipe(tmp_path, url, selector, **session_change):
@@ -458,3 +459,97 @@ def test_an_indeterminate_reset_is_observed_not_replayed_not_certified(sim, tmp_
     events = [json.loads(l)["event"] for l in (case.directory / "windows.jsonl").read_text().splitlines()]
     assert events == (["interrupted", "opened"] if reconnect else ["interrupted"])
     assert any(("card reconnected" if reconnect else "NOT seen reconnected") in e for e in out.evidence)
+
+
+# --- server-side readbacks are released only after the private copy is verified -------------------------------------------
+class ReadBoard:
+    """Mimics Board.read_flash: a private local copy + sidecar, and an artifact recorded in last_operation."""
+    def __init__(self, directory, *, tamper=False, delete_error=None, uncertain=False):
+        self.output_dir, self.tamper, self.uncertain, self.pending = directory, tamper, uncertain, None
+        self.deleted, self.order, self.last_operation, self.n = [], [], None, 0
+        self.client = self
+
+    def read_flash(self, *, address, size, timeout=600, return_console=True):
+        assert return_console is False
+        data = bytes([self.n % 250 + 1]) * size                    # never all zeros: a zeroed copy must differ
+        self.n += 1
+        artifact = {"id": f"artifact-{self.n:04d}-xxxx", "size": size, "sha256": harness.hashlib.sha256(data).hexdigest()}
+        self.last_operation = {"id": f"op{self.n}", "result": {"artifact": artifact}}
+        path = self.output_dir / f"flash-{self.n:03d}-{address:08x}.bin"
+        path.write_bytes(b"\x00" * size if self.tamper else data)
+        path.with_suffix(".json").write_text(json.dumps({"address": address, "size": size, "sha256": artifact["sha256"], "artifact": artifact["id"]}))
+        return data
+
+    def delete_artifact(self, artifact_id):
+        self.order.append(("delete", (self.output_dir / next(p.name for p in self.output_dir.glob("flash-*.bin"))).exists()))
+        if getattr(self, "fail", None):
+            raise self.fail
+        self.deleted.append(artifact_id)
+
+
+def test_server_readbacks_are_deleted_only_after_the_local_copy_matched(tmp_path):
+    board, out = ReadBoard(tmp_path), Outcome()
+    with readonly.retained_reads(board, out) as reads:
+        reads.read(address=0, size=4096)
+        reads.read(address=0, size=4096)
+        assert board.deleted == [], "nothing may be deleted while the test still runs"
+    assert board.deleted == ["artifact-0001-xxxx", "artifact-0002-xxxx"] and all(exists for _, exists in board.order)
+    assert sum("deleted after its private copy was re-read" in e for e in out.evidence) == 2
+
+
+def test_a_missing_or_different_local_copy_keeps_the_server_artifact_and_fails_a_would_be_pass(tmp_path):
+    board, out = ReadBoard(tmp_path, tamper=True), Outcome()
+    with pytest.raises(AssertionError, match="cleanup failed"):
+        with readonly.retained_reads(board, out) as reads:
+            reads.read(address=0, size=4096)
+    assert board.deleted == [] and any("KEPT" in i for i in out.incidents)
+    missing, out = ReadBoard(tmp_path / "x"), Outcome()
+    (tmp_path / "x").mkdir()
+    with pytest.raises(AssertionError):
+        with readonly.retained_reads(missing, out) as reads:
+            reads.read(address=0, size=4096)
+            next((tmp_path / "x").glob("flash-*.bin")).unlink()
+    assert missing.deleted == []
+
+
+def test_cleanup_never_masks_or_converts_an_earlier_failure_or_block(tmp_path):
+    for error in (harness.Blocked("two valid tables"), AssertionError("reads differ"), ContinuityError("USB gone")):
+        directory = tmp_path / type(error).__name__
+        directory.mkdir()
+        board, out = ReadBoard(directory), Outcome()
+        board.fail = RuntimeError("server refused the deletion")
+        with pytest.raises(type(error)) as raised:
+            with readonly.retained_reads(board, out) as reads:
+                reads.read(address=0, size=4096)
+                raise error
+        assert raised.value is error                                                        # the first error is what propagates
+        assert any("server deletion failed" in i for i in out.incidents)                    # and the cleanup problem is recorded
+
+
+def test_an_early_exit_still_releases_verified_readbacks(tmp_path):
+    board, out = ReadBoard(tmp_path), Outcome()
+    with pytest.raises(AssertionError):
+        with readonly.retained_reads(board, out) as reads:
+            reads.read(address=0, size=4096)
+            raise AssertionError("diverging reads")
+    assert board.deleted == ["artifact-0001-xxxx"]
+
+
+def test_an_unresolved_operation_keeps_every_server_readback(tmp_path):
+    board, out = ReadBoard(tmp_path), Outcome()
+    with pytest.raises(readonly.PendingOperation):
+        with readonly.retained_reads(board, out) as reads:
+            reads.read(address=0, size=4096)
+            board.uncertain = True
+            raise readonly.PendingOperation("lost response")
+    assert board.deleted == [] and any("unresolved" in i for i in out.incidents)
+
+
+def test_c3_read_recipes_leave_no_artifact_on_the_simulated_server(sim, tmp_path):
+    url, client = prepare(sim, [(0x10000, [("factory", 0x20000, 0x100000)])])
+    run, reports = run_recipe(tmp_path, url, "test_c3_read_only.py")
+    assert {k: v["status"] for k, v in reports.items()} == {"C3R-0": "PASS", "C3R-1": "PASS", "C3R-2": "PASS"}
+    assert client.artifacts()["artifacts"] == [], "a readback stayed on the server"
+    assert any("server readback" in e for e in reports["C3R-1"]["evidence"] + reports["C3R-2"]["evidence"])
+    dumps = list((tmp_path / "evidence").glob("C3R-*/board-*/flash-*.bin"))
+    assert len(dumps) == 3 and all(p.with_suffix(".json").exists() for p in dumps)          # the private copies are still there

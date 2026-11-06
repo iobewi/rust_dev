@@ -97,6 +97,12 @@ est observée et consignée (nouvelle génération ou absence), une nouvelle fen
 un succès** : un critère pour l'USB natif sera écrit après avoir constaté des résultats réels ; FAIL = reset réglé, aucune rupture,
 pas de bannière dans le délai ; BLOCKED = la carte n'expose pas la capacité `reset` sur cette interface.
 
+**Relectures côté serveur** : `Board.read_flash` conserve une copie locale privée (`flash-NNN-<adresse>.bin` + sidecar). Les recettes de lecture
+suppriment ensuite la copie **du serveur**, mais seulement après avoir **relu** la copie locale depuis le disque et constaté qu'elle correspond à la
+taille et au SHA-256 de l'artefact. Une copie manquante ou différente garde l'artefact serveur et fait échouer un test qui serait sinon PASS. Une opération
+non résolue garde tous les artefacts. Le nettoyage ne transforme jamais un FAIL, BLOCKED ou INDETERMINATE : la première erreur est conservée, le problème de
+nettoyage est consigné en incident.
+
 **Transport** : la session porte la déclaration de l'opérateur ; l'agent n'en fait qu'une inférence (VID/PID). Les deux sont
 consignées avec leur provenance (`transport.json`) et aucune ne prouve le câblage. `accept_unknown_transport: true` autorise
 explicitement une inférence « unknown » ; un conflit entre déclaration et inférence connue donne BLOCKED.

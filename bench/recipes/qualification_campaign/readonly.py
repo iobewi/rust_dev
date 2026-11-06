@@ -5,6 +5,7 @@ needs the C3R-READ consent. The explicit reset command is a deliberate restart: 
 own consent (C3R-RESET). Nothing here writes to flash.
 """
 import hashlib
+import json
 import struct
 from contextlib import contextmanager
 
@@ -58,6 +59,76 @@ def record_transport(case, client, cfg, out):
     case.write("transport.json", record)
     out.evidence.append(f"transport declared={record['declared_by_operator']} inferred={record['inferred_by_agent']} "
                         f"({record['inference_basis'] or 'no basis'}; {record['provenance_source']})")
+
+
+class ReadbackRetention:
+    """Reads with return_console=False and releases the SERVER copy of every readback, never before the private one is safe.
+
+    Board.read_flash already stores a private local copy (flash-NNN-<addr>.bin + sidecar). A server artifact is deleted only
+    after that copy was RE-READ from disk and matched the artifact's size and SHA-256. A copy that is missing or different
+    keeps the server artifact (it may be the only evidence) and is reported. Cleanup never changes a FAIL / BLOCKED /
+    INDETERMINATE into anything else; on a path that would otherwise PASS, a cleanup problem makes the test fail visibly."""
+
+    def __init__(self, board, out):
+        self.board, self.out, self.held = board, out, []
+
+    def read(self, *, address, size, timeout=600):
+        data = self.board.read_flash(address=address, size=size, timeout=timeout, return_console=False)
+        self.held.append(dict(self.board.last_operation["result"]["artifact"]))
+        return data
+
+    def local_copy_matches(self, artifact):
+        directory = self.board.output_dir
+        if directory is None:
+            return False
+        for sidecar in sorted(directory.glob("flash-*.json")):
+            meta = json.loads(sidecar.read_text())
+            if meta.get("artifact") != artifact["id"]:
+                continue
+            blob = sidecar.with_suffix(".bin")
+            if not blob.is_file():
+                return False
+            raw = blob.read_bytes()
+            digest = sha256(raw)
+            expected = artifact.get("sha256", digest)
+            return len(raw) == artifact.get("size", len(raw)) and digest == expected == meta.get("sha256")
+        return False
+
+    def release(self):
+        if self.held and (self.board.uncertain or self.board.pending):
+            self.held.clear()
+            return ["an operation is unresolved: every server readback is KEPT (it may be the only evidence)"]
+        problems = []
+        for artifact in self.held:
+            name = artifact["id"][:8]
+            if not self.local_copy_matches(artifact):
+                problems.append(f"readback {name}: private local copy missing or different - server artifact KEPT")
+                continue
+            try:
+                self.board.client.delete_artifact(artifact["id"])
+            except Exception as error:               # noqa: BLE001 - reported, never raised from here
+                problems.append(f"readback {name}: server deletion failed ({describe(error)})")
+            else:
+                self.out.evidence.append(f"server readback {name} deleted after its private copy was re-read and matched")
+        self.held.clear()
+        return problems
+
+
+@contextmanager
+def retained_reads(board, out):
+    keeper = ReadbackRetention(board, out)
+    try:
+        yield keeper
+    except BaseException:
+        for problem in keeper.release():              # best effort; the first error is never masked
+            out.incident("infrastructure", problem)
+        raise
+    else:
+        problems = keeper.release()
+        for problem in problems:
+            out.incident("infrastructure", problem)
+        if problems:
+            raise AssertionError("readback cleanup failed: " + "; ".join(problems))
 
 
 @contextmanager
