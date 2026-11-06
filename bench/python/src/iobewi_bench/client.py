@@ -56,6 +56,8 @@ class Cursor:
     epoch: str
     generation: str
     after: int
+    index: int = -1          # n-th cursor taken by its Board (see cursors.jsonl); -1 = not taken by Board.cursor()
+    submitted: int = -1      # commands already submitted by that Board when the cursor was taken
 
 
 class BenchClient:
@@ -195,6 +197,16 @@ class Board:
         self.manifest = None
         self._dumps = 0
         self._last_record = None
+        self._submissions = 0                      # commands submitted by this Board (commands.jsonl sequence)
+        self._current_submission = None
+        self._cursors = 0
+
+    def _append(self, name, row):
+        """Raw execution evidence of the CLIENT (hashed with the sources): arguments, cursors, UART matches. Never UART content."""
+        if self.output_dir:
+            self.output_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+            with (self.output_dir / name).open("a") as file:
+                file.write(json.dumps(row, sort_keys=True) + "\n")
 
     def __enter__(self):
         return self
@@ -224,6 +236,7 @@ class Board:
         if self.output_dir:
             self.output_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
             safe = {k: op.get(k) for k in ("id", "device", "generation", "command", "state", "settled", "unsettled")}
+            safe["submit_seq"] = self._current_submission
             safe["error_code"] = (op.get("error") or {}).get("code")
             safe["http_status"] = (op.get("error") or {}).get("http_status")
             record = json.dumps(safe)
@@ -244,6 +257,12 @@ class Board:
             self.manifest.check_command(self, name, args or {})
         # Even a lost POST response may have started hardware. Never resend or release blindly.
         self.uncertain = True
+        self._current_submission = self._submissions
+        self._submissions += 1
+        # The submitted arguments are recorded BEFORE the POST: a lost response still leaves what was asked (no secrets: artifact ids, hashes).
+        self._append("commands.jsonl", {"seq": self._current_submission, "command": name, "args": args or {},
+                                        "args_sha256": hashlib.sha256(json.dumps(args or {}, sort_keys=True, separators=(",", ":")).encode()).hexdigest(),
+                                        "allow_destructive": allow_destructive is True, "generation": self.generation, "epoch": self.epoch})
         try:
             op = self.client._request("POST", "/api/v1/operations", {
                 "lease": self.lease_id, "command": name, "args": args or {},
@@ -339,7 +358,11 @@ class Board:
         batch = self.client._request("GET", f"/api/v1/devices/{quote(self.device_id, safe='')}/events?after=0")
         if batch["epoch"] != self.epoch:
             raise ContinuityError("Bench epoch changed")
-        return Cursor(self.epoch, self.generation, batch["latest"])
+        cursor = Cursor(self.epoch, self.generation, batch["latest"], self._cursors, self._submissions)
+        self._cursors += 1
+        self._append("cursors.jsonl", {"index": cursor.index, "after": cursor.after, "submitted": cursor.submitted,
+                                       "epoch": cursor.epoch, "generation": cursor.generation})
+        return cursor
 
     def events(self, cursor):
         self._check_target()
@@ -360,6 +383,7 @@ class Board:
         if not isinstance(pattern, bytes) or not 1 <= len(pattern) <= 4096:
             raise ValueError("UART pattern must be 1..4096 bytes")
         cursor = cursor or self.cursor()
+        start_after = cursor.after
         deadline, tail = time.monotonic() + timeout, b""
         while time.monotonic() < deadline:
             for event in self.events(cursor):
@@ -367,6 +391,12 @@ class Board:
                     chunk = base64.b64decode(event["data"], validate=True)
                     data = tail + chunk
                     if pattern in data:
+                        # Only a hash and a length of the pattern, the cursor it was waited from and the sequence of the matching event.
+                        self._append("uart-matches.jsonl", {
+                            "cursor_index": cursor.index, "cursor_after": start_after, "cursor_submitted": cursor.submitted,
+                            "matched_seq": event.get("seq"), "pattern_sha256": hashlib.sha256(pattern).hexdigest(),
+                            "pattern_len": len(pattern), "epoch": cursor.epoch, "generation": cursor.generation,
+                            "operation": (self.last_operation or {}).get("id")})
                         return pattern
                     tail = data[-(len(pattern) - 1):] if len(pattern) > 1 else b""
             time.sleep(self.client.poll_interval)

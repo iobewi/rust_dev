@@ -46,6 +46,28 @@ Le catalogue de référence est `bench/tools/qualification_criteria.json` (épin
 | **C3R-2** | Lectures (chargeur) | Une seule table valide, décodeur brut égal à la vue de l'API | La validité des images applicatives ou de la politique de démarrage |
 | **C3R-3** | Un reset explicite | Bannière ROM observée après le reset, sans rupture de continuité | Un démarrage applicatif correct ; le comportement après réénumération USB (INDETERMINATE tant qu'un critère n'est pas écrit) |
 
+### 3 bis. Critères v2 : scénarios de la phase 2 de l'issue #2
+
+`bench/tools/qualification_criteria_v2.json` **étend** la v1 sans en modifier aucune entrée (la v1, SHA `2dfc47e2…760760c`, reste valide et n'est jamais éditée). Il ajoute :
+
+| Scénario | Exigence de l'issue #2 | Ce que le comparateur vérifie |
+|---|---|---|
+| **S3R-1** | 1 | S3 / `external_uart` (manifeste), exactement un `reset`, bannière `ESP-ROM:esp32s3` dans la même fenêtre, aucune fenêtre interrompue, aucun grant, transport déclaré et inféré |
+| **S3R-2** | 1 | exactement un `boot.download`, `hold_ms` borné (une seule requête), un seul événement de grant positif (expiration naturelle), marqueur de mode téléchargement dans la même fenêtre |
+| **S3R-3** | 1 (et 6 en partie) | exactement une `flash.read`, événement de transport de retour console, aucun grant, relecture serveur libérée après vérification de la copie privée |
+| **R4** | 4 | 2 à 4 régions au manifeste, une écriture multi-images + une restauration par région, sauvegardes égales par région, fenêtres de contrôle inchangées après écriture et après restauration, restauration comparée, grant révoqué |
+
+**Corrélation sur données brutes (revue de la PR #23).** Les contrôles ci-dessus ne reposent plus sur des phrases du rapport : le client enregistre lui-même (fichiers hachés avec les sources du client) `board-N/commands.jsonl` (arguments **soumis**, écrits **avant** le POST, donc aussi si la réponse est perdue), `cursors.jsonl` (curseur d'événements pris, avec le nombre de commandes déjà soumises) et `uart-matches.jsonl` (hash et longueur du motif, curseur de départ, séquence de l'événement correspondant, opération en cours ; **jamais le contenu UART**) ; `operations.jsonl` porte `submit_seq`. Le comparateur relie ces fichiers :
+
+- **R4** : les images de la **première** `flash.write` ont chacune l'adresse d'une région du manifeste (ni plus ni moins), des hachés distincts, différents des références ; chaque région relue après l'écriture et avant toute restauration est **égale à l'image soumise** (sidecars des lectures) ; chaque restauration écrit le haché de la sauvegarde de sa région et une lecture comparative ultérieure lui est égale ; chaque fenêtre de contrôle déclarée (`r4-windows.json`, adresses seulement) hors des régions a ≥ 2 lectures avant l'écriture, ≥ 1 après l'écriture, ≥ 1 après la dernière restauration, **toutes de même haché** (calculé depuis les sidecars, pas déclaré), et au moins une n'est pas entièrement `0xFF`.
+- **S3R-1 / S3R-2** : `hold_ms` et les arguments sont ceux de la commande **exécutée** (égaux à la demande de la recette) ; l'observation ROM/téléchargement est reliée à l'opération (`operation`), à un curseur pris **avant** la soumission, à la même génération et au même epoch, avec un événement de séquence postérieure au curseur ; le haché du motif égale celui déclaré par la recette (et, pour S3R-1, celui épinglé par les critères).
+- **S3R-3** : `return_console: true` dans la lecture exécutée, un seul événement de transport « console opened » enregistré (`console-events.jsonl`) après un curseur pris avant la lecture.
+
+Limites : l'ordre d'un événement **par rapport à la commande** repose sur le curseur pris avant la soumission et sur la séquence du serveur, pas sur une horloge ; les fenêtres de contrôle ne couvrent que leurs zones ; le contenu UART n'est pas conservé (seulement sa correspondance).
+
+Règle ajoutée au comparateur : un PASS d'un scénario **inconnu** de la version de critères utilisée est rapporté `INDETERMINATE` (`scenario_criteria_known`), jamais « vérifié » par les seuls contrôles communs.
+Limites : les fenêtres de contrôle de R4 ne détectent un changement qu'où elles regardent (l'intégrité de toute la flash n'est pas démontrée) ; les preuves S3R-2 restent des preuves d'**émission** en mode téléchargement, pas d'un démarrage applicatif, et supposent le câblage du pont (non mesuré). Ces critères et leurs tests sont **simulés** : aucun run matériel n'a eu lieu.
+
 ## 4. Pièges d'interprétation (à relire avant d'écrire un bilan)
 
 - **Stabilité d'une région ≠ identification d'une carte.** Le SHA-256 `7d2c7ac4888bfd75…` est celui de **8 Kio d'octets `0xFF`** :

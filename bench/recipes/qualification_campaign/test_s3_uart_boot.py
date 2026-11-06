@@ -13,6 +13,8 @@ Needs a LOCAL operator grant: the operator is asked for the SHORTEST grant and t
 The card is left in ROM download mode until its next reset: ending that is an operator step, not part of this recipe.
 Entering download mode proves nothing about application boot (``boot_verified`` is always false). Hardware status: NOT executed.
 """
+import hashlib
+
 import pytest
 
 from iobewi_bench.client import ContinuityError, PendingOperation
@@ -52,7 +54,8 @@ def test_s3r2_boot_download_marker(bench_client, qual_session, pytestconfig):
             raise Blocked("Local grant not observed") from error
         cursor = board.cursor()
         generation = bench_client.device(cfg["board_id"])["generation"]
-        case.client.record("bootloader-requests.jsonl", {"hold_ms": boot["hold_ms"], "marker_len": len(boot["marker"]), "generation": generation[:8]})
+        case.client.record("bootloader-requests.jsonl", {"hold_ms": boot["hold_ms"], "marker_len": len(boot["marker"]),
+                                                       "marker_sha256": hashlib.sha256(boot["marker"].encode()).hexdigest(), "generation": generation[:8]})
         try:
             result = board.command("boot.download", {"hold_ms": boot["hold_ms"]}, timeout=60)
             out.evidence.append("boot.download settled; result fields: " + ", ".join(sorted(result or {})))

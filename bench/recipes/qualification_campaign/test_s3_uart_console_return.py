@@ -39,12 +39,20 @@ def test_s3r3_console_returns_after_a_loader_read(bench_client, qual_session, py
         try:
             with retained_reads(board, out) as reads:
                 cursor = board.cursor()
+                cursor_start = cursor.after
                 data = reads.read(address=item["address"], size=item["size"], return_console=True)
                 events = board.events(cursor)
         except BaseException as error:
             _console_after_early_exit(board, out, error)
             raise
         details = [event.get("detail", "") for event in events if event["kind"] == "transport"]
+        # Raw transport events (agent transport messages, no UART content) with the cursor they follow: the comparator correlates them
+        # with the read operation instead of trusting the sentence below.
+        for event in events:
+            if event["kind"] == "transport":
+                case.client.record("console-events.jsonl", {"seq": event.get("seq"), "kind": event["kind"], "detail": str(event.get("detail", ""))[:120],
+                                                           "cursor_index": cursor.index, "cursor_after_start": cursor_start,
+                                                           "operation": (board.last_operation or {}).get("id")})
         out.evidence.append(f"read {item['address']:#x}+{item['size']:#x} settled (sha256={sha256(data)}); transport events after the cursor: "
                             + "; ".join(details))
         assert any("console opened" in detail for detail in details), (
