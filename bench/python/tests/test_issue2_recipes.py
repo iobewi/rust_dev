@@ -137,6 +137,73 @@ def regions_are_blank(client):
         return all(set(board.read_flash(address=r["address"], size=r["size"], return_console=False)) == {0xFF} for r in R4["approved_regions"])
 
 
+def test_r4_leaves_no_server_artifact_after_verified_private_copies(sim, tmp_path):
+    url, client = prepared(sim)
+    proc, reports = run(tmp_path, url, "test_r4_multi_image.py", R4, "--bench-allow-destructive")
+    assert reports["R4"]["status"] == "PASS", proc.stdout[-1500:]
+    assert client.artifacts()["artifacts"] == []                         # released after their private copy matched ...
+    copies = list((tmp_path / "evidence").glob("R4-*/board-*/flash-*.json"))
+    assert copies, "private copies of the readbacks must exist"          # ... and those private copies are there
+    assert any("deleted after its private copy was re-read and matched" in e for e in reports["R4"]["evidence"])
+
+
+class RetentionBoard:
+    """Minimal board: read_flash records a server artifact and (optionally) a private copy with its sidecar."""
+    def __init__(self, directory, *, keep_copy):
+        self.output_dir, self.keep_copy, self.uncertain, self.pending, self.closed = directory, keep_copy, False, None, False
+        self.last_operation, self.deleted, self.client = None, [], self
+        self.n = 0
+
+    def delete_artifact(self, artifact_id):
+        self.deleted.append(artifact_id)
+
+    def read_flash(self, *, address, size, timeout, return_console):
+        import hashlib
+        data = bytes([self.n + 1]) * size
+        artifact = {"id": f"artifact-{self.n}", "size": size, "sha256": hashlib.sha256(data).hexdigest()}
+        self.last_operation = {"id": f"op-{self.n}", "result": {"artifact": artifact}}
+        if self.keep_copy:
+            (self.output_dir / f"flash-{self.n:03d}.bin").write_bytes(data)
+            (self.output_dir / f"flash-{self.n:03d}.json").write_text(json.dumps({"artifact": artifact["id"], "sha256": artifact["sha256"]}))
+        self.n += 1
+        return data
+
+
+def _retention(tmp_path, keep_copy):
+    sys.path.insert(0, str(BENCH / "recipes"))
+    from qualification_campaign.harness import Outcome
+    from qualification_campaign.readonly import ReadbackRetention
+    from qualification_campaign.test_r4_multi_image import read_window
+    board, out = RetentionBoard(tmp_path, keep_copy=keep_copy), Outcome()
+    keeper = ReadbackRetention(board, out)
+    read_window(keeper, {"address": 0, "size": 4096}, 60)
+    assert board.deleted == [], "read_window must never delete a server artifact itself"
+    return board, out, keeper.release()
+
+
+def test_a_server_artifact_is_kept_when_the_private_copy_is_not_verifiable(tmp_path):
+    board, out, problems = _retention(tmp_path, keep_copy=False)
+    assert board.deleted == [] and any("KEPT" in p for p in problems)
+
+
+def test_a_server_artifact_is_released_only_once_its_private_copy_matches(tmp_path):
+    board, out, problems = _retention(tmp_path, keep_copy=True)
+    assert board.deleted == ["artifact-0"] and not problems
+
+
+def test_a_tampered_private_copy_keeps_the_server_artifact(tmp_path):
+    board, out, _ = _retention(tmp_path, keep_copy=True)
+    board2 = RetentionBoard(tmp_path / "x", keep_copy=True) if (tmp_path / "x").mkdir() is None else None
+    sys.path.insert(0, str(BENCH / "recipes"))
+    from qualification_campaign.readonly import ReadbackRetention
+    from qualification_campaign.test_r4_multi_image import read_window
+    keeper = ReadbackRetention(board2, out)
+    read_window(keeper, {"address": 0, "size": 4096}, 60)
+    (tmp_path / "x" / "flash-000.bin").write_bytes(b"\x00" * 4096)          # the private copy no longer matches
+    problems = keeper.release()
+    assert board2.deleted == [] and any("KEPT" in p for p in problems)
+
+
 def test_a_simulated_implicit_global_erase_is_seen_by_the_control_windows_and_regions_are_restored(sim, tmp_path):
     url, client = prepared(sim, env={"SIM_FAULT_GLOBAL_ERASE": "1"})
     proc, reports = run(tmp_path, url, "test_r4_multi_image.py", R4, "--bench-allow-destructive")
