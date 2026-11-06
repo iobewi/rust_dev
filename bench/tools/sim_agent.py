@@ -6,11 +6,18 @@ import base64
 import hashlib
 import json
 import os
+import struct
 import time
 from aiohttp import ClientSession
 
 CAPS = ['identify', 'reset', 'partitions', 'flash.read', 'flash.write', 'flash.erase',
         'uart.write', 'uart.configure', 'console', 'io0', 'mark', 'trigger']
+
+
+class SimFailure(Exception):
+    def __init__(self, code):
+        super().__init__(code)
+        self.code = code
 
 
 class SimDevice:
@@ -45,7 +52,17 @@ class SimDevice:
             self.flash[:] = b'\xff' * len(self.flash)
             return {'erased': True, 'simulated': True}
         if name == 'partitions':
-            return {'partitions': [], 'simulated': True}
+            raw, rows = bytes(self.flash[args['address']:args['address'] + 0xC00]), []
+            for offset in range(0, 0xC00, 32):
+                entry = raw[offset:offset + 32]
+                if entry[:2] != b'\xaa\x50':
+                    break
+                kind, subtype, start, size = struct.unpack('<BBII', entry[2:12])
+                rows.append({'label': entry[12:28].split(b'\0', 1)[0].decode(), 'type': kind, 'subtype': subtype,
+                             'address': start, 'size': size, 'flags': struct.unpack('<I', entry[28:32])[0]})
+            if not rows:
+                raise SimFailure('partition_table_invalid')
+            return {'partitions': rows, 'simulated': True}
         return {'command': name, 'simulated': True}
 
 
@@ -96,11 +113,11 @@ async def run(url, token, device_id, grant=0, stop=None, script=()):
                         result = await sim.execute(op['command'], op['args'], download, upload)
                         if op['command'] in {'reset', 'uart.write'}:
                             seq += 1
-                            data = b'SIM boot\r\n' if op['command'] == 'reset' else base64.b64decode(op['args']['data'])
+                            data = b'SIM boot\r\nESP-ROM:esp32s3-sim\r\n' if op['command'] == 'reset' else base64.b64decode(op['args']['data'])
                             await event('uart', seq=seq, data=base64.b64encode(data).decode(), at=time.time()*1000)
                         await ws.send_json({'type': 'result', 'id': op['id'], 'state': 'completed', 'result': result})
-                    except Exception:
-                        await ws.send_json({'type': 'result', 'id': op['id'], 'state': 'failed', 'error': {'code': 'simulated_failure'}})
+                    except Exception as error:
+                        await ws.send_json({'type': 'result', 'id': op['id'], 'state': 'failed', 'error': {'code': getattr(error, 'code', 'simulated_failure')}})
             gestures.cancel()
     return sim
 
