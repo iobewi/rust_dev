@@ -47,6 +47,13 @@ Ceux de `qualification_criteria.json`, appliqués par `qualification_compare.py`
 scénario, traçabilité des gestes. Un passage **réussit** quand chacun de ses runs est `PASS` **vérifié**. La **répétabilité d'un scénario** est
 démontrée quand `repeat_min` (3) runs `candidate` sont `PASS` vérifiés avec la même empreinte de comportement et le même environnement (mêmes SHA de
 recette, de support et de serveur).
+**Toutes les tentatives comptent** : le dénominateur est l'ensemble des tentatives `candidate` du scénario et de la carte, y compris une tentative
+`FAIL`, `INDETERMINATE`, `BLOCKED`, ou interrompue avant l'écriture de `report.json` (tout sous-dossier nommé `<scénario>-<horodatage UTC>` ou contenant un
+marqueur de run est découvert et rapporté `INDETERMINATE` s'il n'a pas de verdict lisible). Trois `PASS` parmi quatre tentatives ne démontrent **pas** la
+répétabilité. L'empreinte conserve l'ordre **et les répétitions** des commandes.
+
+**Codes de sortie de `--strict`** : `1` = intégrité des preuves rompue (PASS enregistré non vérifiable, `INTEGRITY_ISSUES`) ; `2` = preuves intègres mais une
+tentative `candidate` n'est pas un `PASS` effectif (qualification non atteinte) ; `0` sinon. Les négatifs `historic` sont conservés et ne déclenchent pas `2`.
 
 ## 5. Gestes opérateur et budget
 

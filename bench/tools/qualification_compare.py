@@ -353,9 +353,18 @@ def scenario_checks(run, scenario, params):
 
 
 # ---- assessment, fingerprint --------------------------------------------------------------------------------------------
+RUN_DIR = re.compile(r"^(?P<scenario>.+)-\d{8}T\d{6}Z")
+MARKERS = ("report.json", "run.json", "recipe.py", "before.json", "events.jsonl", "provenance.json")
+
+
+def scenario_from_dir(name):
+    match = RUN_DIR.match(name)
+    return match.group("scenario") if match else name
+
+
 def assess(run, criteria):
     test = run.report_test()
-    scenario = (test or {}).get("id") or run.path.name.rsplit("-", 2)[0]
+    scenario = (test or {}).get("id") or scenario_from_dir(run.path.name)
     recorded = (test or {}).get("status") if (test or {}).get("status") in STATUSES else None
     checks = common_checks(run, criteria, scenario, recorded)
     if recorded == "PASS":
@@ -387,7 +396,7 @@ def context_of(run):
 
 def fingerprint(run, scenario):
     ops, events, rows = run.operations() or [], run.events() or [], run.jsonl("requests.jsonl") or []
-    commands = list(dict.fromkeys(o["command"] for o in ops))
+    commands = [o["command"] for o in ops]                  # order AND repetitions are behaviour
     refused = sorted({("primary" if r["client"] == "primary" else "other", r["status"], r.get("code")) for r in rows if r.get("ok") is None and r.get("status")}, key=str)
     grants = ["+" if e["seconds"] > 0 else "0" for e in events if e.get("kind") == "grant"]
     before, after = run.json("before.json") or {}, run.json("after.json") or {}
@@ -427,8 +436,10 @@ def parse_root(text):
 
 
 def discover(root):
-    """Campaign run directories only (<root>/<run>/report.json); nothing is opened for writing."""
-    return sorted(p.parent for p in root.glob("*/report.json"))
+    """Every attempt: a sub-directory named like a run (<scenario>-<UTC stamp>) or holding any run marker.
+
+    An attempt interrupted before report.json exists must stay visible (it is then INDETERMINATE); nothing is opened for writing."""
+    return sorted(p for p in root.iterdir() if p.is_dir() and (RUN_DIR.match(p.name) or any((p / m).is_file() for m in MARKERS)))
 
 
 def analyse(roots, criteria):
@@ -456,14 +467,17 @@ def matrix(runs, criteria):
                 mine = [r for r in runs if r["context"] == ctx and r["scenario"] == scenario]
                 counts = {s: sum(1 for r in mine if r["effective"] == s) for s in STATUSES}
                 passes = [r for r in mine if r["effective"] == "PASS"]
-                cand = [r for r in passes if r["role"] == "candidate"]
-                stable = bool(cand) and all(not diff(r["fingerprint"]["behaviour"], cand[0]["fingerprint"]["behaviour"]) and
-                                            r["fingerprint"]["environment"] == cand[0]["fingerprint"]["environment"] for r in cand)
+                # repeatability counts EVERY candidate attempt (also unattributed ones: no report, unreadable context): one failure breaks the batch
+                attempts = [r for r in runs if r["role"] == "candidate" and r["scenario"] == scenario and (r["context"] == ctx or r["context"].startswith("?"))]
+                cand = [r for r in attempts if r["effective"] == "PASS"]
+                stable = bool(cand) and len(cand) == len(attempts) and all(
+                    not diff(r["fingerprint"]["behaviour"], cand[0]["fingerprint"]["behaviour"]) and
+                    r["fingerprint"]["environment"] == cand[0]["fingerprint"]["environment"] for r in cand)
                 per[scenario] = {"effective": counts, "runs": [r["dir"] for r in mine],
                                  "evidence": [f"{r['root']}/{r['dir']}/report.json sha256={r['report_sha256']}" for r in passes],
-                                 "repeatable_runs": len(cand), "stable": stable}
+                                 "repeatable_runs": len(cand), "candidate_attempts": len(attempts), "stable": stable}
                 functional &= bool(passes)
-                repeatable &= len(cand) >= criteria["repeat_min"] and stable
+                repeatable &= len(cand) >= criteria["repeat_min"] and len(cand) == len(attempts) and stable
             if any(per[s]["runs"] for s in per):
                 entry["contexts"][ctx] = {"scenarios": per, "functional": "DEMONSTRATED" if functional else "NOT_DEMONSTRATED",
                                           "repeatable": "DEMONSTRATED" if repeatable else "NOT_DEMONSTRATED"}
@@ -474,15 +488,18 @@ def matrix(runs, criteria):
 def repeatability(runs):
     out, groups = [], {}
     for r in runs:
-        if r["role"] == "candidate" and r["effective"] == "PASS":
+        if r["role"] == "candidate":
             groups.setdefault((r["context"], r["scenario"]), []).append(r)
     for (ctx, scenario), group in sorted(groups.items()):
-        base = group[0]
-        drift = []
-        for other in group[1:]:
+        passing = [g for g in group if g["effective"] == "PASS"]
+        failing = [f"{g['dir']}: {g['effective']}" for g in group if g["effective"] != "PASS"]
+        base = passing[0] if passing else group[0]
+        drift = [f"attempt not PASS - {f}" for f in failing]
+        for other in passing[1:]:
             drift += [f"{other['dir']}: {d}" for d in diff(base["fingerprint"]["behaviour"], other["fingerprint"]["behaviour"], "behaviour.")]
             drift += [f"{other['dir']}: {d}" for d in diff(base["fingerprint"]["environment"], other["fingerprint"]["environment"], "environment.")]
-        out.append({"context": ctx, "scenario": scenario, "runs": [g["dir"] for g in group], "stable": not drift, "drift": drift})
+        out.append({"context": ctx, "scenario": scenario, "runs": [g["dir"] for g in group], "attempts": len(group), "passes": len(passing),
+                    "stable": not drift, "drift": drift})
     return out
 
 
@@ -539,7 +556,8 @@ def main(argv=None):
     parser.add_argument("--root", action="append", required=True, help="LABEL:historic|candidate=PATH of an evidence directory")
     parser.add_argument("--output", required=True, help="directory outside every evidence root")
     parser.add_argument("--simulated", action="store_true", help="mark the report as produced from synthetic fixtures")
-    parser.add_argument("--strict", action="store_true", help="exit 1 if any run is CONTRADICTED/UNVERIFIED/INTEGRITY_ISSUES")
+    parser.add_argument("--strict", action="store_true", help="exit 1 if evidence integrity is broken (recorded PASS not verified, INTEGRITY_ISSUES); "
+                        "exit 2 if integrity holds but a candidate attempt is not an effective PASS (qualification not met)")
     args = parser.parse_args(argv)
     criteria_path = Path(args.criteria)
     criteria_sha = sha256_file(criteria_path)
@@ -563,7 +581,15 @@ def main(argv=None):
     bad = [r for r in runs if r["recorded"] == "PASS" and r["verification"] != "VERIFIED"]
     if bad:
         print(f"WARNING: {len(bad)} recorded PASS could not be verified (reported INDETERMINATE)", file=sys.stderr)
-    return 1 if args.strict and (bad or any(r["verification"] == "INTEGRITY_ISSUES" for r in runs)) else 0
+    unmet = [r for r in runs if r["role"] == "candidate" and r["effective"] != "PASS"]
+    if unmet:
+        print(f"NOTE: {len(unmet)} candidate attempt(s) are not an effective PASS: " + ", ".join(f"{r['dir']}={r['effective']}" for r in unmet), file=sys.stderr)
+    if args.strict:
+        if bad or any(r["verification"] == "INTEGRITY_ISSUES" for r in runs):
+            return 1
+        if unmet:
+            return 2
+    return 0
 
 
 if __name__ == "__main__":

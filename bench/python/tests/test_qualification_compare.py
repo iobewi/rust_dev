@@ -418,3 +418,75 @@ def test_report_marks_simulated_evidence_and_lists_what_is_not_covered(tmp_path)
 def test_every_scenario_in_the_requirement_catalogue_has_criteria():
     scenarios = {s for r in CRITERIA["requirements"] for s in r["scenarios"]}
     assert scenarios <= set(CRITERIA["scenarios"]) and {n["level"] for n in CRITERIA["not_covered"]} == {"fault_injection", "endurance", "consumer_firmware", "certification"}
+
+
+# --- review PR #19: every attempt counts, interrupted attempts stay visible, strict separates integrity from qualification ---
+def test_a_failed_candidate_attempt_breaks_repeatability_even_with_three_passes(tmp_path):
+    root = candidate_runs(tmp_path, 3)
+    make_run(root, "Q2a", ts="20261106T120000Z", status="FAIL")
+    runs = qc.analyse([("c", "candidate", root)], CRITERIA)
+    ctx = req_for(runs, "REQ-02")["contexts"]["esp32s3/external_uart"]
+    assert ctx["scenarios"]["Q2a"]["candidate_attempts"] == 4 and ctx["scenarios"]["Q2a"]["repeatable_runs"] == 3
+    assert ctx["repeatable"] == "NOT_DEMONSTRATED" and not ctx["scenarios"]["Q2a"]["stable"]
+    group = qc.repeatability(runs)[0]
+    assert group["attempts"] == 4 and group["passes"] == 3 and not group["stable"]
+    assert any("not PASS" in d and "FAIL" in d for d in group["drift"])
+
+
+@pytest.mark.parametrize("status", ["INDETERMINATE", "BLOCKED"])
+def test_inconclusive_candidate_attempts_also_break_repeatability(tmp_path, status):
+    root = candidate_runs(tmp_path, 3)
+    make_run(root, "Q2a", ts="20261106T120000Z", status=status)
+    runs = qc.analyse([("c", "candidate", root)], CRITERIA)
+    assert req_for(runs, "REQ-02")["contexts"]["esp32s3/external_uart"]["repeatable"] == "NOT_DEMONSTRATED"
+
+
+def test_an_attempt_without_report_json_is_discovered_and_breaks_repeatability(tmp_path):
+    root = candidate_runs(tmp_path, 3)
+    interrupted = make_run(root, "Q2a", ts="20261106T120000Z")
+    (interrupted / "report.json").unlink()
+    (interrupted / "verdicts.jsonl").unlink()
+    runs = qc.analyse([("c", "candidate", root)], CRITERIA)
+    assert len(runs) == 4
+    row = next(r for r in runs if r["dir"] == interrupted.name)
+    assert row["effective"] == "INDETERMINATE" and row["recorded"] is None and row["scenario"] == "Q2a"
+    assert req_for(runs, "REQ-02")["contexts"]["esp32s3/external_uart"]["repeatable"] == "NOT_DEMONSTRATED"
+
+
+def test_an_attempt_with_only_a_directory_is_still_visible_and_unattributed_attempts_block(tmp_path):
+    root = candidate_runs(tmp_path, 3)
+    (root / "Q2a-20261106T130000Z").mkdir()
+    runs = qc.analyse([("c", "candidate", root)], CRITERIA)
+    row = next(r for r in runs if r["dir"] == "Q2a-20261106T130000Z")
+    assert row["effective"] == "INDETERMINATE" and row["scenario"] == "Q2a"
+    assert req_for(runs, "REQ-02")["contexts"]["esp32s3/external_uart"]["repeatable"] == "NOT_DEMONSTRATED"
+
+
+def test_scenario_name_with_dashes_is_read_from_the_directory_name(tmp_path):
+    assert qc.scenario_from_dir("C3R-0-20261106T100000Z") == "C3R-0"
+    assert qc.scenario_from_dir("Q2a-20261106T100000Z") == "Q2a"
+
+
+def test_a_repeated_command_is_a_sequence_drift(tmp_path):
+    root = candidate_runs(tmp_path, 3)
+    drifting = sorted(root.glob("Q2a-*"))[2]
+    ops = drifting / "board-0" / "operations.jsonl"
+    rows = ops.read_text().splitlines()
+    ops.write_text("\n".join(rows + [rows[0].replace('"op0"', '"op9"')]) + "\n")
+    runs = qc.analyse([("c", "candidate", root)], CRITERIA)
+    assert not qc.repeatability(runs)[0]["stable"]
+    assert any("behaviour.commands" in d for d in qc.repeatability(runs)[0]["drift"])
+
+
+def test_strict_exits_2_for_a_failed_candidate_with_intact_evidence_and_1_for_broken_integrity(tmp_path, capsys):
+    root = tmp_path / "evidence"
+    make_run(root, "Q2a", ts="20261106T100000Z")
+    assert run_cli(tmp_path, [f"e:candidate={root}"], "--strict") == 0
+    make_run(root, "Q2a", ts="20261106T110000Z", status="FAIL")
+    assert run_cli(tmp_path, [f"e:candidate={root}"], "--strict") == 2
+    assert "not an effective PASS" in capsys.readouterr().err
+    historic = tmp_path / "old"
+    make_run(historic, "Q2a", status="FAIL")
+    assert run_cli(tmp_path, [f"h:historic={historic}"], "--strict") == 0       # historic negatives are kept, not gating
+    (root / "Q2a-20261106T100000Z" / "provenance.json").unlink()
+    assert run_cli(tmp_path, [f"e:candidate={root}"], "--strict") == 1
