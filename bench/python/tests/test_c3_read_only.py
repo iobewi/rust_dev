@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 
 from iobewi_bench import BenchClient
-from iobewi_bench.client import ContinuityError
+from iobewi_bench.client import BenchError, ContinuityError
 from iobewi_bench.qualification import Campaign
 
 BENCH = Path(__file__).resolve().parents[2]
@@ -467,7 +467,12 @@ class ReadBoard:
     def __init__(self, directory, *, tamper=False, delete_error=None, uncertain=False):
         self.output_dir, self.tamper, self.uncertain, self.pending = directory, tamper, uncertain, None
         self.deleted, self.order, self.last_operation, self.n = [], [], None, 0
-        self.client = self
+        self.client, self.closed, self.console_calls, self.console_fail, self.download_fail = self, False, 0, None, None
+
+    def console(self):
+        self.console_calls += 1
+        if self.console_fail:
+            raise self.console_fail
 
     def read_flash(self, *, address, size, timeout=600, return_console=True):
         assert return_console is False
@@ -475,6 +480,8 @@ class ReadBoard:
         self.n += 1
         artifact = {"id": f"artifact-{self.n:04d}-xxxx", "size": size, "sha256": harness.hashlib.sha256(data).hexdigest()}
         self.last_operation = {"id": f"op{self.n}", "result": {"artifact": artifact}}
+        if self.download_fail:                                    # the operation settled, the download / disk write did not
+            raise self.download_fail
         path = self.output_dir / f"flash-{self.n:03d}-{address:08x}.bin"
         path.write_bytes(b"\x00" * size if self.tamper else data)
         path.with_suffix(".json").write_text(json.dumps({"address": address, "size": size, "sha256": artifact["sha256"], "artifact": artifact["id"]}))
@@ -553,3 +560,53 @@ def test_c3_read_recipes_leave_no_artifact_on_the_simulated_server(sim, tmp_path
     assert any("server readback" in e for e in reports["C3R-1"]["evidence"] + reports["C3R-2"]["evidence"])
     dumps = list((tmp_path / "evidence").glob("C3R-*/board-*/flash-*.bin"))
     assert len(dumps) == 3 and all(p.with_suffix(".json").exists() for p in dumps)          # the private copies are still there
+
+
+def test_an_artifact_is_tracked_even_when_read_flash_fails_after_the_operation_settled(tmp_path):
+    board, out = ReadBoard(tmp_path), Outcome()
+    board.download_fail = BenchError("download interrupted")                            # raised after the artifact exists
+    with pytest.raises(type(board.download_fail)) as raised:
+        with readonly.retained_reads(board, out) as reads:
+            reads.read(address=0, size=4096)
+    assert str(raised.value) == "download interrupted"                                    # the read error is what propagates
+    assert board.deleted == [], "no verified local copy: the server artifact is the only evidence"
+    assert any("private local copy missing or different - server artifact KEPT" in i for i in out.incidents)
+
+
+def run_exit_matrix(tmp_path, *, body_error=None, delete_error=None, console_error=None):
+    board, out = ReadBoard(tmp_path), Outcome()
+    board.fail, board.console_fail = delete_error, console_error
+    raised = None
+    try:
+        with readonly.console_on_exit(board, out), readonly.retained_reads(board, out) as reads:
+            reads.read(address=0, size=4096)
+            if body_error:
+                raise body_error
+    except BaseException as error:        # noqa: BLE001
+        raised = error
+    return raised, board, out
+
+
+def test_exit_priority_read_error_then_cleanup_error_then_console_error(tmp_path):
+    body, deletion, console = AssertionError("diverging reads"), RuntimeError("server refused"), ContinuityError("USB gone")
+    for name, kwargs, expected in (
+            ("everything fails", dict(body_error=body, delete_error=deletion, console_error=console), body),
+            ("cleanup + console fail on a good body", dict(delete_error=deletion, console_error=console), "cleanup failed"),
+            ("console alone fails on a good body", dict(console_error=console), console),
+            ("cleanup alone fails on a good body", dict(delete_error=deletion), "cleanup failed"),
+            ("all good", dict(), None)):
+        directory = tmp_path / name.replace(" ", "_")
+        directory.mkdir()
+        raised, board, out = run_exit_matrix(directory, **kwargs)
+        if expected is None:
+            assert raised is None and board.console_calls == 1 and board.deleted, name
+        elif isinstance(expected, str):
+            assert isinstance(raised, AssertionError) and expected in str(raised), (name, raised)
+        else:
+            assert raised is expected, (name, raised)
+        if kwargs.get("delete_error"):
+            assert any("server deletion failed" in i for i in out.incidents), name       # always recorded
+        if kwargs.get("console_error"):
+            assert "left in the ROM loader" in out.restoration or kwargs.get("body_error") is None, name
+        if expected is not None:
+            assert board.console_calls == 1, (name, "the console return must be attempted exactly once")

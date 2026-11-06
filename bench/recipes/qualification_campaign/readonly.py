@@ -73,9 +73,16 @@ class ReadbackRetention:
         self.board, self.out, self.held = board, out, []
 
     def read(self, *, address, size, timeout=600):
-        data = self.board.read_flash(address=address, size=size, timeout=timeout, return_console=False)
-        self.held.append(dict(self.board.last_operation["result"]["artifact"]))
-        return data
+        """Track the artifact even when read_flash fails AFTER the operation settled (download, size or disk error):
+        the server copy then exists without a verified local copy, so release() keeps it and says so."""
+        before = (self.board.last_operation or {}).get("id")
+        try:
+            return self.board.read_flash(address=address, size=size, timeout=timeout, return_console=False)
+        finally:
+            operation = self.board.last_operation or {}
+            artifact = (operation.get("result") or {}).get("artifact")
+            if operation.get("id") != before and artifact:
+                self.held.append(dict(artifact))
 
     def local_copy_matches(self, artifact):
         directory = self.board.output_dir
@@ -116,6 +123,9 @@ class ReadbackRetention:
 
 @contextmanager
 def retained_reads(board, out):
+    """Exit-priority contract (used together with console_on_exit, the OUTER manager):
+    a body error always propagates first; a cleanup problem is raised only when the body succeeded; the console
+    return then runs once (also after a cleanup error) and its own failure never replaces an earlier error."""
     keeper = ReadbackRetention(board, out)
     try:
         yield keeper

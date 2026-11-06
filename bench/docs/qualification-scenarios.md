@@ -100,7 +100,7 @@ pas de bannière dans le délai ; BLOCKED = la carte n'expose pas la capacité `
 **Relectures côté serveur** : `Board.read_flash` conserve une copie locale privée (`flash-NNN-<adresse>.bin` + sidecar). Les recettes de lecture
 suppriment ensuite la copie **du serveur**, mais seulement après avoir **relu** la copie locale depuis le disque et constaté qu'elle correspond à la
 taille et au SHA-256 de l'artefact. Une copie manquante ou différente garde l'artefact serveur et fait échouer un test qui serait sinon PASS. Une opération
-non résolue garde tous les artefacts. Le nettoyage ne transforme jamais un FAIL, BLOCKED ou INDETERMINATE : la première erreur est conservée, le problème de
+non résolue garde tous les artefacts. Un artefact est suivi même si `read_flash` échoue après le règlement de l'opération (téléchargement, taille, disque) : il est alors conservé et signalé, jamais perdu de vue. **Priorité des erreurs** : l'erreur du corps passe d'abord ; une erreur de nettoyage n'est levée que si le corps a réussi ; le retour console est tenté une fois dans tous les cas et son échec ne remplace jamais une erreur antérieure. Le nettoyage ne transforme jamais un FAIL, BLOCKED ou INDETERMINATE : la première erreur est conservée, le problème de
 nettoyage est consigné en incident.
 
 **Transport** : la session porte la déclaration de l'opérateur ; l'agent n'en fait qu'une inférence (VID/PID). Les deux sont
