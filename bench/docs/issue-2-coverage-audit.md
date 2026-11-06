@@ -2,15 +2,15 @@
 
 **Statut : audit, brouillon pour revue. Aucun accès matériel, aucun grant, aucune écriture flash, aucun redémarrage serveur.**
 Base : `main` au commit `69f4183`. Les dix exigences sont celles de l'**issue #2** (« Qualifier le banc API v1 sur ESP32-S3 et ESP32-C3 réels »), telles que
-relevées par la revue de la PR #20 pour les numéros 6 à 10 ; les numéros 1 à 5 suivent l'énoncé de l'issue. La première version de cet audit avait repris par erreur la
-liste de `coverage.md` (qui découpe autrement les sujets) : elle est **remplacée**. Le texte exact de l'issue reste à confronter par le réviseur.
+confrontées au texte de l'issue lors de la revue de la PR #20 (version `cd115b2`). La première version de cet audit avait repris par erreur la
+liste de `coverage.md` (qui découpe autrement les sujets) : elle est **remplacée**.
 
 Les dix exigences contractuelles :
 
 | # | Exigence de l'issue #2 |
 |---|---|
 | 1 | ESP32-S3 avec pont UART : connexion, capture ROM, reset EN, maintien BOOT, retour console |
-| 2 | ESP32-S3 en USB Serial/JTAG natif : identité, programmation, relecture, réénumération ou disparition USB, refus de EN/BOOT |
+| 2 | ESP32-S3 en USB Serial/JTAG natif : identité, programmation, relecture, réénumération ou disparition USB (critère OTG), refus de EN/BOOT. USB Serial/JTAG et USB OTG sont deux modes distincts, jamais présumés interchangeables |
 | 3 | ESP32-C3 : famille, programmation, partitions, particularités de reset |
 | 4 | Programmation multi-images et manifeste réel : SHA-256 des dumps, aucun effacement global implicite |
 | 5 | Interruptions USB/réseau, fermeture/rechargement de page, redémarrage serveur : aucun rejeu, blocage maintenu, récupération par l'opérateur |
@@ -53,6 +53,7 @@ Légende : ✅ démontré sur matériel (réf.) · 🟡 partiel · ❌ non démo
 | 1 | | retour console après esptool | 🟡 | S3 : non observé ; C3 : « console ouverte » (C3R-0), preuve de **transport** seulement | à qualifier sur S3 après programmation |
 | 2 | S3 en USB Serial/JTAG natif | identité, programmation, relecture | ❌ | aucune | **matériel** : un S3 relié par son USB Serial/JTAG natif ; la S3 disponible est câblée en pont UART, et USB Serial/JTAG et USB OTG ne sont pas interchangeables (à vérifier sur la carte, sans le supposer) |
 | 2 | | réénumération ou disparition USB, redécouverte | ❌ | aucune | idem ; critère après réénumération non écrit |
+| 2 | | critère OTG (disparition en OTG, redécouverte) | ❌ | aucune | **essai séparé** du Serial/JTAG : le port USB natif d'un S3 peut s'utiliser en Serial/JTAG ou en OTG ; une qualification de l'un ne vaut pas pour l'autre |
 | 2 | | refus de EN/BOOT en natif | 🧪 | refus testés en simulation (moteur) | à confirmer sur matériel natif |
 | 3 | C3 | famille, flash, partitions | ✅ | C, D (C3R-0/2, Q1) | |
 | 3 | | particularités de reset | 🟡 | C, D (C3R-3 : bannière ROM après un reset) | réénumération USB après reset : aucun critère (INDETERMINATE assumé) |
@@ -140,5 +141,5 @@ Les contrôles purement logiciels (politiques de sécurité, erreurs de protocol
 
 - Les références logicielles (🧪) sont des constats par domaine d'après les fichiers de tests existants ; elles n'ont **pas** été relues cas par cas et doivent
   être confrontées par le réviseur avant de s'y appuyer.
-- Le texte exact de l'issue #2 n'a été lu que par résumé, complété par la liste du reviewer pour les numéros 6 à 10 ; à confronter à l'issue avant fusion.
+- Les dix exigences ont été confrontées au texte de l'issue #2 par la revue de la PR #20 ; je n'ai pas pu relire l'issue en entier moi-même (résumé seulement).
 - Aucun accès matériel : aucun résultat nouveau n'est rapporté ici.
