@@ -38,6 +38,7 @@ class Instance:
         (work / 'state').mkdir(mode=0o700)
         self.work_state = str(work / 'state')
         self.seen = set()
+        self.closed = False
         self.agent_token = secrets.token_urlsafe(32)
         (work / 'tokens.json').write_text(json.dumps({self.agent_token: {'id': 'a', 'role': 'agent', 'devices': ['board']}}))
         self.port = free_port()
@@ -84,6 +85,9 @@ class Instance:
 
     def close(self):
         """Bounded, graceful first; the forced step only touches processes proven to belong to this test."""
+        if self.closed:
+            return
+        self.closed = True
         try:
             if self.process.poll() is None:
                 try:
@@ -160,69 +164,66 @@ async def wait_exit(process, limit):
 
 
 class ShutdownTests(unittest.IsolatedAsyncioTestCase):
+    def start(self, *args, **kwargs):
+        """Create an isolated instance and register its cleanup immediately, so any failure still cleans up."""
+        instance = Instance(*args, **kwargs)
+        self.addCleanup(instance.close)
+        return instance
+
     def session(self):
         return ClientSession(cookie_jar=CookieJar(unsafe=True))
 
     async def test_idle_server_exits_immediately(self):
-        instance = Instance([sys.executable, str(SERVER)])
-        try:
-            async with self.session() as session:
-                await instance.ready(session)
-            instance.process.send_signal(signal.SIGTERM)
-            code, elapsed = await wait_exit(instance.process, LIMIT)
-            self.assertEqual(code, 0)
-            self.assertLess(elapsed, 3)
-        finally:
-            instance.close()
+        instance = self.start([sys.executable, str(SERVER)])
+        async with self.session() as session:
+            await instance.ready(session)
+        instance.process.send_signal(signal.SIGTERM)
+        code, elapsed = await wait_exit(instance.process, LIMIT)
+        self.assertEqual(code, 0)
+        self.assertLess(elapsed, 3)
 
     async def test_connected_agent_and_event_stream_do_not_hold_the_server(self):
-        instance = Instance([sys.executable, str(SERVER)])
-        try:
-            async with self.session() as session:
-                await instance.ready(session)
-                events, tasks = await hold_like_the_page(session, instance)
-                instance.process.send_signal(signal.SIGTERM)
-                code, elapsed = await wait_exit(instance.process, LIMIT)
-                self.assertEqual(code, 0, f'server still running after {elapsed:.1f} s with an agent and a stream')
-                self.assertLess(elapsed, 10)
-                await asyncio.wait(tasks, timeout=3)
-                self.assertEqual(events['ws'], 1001, 'agent must be told "going away", not cut off')
-                self.assertIs(events['sse_ended'], True, 'the stream must end cleanly, not by a read error')
-        finally:
-            instance.close()
+        instance = self.start([sys.executable, str(SERVER)])
+        async with self.session() as session:
+            await instance.ready(session)
+            events, tasks = await hold_like_the_page(session, instance)
+            instance.process.send_signal(signal.SIGTERM)
+            code, elapsed = await wait_exit(instance.process, LIMIT)
+            self.assertEqual(code, 0, f'server still running after {elapsed:.1f} s with an agent and a stream')
+            self.assertLess(elapsed, 10)
+            await asyncio.wait(tasks, timeout=3)
+            self.assertEqual(events['ws'], 1001, 'agent must be told "going away", not cut off')
+            self.assertIs(events['sse_ended'], True, 'the stream must end cleanly, not by a read error')
 
     async def test_launcher_restart_with_a_connected_agent_stays_within_its_30_second_limit(self):
         """The Q3 incident: SIGHUP to the real launcher while the page's agent and stream are connected."""
-        instance = Instance([sys.executable, str(LAUNCHER), '--shutdown-timeout', '30'], start_new_session=True)
-        try:
-            async with self.session() as session:
-                await instance.ready(session)
-                (old,) = instance.children()
-                events, tasks = await hold_like_the_page(session, instance)
-                before = await (await session.get(instance.url + '/health')).json()
-                instance.process.send_signal(signal.SIGHUP)
-                started = time.monotonic()
-                after = None
-                while time.monotonic() - started < 30 and after is None:
-                    await asyncio.sleep(0.2)
-                    try:
-                        health = await (await session.get(instance.url + '/health')).json()
-                        if health['epoch'] != before['epoch']:
-                            after = health
-                    except Exception:
-                        pass
-                self.assertIsNotNone(after, 'launcher did not replace the server within its stop timeout')
-                self.assertIsNone(instance.process.poll(), 'launcher must still be running (it exits 124 when refusing)')
-                self.assertNotIn(old, instance.children())      # also records the replacement for cleanup
-                self.assertEqual(events['ws'], 1001)
-                for task in tasks:
-                    task.cancel()
-        finally:
-            instance.close()
+        instance = self.start([sys.executable, str(LAUNCHER), '--shutdown-timeout', '30'], start_new_session=True)
+        async with self.session() as session:
+            await instance.ready(session)
+            (old,) = instance.children()
+            events, tasks = await hold_like_the_page(session, instance)
+            before = await (await session.get(instance.url + '/health')).json()
+            instance.process.send_signal(signal.SIGHUP)
+            started = time.monotonic()
+            after = None
+            while time.monotonic() - started < 30 and after is None:
+                await asyncio.sleep(0.2)
+                try:
+                    health = await (await session.get(instance.url + '/health')).json()
+                    if health['epoch'] != before['epoch']:
+                        after = health
+                except Exception:
+                    pass
+            self.assertIsNotNone(after, 'launcher did not replace the server within its stop timeout')
+            self.assertIsNone(instance.process.poll(), 'launcher must still be running (it exits 124 when refusing)')
+            self.assertNotIn(old, instance.children())      # also records the replacement for cleanup
+            self.assertEqual(events['ws'], 1001)
+            for task in tasks:
+                task.cancel()
 
     async def test_cleanup_leaves_no_server_even_when_the_restart_is_interrupted(self):
         """The cleanup itself: a launcher killed mid-restart must not leave an orphan server behind."""
-        instance = Instance([sys.executable, str(LAUNCHER), '--shutdown-timeout', '30'], start_new_session=True)
+        instance = self.start([sys.executable, str(LAUNCHER), '--shutdown-timeout', '30'], start_new_session=True)
         port, state = instance.port, Path(instance.work_state)
         async with self.session() as session:
             await instance.ready(session)
