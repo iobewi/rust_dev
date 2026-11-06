@@ -86,5 +86,4 @@ Questions pour la revue : choix des points d'injection ; forme de l'instrumentat
 
 ## 4. Critères épinglés
 
-`qualification_criteria.json` (SHA `2dfc47e2…760760c`) et les anciens runs restent **inchangés**. Les scénarios `S3R-*` et `R4` y sont inconnus, et le comparateur n'a pas de contrôle propre à ces scénarios : l'étendre (critères **et** vérifications) est un travail séparé, à relire, avant tout run. Il faut une **nouvelle version candidate** des critères (nouveau fichier ou nouvelle version
-explicite), revue avant tout run `S3R-*`, avec son propre SHA épinglé ; les campagnes déjà produites restent comparables à l'ancienne version.
+`qualification_criteria.json` (v1, SHA `2dfc47e2…760760c`) et les anciens runs restent **inchangés**. La **v2** (`qualification_criteria_v2.json`) ajoute `S3R-1`, `S3R-2`, `S3R-3` et `R4` ; son SHA-256 est à noter et à épingler (`--criteria-sha256`) après la revue et **avant** tout run de ces scénarios. Le comparateur vérifie chaque scénario selon ces critères et refuse de valider un PASS dont le scénario n'existe pas dans la version utilisée. Voir [qualification-matrix.md](qualification-matrix.md) §3 bis.

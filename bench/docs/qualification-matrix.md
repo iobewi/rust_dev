@@ -46,6 +46,20 @@ Le catalogue de référence est `bench/tools/qualification_criteria.json` (épin
 | **C3R-2** | Lectures (chargeur) | Une seule table valide, décodeur brut égal à la vue de l'API | La validité des images applicatives ou de la politique de démarrage |
 | **C3R-3** | Un reset explicite | Bannière ROM observée après le reset, sans rupture de continuité | Un démarrage applicatif correct ; le comportement après réénumération USB (INDETERMINATE tant qu'un critère n'est pas écrit) |
 
+### 3 bis. Critères v2 : scénarios de la phase 2 de l'issue #2
+
+`bench/tools/qualification_criteria_v2.json` **étend** la v1 sans en modifier aucune entrée (la v1, SHA `2dfc47e2…760760c`, reste valide et n'est jamais éditée). Il ajoute :
+
+| Scénario | Exigence de l'issue #2 | Ce que le comparateur vérifie |
+|---|---|---|
+| **S3R-1** | 1 | S3 / `external_uart` (manifeste), exactement un `reset`, bannière `ESP-ROM:esp32s3` dans la même fenêtre, aucune fenêtre interrompue, aucun grant, transport déclaré et inféré |
+| **S3R-2** | 1 | exactement un `boot.download`, `hold_ms` borné (une seule requête), un seul événement de grant positif (expiration naturelle), marqueur de mode téléchargement dans la même fenêtre |
+| **S3R-3** | 1 (et 6 en partie) | exactement une `flash.read`, événement de transport de retour console, aucun grant, relecture serveur libérée après vérification de la copie privée |
+| **R4** | 4 | 2 à 4 régions au manifeste, une écriture multi-images + une restauration par région, sauvegardes égales par région, fenêtres de contrôle inchangées après écriture et après restauration, restauration comparée, grant révoqué |
+
+Règle ajoutée au comparateur : un PASS d'un scénario **inconnu** de la version de critères utilisée est rapporté `INDETERMINATE` (`scenario_criteria_known`), jamais « vérifié » par les seuls contrôles communs.
+Limites : les fenêtres de contrôle de R4 ne détectent un changement qu'où elles regardent (l'intégrité de toute la flash n'est pas démontrée) ; les preuves S3R-2 restent des preuves d'**émission** en mode téléchargement, pas d'un démarrage applicatif, et supposent le câblage du pont (non mesuré). Ces critères et leurs tests sont **simulés** : aucun run matériel n'a eu lieu.
+
 ## 4. Pièges d'interprétation (à relire avant d'écrire un bilan)
 
 - **Stabilité d'une région ≠ identification d'une carte.** Le SHA-256 `7d2c7ac4888bfd75…` est celui de **8 Kio d'octets `0xFF`** :

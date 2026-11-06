@@ -22,7 +22,7 @@ import re
 import sys
 from pathlib import Path
 
-TOOL_VERSION = "1"
+TOOL_VERSION = "2"
 STATUSES = ("PASS", "FAIL", "SKIP", "BLOCKED", "INDETERMINATE")
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
 GRANT_OK_LINE = re.compile(r"^(?:\d+)")
@@ -349,6 +349,67 @@ def scenario_checks(run, scenario, params):
     if scenario == "C3R-3":
         ev("rom_banner_same_window", r"'ESP-ROM:\S+' observed after the reset, same proof window", "no banner evidence")
         add("no_continuity_break", not run.exists("windows.jsonl"), "a window was interrupted: this is not a plain PASS")
+    checks += driven_checks(run, scenario, params, lines, ops, grants)
+    return checks
+
+
+def driven_checks(run, scenario, params, lines, ops, grants):
+    """Checks selected by the criteria file (criteria v2 scenarios). A criteria version without these keys adds nothing here."""
+    checks = []
+
+    def add(name, ok, detail="", missing=False):
+        checks.append(Check(name, "MISSING" if missing else ("OK" if ok else "FAIL"), detail))
+    manifest = run.json("manifest.json")
+    if params.get("context"):
+        boards = (manifest or {}).get("boards") or [{}]
+        got = (boards[0].get("chip"), (boards[0].get("transports") or [None])[0])
+        want = (params["context"]["chip"], params["context"]["transport"])
+        add("context_matches", got == want, f"the manifest declares {got}, the scenario requires {want}", manifest is None)
+    if params.get("needs_transport"):
+        transport = run.json("transport.json")
+        ok = isinstance(transport, dict) and {"declared_by_operator", "inferred_by_agent", "provenance_source"} <= set(transport)
+        add("transport_declared_and_inferred", ok, "declaration and agent inference must both be recorded", transport is None)
+    for command, count in (params.get("exact_commands") or {}).items():
+        seen = None if ops is None else sum(1 for o in ops if o["command"] == command)
+        add(f"exactly_{count}_{command}", seen == count, f"{seen} {command} operation(s), expected {count}", ops is None)
+    for item in params.get("evidence_patterns", []):
+        checks.append(Check(item["name"], "OK" if has_evidence(lines, item["pattern"]) else "MISSING", item["detail"]))
+    if params.get("no_interrupted_window"):
+        add("no_continuity_break", not run.exists("windows.jsonl"), "a proof window was interrupted: this is not a plain PASS")
+    if params.get("no_grant_events"):
+        add("no_grant_events", grants == [], f"grant events observed: {[s for _, s in grants or []]}", grants is None)
+    if params.get("grant_timeline") == "natural_expiry":
+        add("natural_expiry", grants is not None and len(grants) == 1 and grants[0][1] > 0,
+            f"grant events: {[s for _, s in grants or []]} (expiry means one positive event and no zero)", grants is None)
+    if params.get("hold_ms"):
+        requests = run.jsonl("bootloader-requests.jsonl")
+        low, high = params["hold_ms"]
+        ok = requests is not None and len(requests) == 1 and type(requests[0].get("hold_ms")) is int and low <= requests[0]["hold_ms"] <= high
+        add("hold_ms_bounded", ok, f"exactly one boot.download request with hold_ms in {low}..{high} expected", requests is None)
+    if params.get("grant_revoked_locally"):
+        add("grant_revoked_locally", bool(grants) and grants[-1][1] == 0 and any(s > 0 for _, s in grants),
+            "no positive grant followed by a zero (revocation)", grants is None)
+    if "min_regions" in params:
+        regions = (manifest or {}).get("write_regions") or []
+        n = len(regions)
+        add("region_count", params["min_regions"] <= n <= params["max_regions"], f"{n} approved region(s)", manifest is None)
+        if params.get("flash_write_count") == "1_plus_regions" and ops is not None:
+            seen = sum(1 for o in ops if o["command"] == "flash.write")
+            add("flash_write_count", seen == 1 + n, f"{seen} flash.write operation(s): expected one multi-image write plus one restoration per region ({1 + n})")
+        problems = []
+        for i, region in enumerate(regions):
+            a, b = run.json(f"board-0/ref-{i}-a.json"), run.json(f"board-0/ref-{i}-b.json")
+            if not a or not b:
+                problems.append(f"region {i}: ref sidecars unreadable")
+            elif not (a.get("sha256") == b.get("sha256") and a.get("complete") and b.get("complete")
+                      and (a.get("address"), a.get("size")) == (region["address"], region["size"])):
+                problems.append(f"region {i}: backups differ, are incomplete or do not match the manifest region")
+        if regions:
+            add("backups_equal_per_region", not problems, "; ".join(problems), any("unreadable" in x for x in problems))
+    if params.get("restoration_prefix"):
+        test = run.report_test()
+        checks.append(Check("restored_and_compared", "OK" if str((test or {}).get("restoration", "")).startswith(params["restoration_prefix"]) else "MISSING",
+                            "restoration not proven"))
     return checks
 
 
@@ -368,7 +429,12 @@ def assess(run, criteria):
     recorded = (test or {}).get("status") if (test or {}).get("status") in STATUSES else None
     checks = common_checks(run, criteria, scenario, recorded)
     if recorded == "PASS":
-        checks += scenario_checks(run, scenario, criteria["scenarios"].get(scenario, {}))
+        if scenario not in criteria["scenarios"]:
+            # No acceptance criteria => no verified PASS. Without this a PASS of a scenario the criteria version does not know would
+            # be "verified" by the common checks alone.
+            checks.append(Check("scenario_criteria_known", "MISSING", f"no acceptance criteria for scenario {scenario!r} in this criteria version"))
+        else:
+            checks += scenario_checks(run, scenario, criteria["scenarios"][scenario])
     required = [c for c in checks if c.severity == "required"]
     if any(c.outcome == "FAIL" for c in required):
         verification = "CONTRADICTED" if recorded == "PASS" else "INTEGRITY_ISSUES"
