@@ -117,7 +117,10 @@ Les logs sont privés : extrais seulement le diagnostic utile, sans copier de
 secrets ou de données matérielles dans un rapport public.
 
 Les valeurs par défaut écoutent dans le conteneur sur `127.0.0.1:8080`.
-Utilise le port transféré par VS Code vers `localhost` sur le PC. Si un relais
+Utilise le port transféré par VS Code vers `127.0.0.1` sur le PC (`http://127.0.0.1:8080`) :
+avec `localhost`, le WebSocket de Firefox est resté en `CONNECTING` dans un cas observé (cause non
+établie). L'origine change l'autorisation Web Serial et la session : reconnecte le port après un
+changement d'adresse. Si un relais
 Docker nécessite `BENCH_HOST`, `BENCH_ORIGIN` ou `BENCH_UI_FORWARD_PEERS`, reprends
 les valeurs explicitement configurées selon `bench/README.md`. Ne devine pas
 l'adresse du relais et ne désactive pas les contrôles d'origine pour débloquer
