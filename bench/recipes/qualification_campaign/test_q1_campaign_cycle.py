@@ -13,9 +13,8 @@ import pytest
 
 from iobewi_bench import Orchestrator
 from iobewi_bench.client import BenchError
-from iobewi_bench.qualification import Campaign
 
-from .harness import Blocked, Outcome, new_run_dir, operator_gesture, recorded, wait_until
+from .harness import Blocked, Outcome, make_campaign, operator_gesture, recorded, wait_until
 from .session import build_manifest
 
 pytestmark = pytest.mark.bench
@@ -41,8 +40,8 @@ def test_q1_full_cycle(bench_client, qual_session, pytestconfig):
     region, timeout = regions[0], cfg["operation_timeout_s"]
     budget = 2 * timeout + 90           # Orchestrator.program(): write + readback + margin
     manifest = build_manifest(cfg, "Q1", steps=["Grant 1800 s locally when asked", "Revoke the grant locally when asked"])
-    case = Campaign(bench_client, cfg["board_id"], new_run_dir(cfg, "Q1"), __file__, "Q1", manifest=manifest,
-                    allow_destructive=True, parameters={"region": region, "timeout": timeout, "table": cfg["partition_table_offset"]})
+    case = make_campaign(bench_client, cfg, "Q1", __file__, pytestconfig, manifest=manifest, allow_destructive=True,
+                         parameters={"region": region, "timeout": timeout, "table": cfg["partition_table_offset"]})
     runner, out = Orchestrator(case), Outcome()
     with recorded(case, "Q1", out, limits="One cycle; transport as observed (agent-reported inference); not endurance; "
                   "region content stability only checked by two reads; hardware-run status is in the run report",

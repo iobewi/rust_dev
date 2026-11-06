@@ -20,7 +20,7 @@ DEFAULTS = {"operation_timeout_s": 120, "operator_timeout_s": 900, "approved_reg
             "consent": {"scenarios": [], "note": ""}, "q2": {}, "q3": {}}
 Q2_DEFAULTS = {"trigger_pattern_b64": "SU9CRVdJLVEyLU5FVkVSLVNUSU1VTEFURUQ=",  # inert, never stimulated
                "expires_ms": 120000, "reservation_ttl_s": 600}
-Q3_DEFAULTS = {"allow_restart": False, "launcher_pid_file": None, "state_dir": None,
+Q3_DEFAULTS = {"allow_restart": False, "launcher_pid_file": None, "state_dir": None, "launcher_log": None,
                "stop_timeout_s": 60, "health_timeout_s": 60, "agent_reconnect_timeout_s": 120}
 
 

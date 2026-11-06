@@ -11,5 +11,5 @@
   "operator_timeout_s": 900,
   "consent": {"scenarios": [], "note": "Real consent lives only in the private copy of this file"},
   "q2": {"expires_ms": 120000, "reservation_ttl_s": 600},
-  "q3": {"allow_restart": false, "launcher_pid_file": null, "state_dir": null}
+  "q3": {"allow_restart": false, "launcher_pid_file": null, "state_dir": null, "launcher_log": null}
 }

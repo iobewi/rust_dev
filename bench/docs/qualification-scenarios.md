@@ -33,13 +33,13 @@ La copie réelle contient les consentements et reste sur un stockage persistant 
 | `approved_regions` | Secteurs de 4 Kio explicitement approuvés. Vide par défaut. `[0x400000, 0x2000]` n'est qu'une donnée de la session S3 rapportée |
 | `consent.scenarios` | Scénarios destructifs consentis (`Q1`) ; `--bench-allow-destructive` n'est **pas** un consentement |
 | `evidence_root` | Racine absolue privée ; un sous-dossier neuf par run (`Q1-<horodatage>`) |
-| `q2.*`, `q3.*` | Motif inerte, durée du déclencheur ; pilotage du lanceur (désactivé par défaut) |
+| `q2.*`, `q3.*` | Motif inerte, durée du déclencheur ; pilotage du lanceur (désactivé par défaut) : `launcher_pid_file`, `state_dir`, `launcher_log` (journal d'événements du lanceur, preuve d'ordre) |
 
 ## Matrice des scénarios
 
 Verdicts : PASS / FAIL / SKIP / BLOCKED / INDETERMINATE. Un prérequis absent (carte, interface, geste,
 second token, autorisation de redémarrage) donne **BLOCKED** (pytest `skip` préfixé `BLOCKED:`), jamais PASS.
-Un `PendingOperation` ou une perte de continuité donne INDETERMINATE ; rien n'est rejoué.
+Un `PendingOperation`, une perte de continuité **ou une soumission dont l'issue est inconnue** (réponse POST perdue, `Board.uncertain`/`pending`, `PendingOperation` jusque dans un groupe d'exceptions de clôture) donnent INDETERMINATE, quelle que soit l'autre issue du test ; l'erreur initiale est conservée et relancée, rien n'est rejoué.
 
 ### Q1 — Cycle complet `Campaign` (`test_q1_campaign_cycle.py`)
 
@@ -58,24 +58,34 @@ Chaque cas demande son propre grant local ; ce client n'en envoie jamais.
 
 | Cas | Geste opérateur | Assertions |
 |---|---|---|
-| Q2a expiration naturelle | grant le plus court (60 s), puis rien | grant observé à 0 par expiration ; réarmement → `403 grant_required` ; désarmement `{"action":"disarm"}` par la réservation active réussi ; grant toujours 0 |
-| Q2b révocation locale | grant ≥ 300 s, révoquer sur demande | mêmes assertions ; la révocation est distinguée de l'expiration (grant > 10 s restant avant le passage à 0), sinon BLOCKED |
-| Q2c nouvelle réservation | grant ≥ 90 s, révocation finale | grant **valide** ; désarmement par une nouvelle réservation du même propriétaire → `403 trigger_not_owned` (donc pas un refus de grant) |
+| Q2a expiration naturelle | grant le plus court (60 s demandé, ≥ 10 s observé), puis rien | grant observé à 0 par expiration ; réarmement → `403 grant_required` ; désarmement `{"action":"disarm"}` par la réservation active réussi ; grant toujours 0 |
+| Q2b révocation locale | grant de 300 s demandé (**≥ 150 s observé** : un grant de 300 s est déjà inférieur à 300 s à la première lecture), révoquer sur demande | mêmes assertions ; la révocation est distinguée de l'expiration (grant > 10 s restant avant le passage à 0), sinon BLOCKED |
+| Q2c nouvelle réservation | grant de 90 s demandé (≥ 45 s observé), révocation finale | grant **valide** ; désarmement par une nouvelle réservation du même propriétaire → `403 trigger_not_owned` (donc pas un refus de grant). **Conclusion limitée à ce refus** : la libération de la réservation armante révoque le bail et l'agent annule son déclencheur ; ce cas ne montre rien sur un déclencheur encore armé |
 | Q2d autre identité | idem Q2c + `BENCH_CLIENT_TOKEN_B` | désarmement par une identité distincte → `403 trigger_not_owned` ; BLOCKED sans second token |
 
 Réservation 600 s, déclencheur ≤ 120 s ; si le déclencheur expire avant le contrôle, BLOCKED (gestes trop lents).
 
-### Q3 — Redémarrage coordonné au repos (`test_q3_coordinated_restart.py`)
+### Q3 — Redémarrage coordonné au repos (`test_q3_coordinated_restart.py`, flux dans `q3_flow.py`)
 
-- **Prérequis** : `--qual-allow-restart`, `q3.allow_restart`, `q3.launcher_pid_file`, `q3.state_dir` ; carte au repos (aucune opération, grant 0).
-- **Identification** : le fichier PID n'est qu'un indice. Le lanceur doit exécuter `run_server.py`, avoir exactement un enfant `bench_server.py`, et cet enfant doit posséder le socket d'écoute du port de `--bench-url` (lecture de `/proc`). L'identité est revérifiée juste avant `SIGHUP`.
-- **Assertions** : ancien enfant terminé *avant* tout remplaçant ; remplaçant sous le même lanceur ; `/health` ok, `sqlite-full`, **epoch différent** ; mêmes inodes de base et de verrou, taille non décroissante ; ancien `Board` rejeté (`ContinuityError`) ; agent reconnecté, grant 0, aucune réservation, pas de quarantaine ; nouvelle fenêtre (`interrupt_window` puis `open_window`).
+- **Prérequis** : `--qual-allow-restart`, `q3.allow_restart`, `launcher_pid_file`, `state_dir`, `launcher_log` ; carte au repos : aucune opération indéterminée ou non réconciliée, agent sans blocage (*hold*), grant 0. Un blocage ou une opération historique à réconcilier **n'est pas masqué** pour obtenir PASS.
+- **Un seul serveur établi avant tout effet** (aucune réservation, aucun signal avant) : (1) l'URL est **loopback** (une URL distante ne désigne jamais un processus local) ; (2) le lanceur exécute `run_server.py`, a exactement un enfant `bench_server.py` et cet enfant **possède le socket d'écoute** du port de l'URL ; (3) ce même enfant **tient ouverts** `server.lock` et `operations.sqlite3` du `state_dir` configuré. Le fichier PID n'est qu'un indice. L'identité du lanceur est revérifiée juste avant `SIGHUP`. Sinon : BLOCKED, rien n'est signalé.
+- **Ordre des effets** : identification → réservation (suivie par `Campaign`) → surveillance → fin de fenêtre de preuve → `SIGHUP`. Un échec **avant** le signal laisse `Campaign.close()` libérer la réservation. Après le signal, la poignée est **abandonnée explicitement** (`abandoned-handles.jsonl`) : plus jamais utilisée ni libérée, aucune reprise.
+- **Preuve d'ordre arrêt → démarrage** : le journal d'événements du lanceur (`launcher_log`, lu à partir de l'offset d'avant le signal) doit montrer `Server PID <ancien> exited` **avant** tout `child started` d'un autre PID ; un `replacement refused` est un échec. Un échantillonnage toutes les 10 ms des enfants du lanceur corrobore (aucun instant à deux serveurs) mais n'est pas continu : il ne prouve pas seul l'absence de chevauchement. Un lanceur défectueux qui démarre le remplaçant avant la fin de l'ancien est détecté (test logiciel).
+- **Autres assertions** : `/health` ok, `sqlite-full`, **epoch différent** ; mêmes inodes de base et de verrou et taille non décroissante ; ancien `Board` rejeté (`ContinuityError`) ; agent reconnecté, grant 0, aucune réservation, pas de quarantaine ; nouvelle fenêtre (`open_window`).
 - **Échecs** : délai d'arrêt dépassé → INDETERMINATE (inspection seule : ni verrou, ni base supprimés, aucun signal supplémentaire). L'agent peut exiger un rechargement de la page (geste annoncé, attente bornée).
 - **Hors périmètre** : coupure pendant une écriture (lot distinct avec autorisation et récupération dédiées).
 
 ### Extension C3 (non exécutable tant que la carte C3 n'est pas décrite)
 
 Aucune valeur C3 n'est inventée. Il suffit d'une **nouvelle session privée** (`chip: esp32c3`, capacité, transport, offset de table, région approuvée et consentement propres) ; Q1/Q2/Q3 sont paramétrés par cette session. Interface ou carte absente : BLOCKED/SKIP justifié. Un verdict par couple carte/transport.
+
+## Provenance d'un run
+
+Chaque run écrit `run.json` (`declared_environment` : SHA Git de la recette, propreté des sources `bench/`, empreinte du
+fichier de session — jamais son contenu) et `provenance.json` + `support/` : copie et SHA-256 de **tous** les fichiers de
+support exécutés (`session.py`, `harness.py`, `restart.py`, `q3_flow.py`, `conftest.py`, modèle de session). Un arbre `bench/` modifié ou non
+suivi donne BLOCKED (sauf `--qual-allow-dirty`, réservé aux simulations et consigné dans le run). Les versions serveur / agent / page
+observées sont dans `before.json` (empreintes rapportées par le serveur ; l'agent et le transport restent `agent_reported`).
 
 ## Gestes opérateur (récapitulatif)
 
@@ -105,19 +115,21 @@ Chaque run écrit dans un dossier neuf ; une recette corrigée change de version
 
 ## Résultats logiciels de cette PR (simulation)
 
-- `python -m pytest python/tests recipes -q` : 99 réussis, 15 ignorés (6 scénarios matériels + 9 existants).
+- `python -m pytest python/tests recipes -q` : 116 réussis, 15 ignorés (6 scénarios matériels + 9 existants). JavaScript non relancé en local (non modifié ; la CI le fait).
 - Collecte sans opt-in : 6 ignorés, **aucune connexion** à l'URL configurée (écouteur espion) ; opt-in sans session : BLOCKED, pas PASS.
-- Identification du lanceur, SIGHUP, fin de l'ancien enfant, remplaçant, nouvel epoch, mêmes inodes base/verrou : vérifiés contre un **vrai lanceur isolé** (répertoire d'état jetable, port libre).
-- Q1 rejoué contre le simulateur RAM jusqu'à la comparaison finale ; finit BLOCKED comme attendu (le simulateur ne permet pas la révocation du grant).
-- **Non simulé** : flux opérateur de Q2 (le simulateur impose un grant initial, incompatible avec `Campaign.start` non destructif) — ses codes de refus (`grant_required`, `trigger_not_owned`) sont couverts par les tests du broker ; reconnexion réelle de l'agent (Q3) ; tout le matériel.
+- Verdict : réponse POST perdue (vrai `Board.command`) et incertitude visible seulement à la clôture → INDETERMINATE, erreur initiale préservée.
+- Q2 : les quatre cas rejoués avec un **opérateur simulé** (le simulateur RAM émet grant puis révocation à dates fixes, l'expiration naturelle utilise l'horloge réelle du grant) ; PASS simulés.
+- Q3 : identification contre un vrai lanceur isolé ; refus sans signal pour URL étrangère, socket non possédé, autre `state_dir` (fichiers stables mais non ouverts par le serveur), fichier PID étranger ; ordre arrêt → démarrage vérifié par le journal du lanceur ; un lanceur défectueux (remplaçant lancé avant la fin de l'ancien) est détecté ; échec avant signal → réservation libérée ; serveur non établi → aucune réservation ; échec après signal → poignée abandonnée, jamais libérée (mutation vérifiée : le test échoue sans l'abandon).
+- Provenance : SHA Git, copies et empreintes des supports ; arbre modifié bloqué.
+- Q1 : rejoué contre le simulateur RAM jusqu'à la comparaison finale lors de la première version de la PR (finit BLOCKED, le simulateur ne permettant pas la révocation).
+- **Non simulé** : tout le matériel ; la reconnexion réelle de l'agent navigateur (Q3) ; le redémarrage du vrai serveur avec agent.
+- Outillage de simulation ajouté : `--script` (gestes opérateur datés) dans `python/tests/sim_server.py` et `tools/sim_agent.py` (simulateur uniquement).
 
-## Points à arbitrer par la revue
+## Arbitrages (revue du SHA `699a1d0`)
 
-1. Q2c/Q2d : `first.close()` libère la réservation qui a armé le déclencheur ; l'effet exact sur le déclencheur armé (désarmement implicite ou expiration à 30 s) n'est pas affirmé, seul le refus `trigger_not_owned` l'est.
-2. Q3 : assertion « pas de quarantaine après redémarrage au repos » et « grant 0 » — à confirmer comme contrat.
-3. Q1 : une seule région ; plusieurs régions disjointes sont-elles requises ?
-4. Q1 après échec mi-parcours : la politique « aucune restauration automatique » est choisie ; la valider.
-5. Dépendance à la PR #13 (méthode) : ce document la référence mais ne la modifie pas.
+Acceptés : Q1 à une seule région pour ce lot ; aucune restauration automatique après échec (référence conservée, état attendu consigné) ;
+Q2c/Q2d limités au refus de la nouvelle réservation ; Q3 grant 0 / pas de quarantaine au repos sous réserve d'absence d'opération
+indéterminée ou de blocage. La PR #13 (méthode) reste séparée.
 
 ## Emplacement privé (hors Git)
 

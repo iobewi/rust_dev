@@ -49,7 +49,8 @@ class SimDevice:
         return {'command': name, 'simulated': True}
 
 
-async def run(url, token, device_id, grant=0, stop=None):
+async def run(url, token, device_id, grant=0, stop=None, script=()):
+    """`script`: simulated operator gestures [(delay_s, grant_seconds)], 0 revokes. Simulation only."""
     sim = SimDevice()
     async with ClientSession(headers={'Authorization': 'Bearer ' + token}) as session:
         async with session.ws_connect(url + '/agent/v1/ws') as ws:
@@ -63,6 +64,12 @@ async def run(url, token, device_id, grant=0, stop=None):
                 await ws.send_json({'type': kind, 'device': device_id, 'generation': generation, **payload})
             if grant:
                 await event('grant', seconds=grant)
+            async def operator():
+                start = time.monotonic()
+                for delay, seconds in script:
+                    await asyncio.sleep(max(0, start + delay - time.monotonic()))
+                    await event('grant', seconds=seconds)
+            gestures = asyncio.create_task(operator())
             pending = {}
             async def download(key):
                 async with session.get(url + '/api/v1/artifacts/' + key) as r:
@@ -94,6 +101,7 @@ async def run(url, token, device_id, grant=0, stop=None):
                         await ws.send_json({'type': 'result', 'id': op['id'], 'state': 'completed', 'result': result})
                     except Exception:
                         await ws.send_json({'type': 'result', 'id': op['id'], 'state': 'failed', 'error': {'code': 'simulated_failure'}})
+            gestures.cancel()
     return sim
 
 

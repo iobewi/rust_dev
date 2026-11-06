@@ -11,23 +11,30 @@ Cases (each needs its own local grant):
   Q2b local revocation - grant >= 300 s, operator revokes on request
   Q2c ownership        - same owner, NEW reservation: disarm refused trigger_not_owned while grant is valid
   Q2d identity         - a different identity (BENCH_CLIENT_TOKEN_B), grant valid: trigger_not_owned
+Q2c/Q2d conclude ONLY the refusal of the new reservation/identity: releasing the arming reservation revokes
+the lease and the agent cancels its trigger, so they do not show the behaviour of a still-armed trigger.
 """
 import os
 import time
 
 import pytest
 
-from iobewi_bench.qualification import Campaign, expect_http_refusal
+from iobewi_bench.qualification import expect_http_refusal
 
-from .harness import Blocked, Outcome, new_run_dir, operator_gesture, recorded, wait_until
+from .harness import Blocked, Outcome, make_campaign, operator_gesture, recorded, wait_until
 from .session import build_manifest
 
 pytestmark = pytest.mark.bench
+# Minimum REMAINING grant accepted at the first observation. It is deliberately below the duration
+# asked of the operator (a grant of N s is already < N s when first seen) yet long enough for the case.
+ASK_SHORT, MIN_SHORT = 60, 10          # Q2a: shortest local grant; only needs to outlast one poll
+ASK_REVOKE, MIN_REVOKE = 300, 150      # Q2b: arm + <=60 s revocation window + checks, with margin
+ASK_OWNER, MIN_OWNER = 90, 45          # Q2c/Q2d: must still be valid at the refused disarm
 
 
-def _case(bench_client, cfg, test_id, file):
+def _case(bench_client, cfg, test_id, file, pytestconfig):
     manifest = build_manifest(cfg, "Q2", regions=[], steps=["Local grant as requested", "Revocation as requested"])
-    return Campaign(bench_client, cfg["board_id"], new_run_dir(cfg, test_id), file, test_id, manifest=manifest)
+    return make_campaign(bench_client, cfg, test_id, file, pytestconfig, manifest=manifest)
 
 
 def _arm(board, cfg, *, expires_ms=None):
@@ -58,18 +65,18 @@ def _after_grant_loss(board, case, cfg, out, bench_client):
     out.evidence.append("rearm refused 403 grant_required; owner disarm settled; grant still 0")
 
 
-def _natural_or_revoked(request, bench_client, qual_session, *, revoke):
+def _natural_or_revoked(pytestconfig, bench_client, qual_session, *, revoke):
     cfg, test_id = qual_session, "Q2b" if revoke else "Q2a"
-    case = _case(bench_client, cfg, test_id, __file__)
+    case = _case(bench_client, cfg, test_id, __file__, pytestconfig)
     out = Outcome()
     with recorded(case, test_id, out, preconditions=f"{cfg['chip']} / {cfg['transport']}, mark trigger, no flash access",
                   limits="Disarm/refusal only; no stimulus, so nothing is concluded about firing; one run"):
         case.start()
         board = case.reserve(ttl=cfg["q2"]["reservation_ttl_s"])
         if revoke:
-            granted = _wait_grant(case, cfg, 300, "GRANT 300 s (or more) locally; then wait for the revoke request")
+            granted = _wait_grant(case, cfg, MIN_REVOKE, f"GRANT {ASK_REVOKE} s locally; then wait for the revoke request")
         else:
-            granted = _wait_grant(case, cfg, 10, "GRANT the SHORTEST local duration (60 s) and then do nothing")
+            granted = _wait_grant(case, cfg, MIN_SHORT, f"GRANT the SHORTEST local duration ({ASK_SHORT} s) and then do nothing")
             if granted + 20 > cfg["q2"]["expires_ms"] / 1000:
                 raise Blocked(f"Grant {granted:.0f} s outlasts the trigger lifetime; pick a shorter one")
         started = time.monotonic()
@@ -94,22 +101,22 @@ def _natural_or_revoked(request, bench_client, qual_session, *, revoke):
         _after_grant_loss(board, case, cfg, out, bench_client)
 
 
-def test_q2a_natural_expiry(request, bench_client, qual_session):
-    _natural_or_revoked(request, bench_client, qual_session, revoke=False)
+def test_q2a_natural_expiry(pytestconfig, bench_client, qual_session):
+    _natural_or_revoked(pytestconfig, bench_client, qual_session, revoke=False)
 
 
-def test_q2b_local_revocation(request, bench_client, qual_session):
-    _natural_or_revoked(request, bench_client, qual_session, revoke=True)
+def test_q2b_local_revocation(pytestconfig, bench_client, qual_session):
+    _natural_or_revoked(pytestconfig, bench_client, qual_session, revoke=True)
 
 
-def _ownership(bench_client, cfg, test_id, other_token):
-    case = _case(bench_client, cfg, test_id, __file__)
+def _ownership(pytestconfig, bench_client, cfg, test_id, other_token):
+    case = _case(bench_client, cfg, test_id, __file__, pytestconfig)
     out = Outcome()
     with recorded(case, test_id, out, preconditions=f"{cfg['chip']} / {cfg['transport']}, mark trigger, valid grant",
-                  limits="Ownership refusal while the grant is VALID (so it is not a grant refusal); no stimulus"):
+                  limits="Refusal of a NEW reservation/identity while the grant is VALID (not a grant refusal); says nothing about a still-armed trigger (released lease cancels it); no stimulus"):
         case.start()
         first = case.reserve(ttl=cfg["q2"]["reservation_ttl_s"])
-        _wait_grant(case, cfg, 90, "GRANT at least 90 s locally")
+        _wait_grant(case, cfg, MIN_OWNER, f"GRANT {ASK_OWNER} s locally")
         _arm(first, cfg, expires_ms=30000)
         first.close()                                       # releases the reservation that armed the trigger
         if other_token:
@@ -126,12 +133,12 @@ def _ownership(bench_client, cfg, test_id, other_token):
         wait_until(lambda: _grant(bench_client, cfg) == 0, timeout=cfg["operator_timeout_s"], what="local revocation")
 
 
-def test_q2c_new_reservation_cannot_disarm(bench_client, qual_session):
-    _ownership(bench_client, qual_session, "Q2c", None)
+def test_q2c_new_reservation_cannot_disarm(pytestconfig, bench_client, qual_session):
+    _ownership(pytestconfig, bench_client, qual_session, "Q2c", None)
 
 
-def test_q2d_other_identity_cannot_disarm(bench_client, qual_session):
+def test_q2d_other_identity_cannot_disarm(pytestconfig, bench_client, qual_session):
     token = os.environ.get("BENCH_CLIENT_TOKEN_B")
     if not token:
         pytest.skip("BLOCKED: Q2d needs an independently configured second identity in BENCH_CLIENT_TOKEN_B")
-    _ownership(bench_client, qual_session, "Q2d", token)
+    _ownership(pytestconfig, bench_client, qual_session, "Q2d", token)
