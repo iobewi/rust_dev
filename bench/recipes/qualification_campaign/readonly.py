@@ -5,6 +5,7 @@ needs the C3R-READ consent. The explicit reset command is a deliberate restart: 
 own consent (C3R-RESET). Nothing here writes to flash.
 """
 import hashlib
+import json
 import struct
 from contextlib import contextmanager
 
@@ -58,6 +59,96 @@ def record_transport(case, client, cfg, out):
     case.write("transport.json", record)
     out.evidence.append(f"transport declared={record['declared_by_operator']} inferred={record['inferred_by_agent']} "
                         f"({record['inference_basis'] or 'no basis'}; {record['provenance_source']})")
+
+
+class ReadbackRetention:
+    """Reads with return_console=False and releases the SERVER copy of every readback, never before the private one is safe.
+
+    Board.read_flash already stores a private local copy (flash-NNN-<addr>.bin + sidecar). A server artifact is deleted only
+    after that copy was RE-READ from disk and matched the artifact's size and SHA-256. A copy that is missing or different
+    keeps the server artifact (it may be the only evidence) and is reported. Cleanup never changes a FAIL / BLOCKED /
+    INDETERMINATE into anything else; on a path that would otherwise PASS, a cleanup problem makes the test fail visibly."""
+
+    def __init__(self, board, out):
+        self.board, self.out, self.held = board, out, []
+
+    def read(self, *, address, size, timeout=600):
+        """Track the artifact even when read_flash fails AFTER the operation settled (download, size or disk error):
+        the server copy then exists without a verified local copy, so release() keeps it and says so."""
+        before = (self.board.last_operation or {}).get("id")
+        try:
+            return self.board.read_flash(address=address, size=size, timeout=timeout, return_console=False)
+        finally:
+            operation = self.board.last_operation or {}
+            artifact = (operation.get("result") or {}).get("artifact")
+            if operation.get("id") != before and artifact:
+                self.held.append(dict(artifact))
+
+    def local_copy_matches(self, artifact):
+        """True only if the private copy exists AND matches. A sidecar that cannot be read (corrupt JSON, bad bytes, I/O
+        error) is skipped, never trusted: it can only lead to "not verified", i.e. the server artifact is kept."""
+        directory = self.board.output_dir
+        if directory is None:
+            return False
+        for sidecar in sorted(directory.glob("flash-*.json")):
+            try:
+                meta = json.loads(sidecar.read_text())
+            except (OSError, ValueError):
+                continue
+            if not isinstance(meta, dict) or meta.get("artifact") != artifact["id"]:
+                continue
+            blob = sidecar.with_suffix(".bin")
+            if not blob.is_file():
+                return False
+            raw = blob.read_bytes()
+            digest = sha256(raw)
+            expected = artifact.get("sha256", digest)
+            return len(raw) == artifact.get("size", len(raw)) and digest == expected == meta.get("sha256")
+        return False
+
+    def release(self):
+        if self.held and (self.board.uncertain or self.board.pending):
+            self.held.clear()
+            return ["an operation is unresolved: every server readback is KEPT (it may be the only evidence)"]
+        problems = []
+        for artifact in self.held:
+            name = artifact["id"][:8]
+            try:
+                verified = self.local_copy_matches(artifact)
+            except Exception as error:               # noqa: BLE001 - a verification failure must never escape and mask the scenario's error
+                problems.append(f"readback {name}: local copy could not be verified ({describe(error)}) - server artifact KEPT")
+                continue
+            if not verified:
+                problems.append(f"readback {name}: private local copy missing or different - server artifact KEPT")
+                continue
+            try:
+                self.board.client.delete_artifact(artifact["id"])
+            except Exception as error:               # noqa: BLE001 - reported, never raised from here
+                problems.append(f"readback {name}: server deletion failed ({describe(error)})")
+            else:
+                self.out.evidence.append(f"server readback {name} deleted after its private copy was re-read and matched")
+        self.held.clear()
+        return problems
+
+
+@contextmanager
+def retained_reads(board, out):
+    """Exit-priority contract (used together with console_on_exit, the OUTER manager):
+    a body error always propagates first; a cleanup problem is raised only when the body succeeded; the console
+    return then runs once (also after a cleanup error) and its own failure never replaces an earlier error."""
+    keeper = ReadbackRetention(board, out)
+    try:
+        yield keeper
+    except BaseException:
+        for problem in keeper.release():              # best effort; the first error is never masked
+            out.incident("infrastructure", problem)
+        raise
+    else:
+        problems = keeper.release()
+        for problem in problems:
+            out.incident("infrastructure", problem)
+        if problems:
+            raise AssertionError("readback cleanup failed: " + "; ".join(problems))
 
 
 @contextmanager

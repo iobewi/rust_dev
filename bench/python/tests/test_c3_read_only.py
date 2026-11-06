@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 
 from iobewi_bench import BenchClient
-from iobewi_bench.client import ContinuityError
+from iobewi_bench.client import BenchError, ContinuityError
 from iobewi_bench.qualification import Campaign
 
 BENCH = Path(__file__).resolve().parents[2]
@@ -137,6 +137,7 @@ def write_table(client, address, entries):
         board.command("flash.write", {"chip": "esp32c3", "return_console": False,
                                       "images": [{"address": address, "artifact": artifact["id"], "sha256": artifact["sha256"]}]},
                       allow_destructive=True)
+    client.delete_artifact(artifact["id"])                      # the test's own upload must not linger on the server
 
 
 def run_recipe(tmp_path, url, selector, **session_change):
@@ -458,3 +459,203 @@ def test_an_indeterminate_reset_is_observed_not_replayed_not_certified(sim, tmp_
     events = [json.loads(l)["event"] for l in (case.directory / "windows.jsonl").read_text().splitlines()]
     assert events == (["interrupted", "opened"] if reconnect else ["interrupted"])
     assert any(("card reconnected" if reconnect else "NOT seen reconnected") in e for e in out.evidence)
+
+
+# --- server-side readbacks are released only after the private copy is verified -------------------------------------------
+class ReadBoard:
+    """Mimics Board.read_flash: a private local copy + sidecar, and an artifact recorded in last_operation."""
+    def __init__(self, directory, *, tamper=False, delete_error=None, uncertain=False):
+        self.output_dir, self.tamper, self.uncertain, self.pending = directory, tamper, uncertain, None
+        self.deleted, self.order, self.last_operation, self.n = [], [], None, 0
+        self.client, self.closed, self.console_calls, self.console_fail, self.download_fail = self, False, 0, None, None
+
+    def console(self):
+        self.console_calls += 1
+        if self.console_fail:
+            raise self.console_fail
+
+    def read_flash(self, *, address, size, timeout=600, return_console=True):
+        assert return_console is False
+        data = bytes([self.n % 250 + 1]) * size                    # never all zeros: a zeroed copy must differ
+        self.n += 1
+        artifact = {"id": f"artifact-{self.n:04d}-xxxx", "size": size, "sha256": harness.hashlib.sha256(data).hexdigest()}
+        self.last_operation = {"id": f"op{self.n}", "result": {"artifact": artifact}}
+        if self.download_fail:                                    # the operation settled, the download / disk write did not
+            raise self.download_fail
+        path = self.output_dir / f"flash-{self.n:03d}-{address:08x}.bin"
+        path.write_bytes(b"\x00" * size if self.tamper else data)
+        path.with_suffix(".json").write_text(json.dumps({"address": address, "size": size, "sha256": artifact["sha256"], "artifact": artifact["id"]}))
+        return data
+
+    def delete_artifact(self, artifact_id):
+        self.order.append(("delete", (self.output_dir / next(p.name for p in self.output_dir.glob("flash-*.bin"))).exists()))
+        if getattr(self, "fail", None):
+            raise self.fail
+        self.deleted.append(artifact_id)
+
+
+def test_server_readbacks_are_deleted_only_after_the_local_copy_matched(tmp_path):
+    board, out = ReadBoard(tmp_path), Outcome()
+    with readonly.retained_reads(board, out) as reads:
+        reads.read(address=0, size=4096)
+        reads.read(address=0, size=4096)
+        assert board.deleted == [], "nothing may be deleted while the test still runs"
+    assert board.deleted == ["artifact-0001-xxxx", "artifact-0002-xxxx"] and all(exists for _, exists in board.order)
+    assert sum("deleted after its private copy was re-read" in e for e in out.evidence) == 2
+
+
+def test_a_missing_or_different_local_copy_keeps_the_server_artifact_and_fails_a_would_be_pass(tmp_path):
+    board, out = ReadBoard(tmp_path, tamper=True), Outcome()
+    with pytest.raises(AssertionError, match="cleanup failed"):
+        with readonly.retained_reads(board, out) as reads:
+            reads.read(address=0, size=4096)
+    assert board.deleted == [] and any("KEPT" in i for i in out.incidents)
+    missing, out = ReadBoard(tmp_path / "x"), Outcome()
+    (tmp_path / "x").mkdir()
+    with pytest.raises(AssertionError):
+        with readonly.retained_reads(missing, out) as reads:
+            reads.read(address=0, size=4096)
+            next((tmp_path / "x").glob("flash-*.bin")).unlink()
+    assert missing.deleted == []
+
+
+def test_cleanup_never_masks_or_converts_an_earlier_failure_or_block(tmp_path):
+    for error in (harness.Blocked("two valid tables"), AssertionError("reads differ"), ContinuityError("USB gone")):
+        directory = tmp_path / type(error).__name__
+        directory.mkdir()
+        board, out = ReadBoard(directory), Outcome()
+        board.fail = RuntimeError("server refused the deletion")
+        with pytest.raises(type(error)) as raised:
+            with readonly.retained_reads(board, out) as reads:
+                reads.read(address=0, size=4096)
+                raise error
+        assert raised.value is error                                                        # the first error is what propagates
+        assert any("server deletion failed" in i for i in out.incidents)                    # and the cleanup problem is recorded
+
+
+def test_an_early_exit_still_releases_verified_readbacks(tmp_path):
+    board, out = ReadBoard(tmp_path), Outcome()
+    with pytest.raises(AssertionError):
+        with readonly.retained_reads(board, out) as reads:
+            reads.read(address=0, size=4096)
+            raise AssertionError("diverging reads")
+    assert board.deleted == ["artifact-0001-xxxx"]
+
+
+def test_an_unresolved_operation_keeps_every_server_readback(tmp_path):
+    board, out = ReadBoard(tmp_path), Outcome()
+    with pytest.raises(readonly.PendingOperation):
+        with readonly.retained_reads(board, out) as reads:
+            reads.read(address=0, size=4096)
+            board.uncertain = True
+            raise readonly.PendingOperation("lost response")
+    assert board.deleted == [] and any("unresolved" in i for i in out.incidents)
+
+
+def test_c3_read_recipes_leave_no_artifact_on_the_simulated_server(sim, tmp_path):
+    url, client = prepare(sim, [(0x10000, [("factory", 0x20000, 0x100000)])])
+    run, reports = run_recipe(tmp_path, url, "test_c3_read_only.py")
+    assert {k: v["status"] for k, v in reports.items()} == {"C3R-0": "PASS", "C3R-1": "PASS", "C3R-2": "PASS"}
+    assert client.artifacts()["artifacts"] == [], "a readback stayed on the server"
+    assert any("server readback" in e for e in reports["C3R-1"]["evidence"] + reports["C3R-2"]["evidence"])
+    dumps = list((tmp_path / "evidence").glob("C3R-*/board-*/flash-*.bin"))
+    assert len(dumps) == 3 and all(p.with_suffix(".json").exists() for p in dumps)          # the private copies are still there
+
+
+def test_an_artifact_is_tracked_even_when_read_flash_fails_after_the_operation_settled(tmp_path):
+    board, out = ReadBoard(tmp_path), Outcome()
+    board.download_fail = BenchError("download interrupted")                            # raised after the artifact exists
+    with pytest.raises(type(board.download_fail)) as raised:
+        with readonly.retained_reads(board, out) as reads:
+            reads.read(address=0, size=4096)
+    assert str(raised.value) == "download interrupted"                                    # the read error is what propagates
+    assert board.deleted == [], "no verified local copy: the server artifact is the only evidence"
+    assert any("private local copy missing or different - server artifact KEPT" in i for i in out.incidents)
+
+
+def run_exit_matrix(tmp_path, *, body_error=None, delete_error=None, console_error=None):
+    board, out = ReadBoard(tmp_path), Outcome()
+    board.fail, board.console_fail = delete_error, console_error
+    raised = None
+    try:
+        with readonly.console_on_exit(board, out), readonly.retained_reads(board, out) as reads:
+            reads.read(address=0, size=4096)
+            if body_error:
+                raise body_error
+    except BaseException as error:        # noqa: BLE001
+        raised = error
+    return raised, board, out
+
+
+def test_exit_priority_read_error_then_cleanup_error_then_console_error(tmp_path):
+    body, deletion, console = AssertionError("diverging reads"), RuntimeError("server refused"), ContinuityError("USB gone")
+    for name, kwargs, expected in (
+            ("everything fails", dict(body_error=body, delete_error=deletion, console_error=console), body),
+            ("cleanup + console fail on a good body", dict(delete_error=deletion, console_error=console), "cleanup failed"),
+            ("console alone fails on a good body", dict(console_error=console), console),
+            ("cleanup alone fails on a good body", dict(delete_error=deletion), "cleanup failed"),
+            ("all good", dict(), None)):
+        directory = tmp_path / name.replace(" ", "_")
+        directory.mkdir()
+        raised, board, out = run_exit_matrix(directory, **kwargs)
+        if expected is None:
+            assert raised is None and board.console_calls == 1 and board.deleted, name
+        elif isinstance(expected, str):
+            assert isinstance(raised, AssertionError) and expected in str(raised), (name, raised)
+        else:
+            assert raised is expected, (name, raised)
+        if kwargs.get("delete_error"):
+            assert any("server deletion failed" in i for i in out.incidents), name       # always recorded
+        if kwargs.get("console_error"):
+            assert "left in the ROM loader" in out.restoration or kwargs.get("body_error") is None, name
+        if expected is not None:
+            assert board.console_calls == 1, (name, "the console return must be attempted exactly once")
+
+
+def test_an_unverifiable_local_copy_keeps_the_artifact_and_never_masks_the_scenario_error(tmp_path):
+    """A corrupt sidecar, undecodable bytes or an unreadable blob must lead to 'kept', never to an exception that
+    replaces the original error."""
+    def corrupt_sidecar(directory):
+        next(directory.glob("flash-*.json")).write_text("{ not json")
+
+    def undecodable_sidecar(directory):
+        next(directory.glob("flash-*.json")).write_bytes(b"\xff\xfe\x00garbage")
+
+    def blob_is_a_directory(directory):
+        blob = next(directory.glob("flash-*.bin"))
+        blob.unlink()
+        blob.mkdir()
+
+    for name, damage in (("corrupt_json", corrupt_sidecar), ("bad_bytes", undecodable_sidecar), ("unreadable_blob", blob_is_a_directory)):
+        directory = tmp_path / name
+        directory.mkdir()
+        board, out = ReadBoard(directory), Outcome()
+        original = AssertionError(f"scenario failed ({name})")
+        with pytest.raises(AssertionError) as raised:
+            with readonly.retained_reads(board, out) as reads:
+                reads.read(address=0, size=4096)
+                damage(directory)
+                raise original
+        assert raised.value is original, name                    # the verification problem did not replace it
+        assert board.deleted == [], name                         # nothing deleted without a verified copy
+        assert any("KEPT" in i for i in out.incidents), name
+    # on a path that would pass, the same damage fails the test visibly and (for a JSON/bytes problem) still keeps the artifact
+    directory = tmp_path / "normal_path"
+    directory.mkdir()
+    board, out = ReadBoard(directory), Outcome()
+    with pytest.raises(AssertionError, match="cleanup failed"):
+        with readonly.retained_reads(board, out) as reads:
+            reads.read(address=0, size=4096)
+            corrupt_sidecar(directory)
+    assert board.deleted == []
+
+
+def test_a_corrupt_sidecar_of_another_read_does_not_block_the_verified_one(tmp_path):
+    board, out = ReadBoard(tmp_path), Outcome()
+    with pytest.raises(AssertionError, match="cleanup failed"):          # one copy is unverifiable: a would-be PASS fails visibly
+        with readonly.retained_reads(board, out) as reads:
+            reads.read(address=0, size=4096)
+            reads.read(address=0, size=4096)
+            sorted(tmp_path.glob("flash-*.json"))[0].write_text("{ not json")   # the FIRST copy becomes unverifiable
+    assert board.deleted == ["artifact-0002-xxxx"], "only the verified readback may be deleted, the other one is kept"
+    assert any("artifact-" not in i and "readback artifact" in i and "KEPT" in i for i in out.incidents)

@@ -9,7 +9,7 @@ import pytest
 
 from .harness import Blocked, Outcome, make_campaign, recorded
 from .readonly import (check_rows, console_on_exit, decode_table, gate, identify_and_confirm_console, probe_candidates,
-                       record_transport, sha256, start_or_block)
+                       record_transport, retained_reads, sha256, start_or_block)
 from .session import build_manifest, table_candidates
 
 pytestmark = pytest.mark.bench
@@ -48,10 +48,10 @@ def test_c3r1_repeatable_reads(bench_client, qual_session, pytestconfig):
         start_or_block(case)
         record_transport(case, bench_client, cfg, out)
         board = case.reserve(ttl=300)
-        with console_on_exit(board, out):                    # explicit return at the end, and on any early exit
+        with console_on_exit(board, out), retained_reads(board, out) as reads:   # console back + server readbacks released
             for item in cfg["readonly"]["reads"]:
-                first = board.read_flash(address=item["address"], size=item["size"], return_console=False)
-                second = board.read_flash(address=item["address"], size=item["size"], return_console=False)
+                first = reads.read(address=item["address"], size=item["size"])
+                second = reads.read(address=item["address"], size=item["size"])
                 assert len(first) == len(second) == item["size"], "short read"
                 assert first == second, f"two reads of {item['address']:#x}+{item['size']:#x} differ (dynamic region?)"
                 out.evidence.append(f"{item['address']:#x}+{item['size']:#x}: two reads equal, sha256={sha256(first)}")
@@ -68,13 +68,13 @@ def test_c3r2_partition_table(bench_client, qual_session, pytestconfig):
         start_or_block(case)
         record_transport(case, bench_client, cfg, out)
         board = case.reserve(ttl=300)
-        with console_on_exit(board, out):
+        with console_on_exit(board, out), retained_reads(board, out) as reads:
             valid, probes = probe_candidates(board, candidates)
             case.write("table-probes.json", probes)
             if len(valid) != 1:
                 raise Blocked(f"{len(valid)} valid table(s) among {[hex(a) for a in candidates]}; give the firmware's own table address")
             address, rows = valid[0]
-            raw = board.read_flash(address=address, size=4096, return_console=False)
+            raw = reads.read(address=address, size=4096)
             assert decode_table(raw) == [(r["label"], r["address"], r["size"]) for r in rows], "raw table differs from the API view"
             check_rows(rows, cfg["flash_size"])
             out.evidence.append(f"one valid table at {address:#x}: " + ", ".join(f"{r['label']}@{r['address']:#x}+{r['size']:#x}" for r in rows))
