@@ -44,6 +44,8 @@ class SimDevice:
                 lo, hi = start // 4096 * 4096, (start + len(data) + 4095) // 4096 * 4096
                 self.flash[lo:hi] = b'\xff' * (hi-lo)
                 self.flash[start:start+len(data)] = data
+                if os.environ.get('SIM_FAULT_CORRUPT_WRITE') == '1' and len(images) > 1:   # SIMULATES a multi-image write that does not read back as written
+                    self.flash[start] ^= 0xFF
             self.writes += 1
             return {'written': len(images), 'simulated': True}
         if name == 'flash.read':

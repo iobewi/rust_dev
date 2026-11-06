@@ -13,8 +13,14 @@ Criteria, written before any run:
   INDETERMINATE   unknown outcome of a write or a restore, continuity broken: no replay, local recovery;
   BLOCKED         preconditions absent: regions, consent, opt-in, table offset, control windows, a control window that cannot show an
                   erase (all bytes 0xFF before the run), a region that clashes with the table or a non-owned partition, an unstable reference.
-The control windows are the oracle against an implicit erase. They only detect what they cover, so they are declared in advance and spread
-over the flash. Hardware status: NOT executed.
+The control windows are the oracle against an implicit erase. They detect a change ONLY inside the zones they cover: they do NOT
+demonstrate the integrity of the whole flash, and no "no global erase" claim goes beyond them. They are declared in advance and spread over
+the flash.
+
+Failure after the first write command started (phase "written"): ONE controlled recovery is attempted - restore every region from its verified
+backup and compare - but ONLY if every operation is settled and the handle is intact. With an unresolved / indeterminate operation, a broken
+continuity or a failed restore itself, NOTHING is replayed: the recovery stays with the operator and the restoration field says so. Control
+windows are never "restored" (they were not approved for writing). Hardware status: NOT executed.
 """
 import hashlib
 
@@ -28,6 +34,27 @@ from .session import build_manifest
 from .test_q1_campaign_cycle import SECTOR, deterministic_pattern, overlaps
 
 pytestmark = pytest.mark.bench
+
+
+def recover_after_failure(board, runner, refs, timeout, out, error):
+    """One controlled restore after a failure that happened once the write had started. Never masks `error`, never replays an uncertain operation."""
+    from iobewi_bench.client import ContinuityError, PendingOperation
+    if isinstance(error, (ContinuityError, PendingOperation)) or board.closed or board.uncertain or board.pending:
+        out.restoration = ("UNKNOWN: an operation is unresolved or the handle is no longer valid; nothing was replayed. "
+                           "Local recovery by the operator from the verified ref-N-a.bin backups is required")
+        out.incident("bench", "automatic restoration NOT attempted: unresolved operation or broken continuity")
+        return
+    try:
+        for path, _ in refs:
+            runner.restore(board, path, allow_destructive=True, timeout=timeout)
+            if runner.compare(board, path, timeout=timeout)["equal"] is not True:
+                raise AssertionError("restored region differs from its backup")
+    except BaseException as again:                                   # noqa: BLE001 - reported, the first error stays the verdict
+        out.restoration = "UNKNOWN: the controlled restoration failed; do not retry blindly - local recovery from the verified backups is required"
+        out.incident("infrastructure", f"controlled restoration after a failure did not complete ({type(again).__name__}): {str(again)[:160]}")
+    else:
+        out.restoration = "restored after a failure: every region compared equal to its verified backup (control windows are not approved for writing and were not touched)"
+        out.evidence.append("controlled restoration after the failure: every region equal to its backup")
 
 
 def read_window(board, item, timeout):
@@ -107,29 +134,46 @@ def test_r4_multi_image_without_global_erase(bench_client, qual_session, pytestc
         board.renew(ttl=1800)
 
         out.restoration = "patterns may be present; restore required from the verified ref-N-a.bin backups"      # BEFORE the mutation
-        uploads = [board.client.upload(p) for p in patterns]
-        state = board._check_target()
-        board.command("flash.write", {"chip": state["chip"], "return_console": False,
-                                      "images": [{"address": r["address"], "artifact": u["id"], "sha256": u["sha256"]}
-                                                 for r, u in zip(regions, uploads)]}, timeout=timeout, allow_destructive=True)
-        for u in uploads:
-            board.client.delete_artifact(u["id"])
-        for number, (region, data) in enumerate(zip(regions, patterns)):
-            back = board.read_flash(address=region["address"], size=region["size"], timeout=timeout, return_console=False)
-            board.client.delete_artifact(board.last_operation["result"]["artifact"]["id"])
-            assert back == data, f"Region {number} readback differs from its pattern"
-        out.evidence.append("single multi-image write; every region equal to its own pattern")
-        after_write = [read_window(board, item, timeout) for item in windows]
-        assert after_write == before, "A control window changed after the write: something outside the regions was modified"
-        out.evidence.append("control windows byte-identical after the write (no implicit erase seen where we looked)")
+        phase = "written"                      # from the first write command on, a failure triggers ONE controlled recovery
+        try:
+            uploads = [board.client.upload(p) for p in patterns]
+            state = board._check_target()
+            board.command("flash.write", {"chip": state["chip"], "return_console": False,
+                                          "images": [{"address": r["address"], "artifact": u["id"], "sha256": u["sha256"]}
+                                                     for r, u in zip(regions, uploads)]}, timeout=timeout, allow_destructive=True)
+            for u in uploads:
+                board.client.delete_artifact(u["id"])
+            for number, (region, data) in enumerate(zip(regions, patterns)):
+                back = board.read_flash(address=region["address"], size=region["size"], timeout=timeout, return_console=False)
+                board.client.delete_artifact(board.last_operation["result"]["artifact"]["id"])
+                assert back == data, f"Region {number} readback differs from its pattern"
+            out.evidence.append("single multi-image write; every region equal to its own pattern")
+            after_write = [read_window(board, item, timeout) for item in windows]
+            assert after_write == before, "A control window changed after the write: something outside the regions was modified"
+            out.evidence.append("control windows byte-identical after the write (no implicit erase seen where we looked)")
 
-        for number, (path, _) in enumerate(refs):
-            runner.restore(board, path, allow_destructive=True, timeout=timeout)
-            assert runner.compare(board, path, timeout=timeout)["equal"] is True
-        out.restoration = "restored; independent compare equal to every verified backup"
-        after_restore = [read_window(board, item, timeout) for item in windows]
-        assert after_restore == before, "A control window changed after the restoration"
-        out.evidence.append("control windows byte-identical after the restoration")
+            phase = "restoring"               # a failure from here on is NOT followed by a second automatic restore
+            for number, (path, _) in enumerate(refs):
+                runner.restore(board, path, allow_destructive=True, timeout=timeout)
+                assert runner.compare(board, path, timeout=timeout)["equal"] is True
+            phase = "restored"
+            out.restoration = "restored; independent compare equal to every verified backup"
+            after_restore = [read_window(board, item, timeout) for item in windows]
+            assert after_restore == before, "A control window changed after the restoration"
+            out.evidence.append("control windows byte-identical after the restoration")
+
+        except BaseException as error:         # noqa: BLE001 - the first error stays the verdict
+            if phase == "written":
+                recover_after_failure(board, runner, refs, timeout, out, error)
+            elif phase == "restoring":
+                out.restoration = "UNKNOWN: the restoration itself failed; no automatic second restoration - local recovery from the verified backups is required"
+                out.incident("bench", "failure while restoring: no automatic second restoration; local recovery required")
+            try:
+                if bench_client.device(cfg["board_id"])["privileged_seconds"] > 0:
+                    out.incident("operator", "the local grant is still active after the failure: revoke it locally in the page")
+            except BaseException:          # noqa: BLE001 - informational only
+                pass
+            raise
 
         operator_gesture(case, "REVOKE the grant locally in the page", timeout=cfg["operator_timeout_s"])
         wait_until(lambda: bench_client.device(cfg["board_id"])["privileged_seconds"] == 0,

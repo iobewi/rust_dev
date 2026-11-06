@@ -131,10 +131,80 @@ def test_multi_image_passes_and_restores_every_region(sim, tmp_path):
     assert flash["privileged_seconds"] == 0 and flash["reservation"] is None
 
 
-def test_a_simulated_implicit_global_erase_is_seen_by_the_control_windows(sim, tmp_path):
+def regions_are_blank(client):
+    """The simulated flash starts all 0xFF: a restored region must read back as it was."""
+    with client.reserve("board", ttl=60) as board:
+        return all(set(board.read_flash(address=r["address"], size=r["size"], return_console=False)) == {0xFF} for r in R4["approved_regions"])
+
+
+def test_a_simulated_implicit_global_erase_is_seen_by_the_control_windows_and_regions_are_restored(sim, tmp_path):
     url, client = prepared(sim, env={"SIM_FAULT_GLOBAL_ERASE": "1"})
     proc, reports = run(tmp_path, url, "test_r4_multi_image.py", R4, "--bench-allow-destructive")
-    assert reports["R4"]["status"] == "FAIL" and "control window changed after the write" in " ".join(reports["R4"]["incidents"]), proc.stdout[-1500:]
+    report = reports["R4"]
+    assert report["status"] == "FAIL" and "control window changed after the write" in " ".join(report["incidents"]), proc.stdout[-1500:]
+    assert "restored after a failure" in report["restoration"] and "not touched" in report["restoration"]
+    assert regions_are_blank(client)
+
+
+def test_a_write_that_does_not_read_back_fails_and_the_regions_are_restored(sim, tmp_path):
+    url, client = prepared(sim, env={"SIM_FAULT_CORRUPT_WRITE": "1"})
+    proc, reports = run(tmp_path, url, "test_r4_multi_image.py", R4, "--bench-allow-destructive")
+    report = reports["R4"]
+    assert report["status"] == "FAIL" and "readback differs from its pattern" in " ".join(report["incidents"]), proc.stdout[-1500:]
+    assert "restored after a failure" in report["restoration"]
+    assert regions_are_blank(client)
+
+
+class FakeRunner:
+    def __init__(self, fail=False):
+        self.calls, self.fail = [], fail
+
+    def restore(self, board, path, **kwargs):
+        self.calls.append(("restore", path))
+        if self.fail:
+            raise RuntimeError("restore failed")
+
+    def compare(self, board, path, **kwargs):
+        self.calls.append(("compare", path))
+        return {"equal": True}
+
+
+class FakeBoard:
+    def __init__(self, **flags):
+        self.closed = self.uncertain = False
+        self.pending = None
+        self.__dict__.update(flags)
+
+
+@pytest.mark.parametrize("board_flags,error", [
+    ({"uncertain": True}, RuntimeError("x")),
+    ({"pending": "op1"}, RuntimeError("x")),
+    ({"closed": True}, RuntimeError("x")),
+    ({}, "continuity"),
+    ({}, "pending"),
+])
+def test_no_automatic_restoration_while_an_operation_is_uncertain(board_flags, error):
+    sys.path.insert(0, str(BENCH / "recipes"))
+    from iobewi_bench.client import ContinuityError, PendingOperation
+    from qualification_campaign.harness import Outcome
+    from qualification_campaign.test_r4_multi_image import recover_after_failure
+    error = {"continuity": ContinuityError("c"), "pending": PendingOperation("p")}.get(error, error)
+    runner, out = FakeRunner(), Outcome()
+    recover_after_failure(FakeBoard(**board_flags), runner, [("a.bin", {}), ("b.bin", {})], 60, out, error)
+    assert runner.calls == [] and out.restoration.startswith("UNKNOWN")
+
+
+def test_a_certain_failure_gets_exactly_one_restore_and_compare_per_region_and_a_failed_restore_is_not_retried():
+    sys.path.insert(0, str(BENCH / "recipes"))
+    from qualification_campaign.harness import Outcome
+    from qualification_campaign.test_r4_multi_image import recover_after_failure
+    runner, out = FakeRunner(), Outcome()
+    recover_after_failure(FakeBoard(), runner, [("a.bin", {}), ("b.bin", {})], 60, out, AssertionError("readback"))
+    assert runner.calls == [("restore", "a.bin"), ("compare", "a.bin"), ("restore", "b.bin"), ("compare", "b.bin")]
+    assert out.restoration.startswith("restored after a failure")
+    runner, out = FakeRunner(fail=True), Outcome()
+    recover_after_failure(FakeBoard(), runner, [("a.bin", {}), ("b.bin", {})], 60, out, AssertionError("readback"))
+    assert runner.calls == [("restore", "a.bin")] and out.restoration.startswith("UNKNOWN") and out.incidents
 
 
 @pytest.mark.parametrize("change,flag,why", [
