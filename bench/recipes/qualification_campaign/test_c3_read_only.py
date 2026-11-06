@@ -8,8 +8,8 @@ the C3 is presumed. Hardware status: NOT executed (software-reviewed only).
 import pytest
 
 from .harness import Blocked, Outcome, make_campaign, recorded
-from .readonly import (check_rows, decode_table, probe_candidates, record_transport, require_consent, sha256,
-                       start_or_block)
+from .readonly import (check_rows, decode_table, gate, identify_and_confirm_console, probe_candidates, record_transport,
+                       sha256, start_or_block)
 from .session import build_manifest, table_candidates
 
 pytestmark = pytest.mark.bench
@@ -24,13 +24,13 @@ def _case(bench_client, cfg, test_id, pytestconfig):
 
 def test_c3r0_identity(bench_client, qual_session, pytestconfig):
     cfg = qual_session
-    require_consent(cfg, "C3R-READ")
+    gate(cfg, "C3R-READ")
     case, out = _case(bench_client, cfg, "C3R-0", pytestconfig), Outcome()
     with recorded(case, "C3R-0", out, limits=LIMITS, preconditions=f"{cfg['chip']} declared {cfg['transport']}"):
         start_or_block(case)
         record_transport(case, bench_client, cfg, out)
         board = case.reserve(ttl=300)
-        identity = board.identify()
+        identity = identify_and_confirm_console(board, out)
         case.write("identity.json", {k: identity.get(k) for k in ("chip", "flash_size", "flash_id")})   # never the MAC
         assert identity["chip"] == cfg["chip"], f"measured {identity['chip']}, declared {cfg['chip']}"
         assert identity["flash_size"] == cfg["flash_size"], f"measured {identity['flash_size']}, declared {cfg['flash_size']}"
@@ -39,7 +39,7 @@ def test_c3r0_identity(bench_client, qual_session, pytestconfig):
 
 def test_c3r1_repeatable_reads(bench_client, qual_session, pytestconfig):
     cfg = qual_session
-    require_consent(cfg, "C3R-READ")
+    gate(cfg, "C3R-READ")
     if not cfg["readonly"]["reads"]:
         pytest.skip("BLOCKED: no readonly.reads range configured (choose immutable regions; NVS-like regions legitimately differ)")
     case, out = _case(bench_client, cfg, "C3R-1", pytestconfig), Outcome()
@@ -58,7 +58,7 @@ def test_c3r1_repeatable_reads(bench_client, qual_session, pytestconfig):
 
 def test_c3r2_partition_table(bench_client, qual_session, pytestconfig):
     cfg = qual_session
-    require_consent(cfg, "C3R-READ")
+    gate(cfg, "C3R-READ")
     candidates = table_candidates(cfg)
     if not candidates:
         pytest.skip("BLOCKED: no partition table candidate (readonly.table_candidates or partition_table_offset); none is presumed")

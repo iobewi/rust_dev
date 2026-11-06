@@ -27,7 +27,7 @@ RECIPES = "recipes/qualification_campaign"
 
 
 def base(**change):
-    document = {"version": 1, "board_id": "board", "chip": "esp32s3", "flash_size": 4194304, "transport": "external_uart",
+    document = {"version": 1, "board_id": "board", "chip": "esp32c3", "flash_size": 4194304, "transport": "external_uart",
                 "partition_table_offset": None, "evidence_root": "/private/evidence", "accept_unknown_transport": True,
                 "consent": {"scenarios": ["C3R-READ", "C3R-RESET"]},
                 "readonly": {"table_candidates": [0x8000, 0x10000], "reads": [{"address": 0, "size": 4096}],
@@ -40,7 +40,7 @@ def test_unknown_offset_is_allowed_but_nothing_is_presumed():
     cfg = validate_session(base(readonly={}))
     assert cfg["partition_table_offset"] is None and table_candidates(cfg) == []
     assert cfg["readonly"]["reads"] == [] and cfg["readonly"]["table_candidates"] == []
-    assert cfg["readonly"]["reset"]["marker"] == "ESP-ROM:esp32s3"          # derived from the declared chip, not hard-coded
+    assert cfg["readonly"]["reset"]["marker"] == "ESP-ROM:esp32c3"          # derived from the declared chip, not hard-coded
     assert validate_session(base(partition_table_offset=0x8000, readonly={})) and table_candidates(
         validate_session(base(partition_table_offset=0x8000, readonly={}))) == [0x8000]
 
@@ -91,8 +91,9 @@ def test_independent_table_decoder_and_overlap_checks():
 def sim():
     started = []
 
-    def start(script=()):
-        process = subprocess.Popen([sys.executable, str(BENCH / "python/tests/sim_server.py"), "--script", json.dumps(list(script))],
+    def start(script=(), chip="esp32c3"):
+        process = subprocess.Popen([sys.executable, str(BENCH / "python/tests/sim_server.py"), "--script", json.dumps(list(script)),
+                                    "--chip", chip],
                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         started.append(process)
         selector = selectors.DefaultSelector()
@@ -132,7 +133,7 @@ def write_table(client, address, entries):
     image = table_image(entries)
     artifact = client.upload(image)
     with client.reserve("board", ttl=120, allow_destructive=True) as board:
-        board.command("flash.write", {"chip": "esp32s3", "return_console": False,
+        board.command("flash.write", {"chip": "esp32c3", "return_console": False,
                                       "images": [{"address": address, "artifact": artifact["id"], "sha256": artifact["sha256"]}]},
                       allow_destructive=True)
 
@@ -173,15 +174,39 @@ def test_no_valid_table_or_two_valid_tables_are_blocked_not_failed_or_passed(sim
     assert reports["C3R-2"]["status"] == "BLOCKED" and "2 valid" in " ".join(reports["C3R-2"]["incidents"])
 
 
+def commands_sent(directory):
+    requests = [json.loads(l) for path in directory.glob("*/requests.jsonl") for l in path.read_text().splitlines()]
+    return [r for r in requests if r["method"] == "POST" and r["path"] == "/api/v1/operations"]
+
+
+def test_a_coherent_s3_session_cannot_pass_the_c3_recipes(sim, tmp_path):
+    """A declared (and even observed) S3 must be BLOCKED before any evidence is created or any command is sent."""
+    url, client = sim(chip="esp32s3")
+    for selector in ("test_c3_read_only.py", "test_c3_reset.py"):
+        tmp = tmp_path / selector[:-3]
+        tmp.mkdir()
+        run, reports = run_recipe(tmp, url, selector, chip="esp32s3")
+        assert run.returncode == 0 and "passed" not in run.stdout and "BLOCKED" in run.stdout and "esp32c3" in run.stdout, run.stdout[-900:]
+        assert not reports and not commands_sent(tmp / "evidence")
+        assert not list((tmp / "evidence").glob("*")) if (tmp / "evidence").exists() else True
+
+
 def test_a_wrong_declaration_is_blocked_before_any_hardware_command(sim, tmp_path):
     url, client = sim()
-    for change, why in (({"chip": "esp32c3"}, "chip"), ({"accept_unknown_transport": False}, "transport")):
+    for change, why in (({"accept_unknown_transport": False}, "transport"),):
         tmp = tmp_path / why
         tmp.mkdir()
         run, reports = run_recipe(tmp, url, "test_c3_read_only.py::test_c3r0_identity", **change)
         assert reports["C3R-0"]["status"] == "BLOCKED", (why, run.stdout[-800:])
         requests = [json.loads(l) for l in next((tmp / "evidence").glob("C3R-0-*/requests.jsonl")).read_text().splitlines()]
         assert not [r for r in requests if r["method"] == "POST" and r["path"] == "/api/v1/operations"], "a command was sent"
+
+
+def test_a_declared_c3_on_an_observed_s3_is_blocked_by_the_card_check(sim, tmp_path):
+    url, client = sim(chip="esp32s3")
+    run, reports = run_recipe(tmp_path, url, "test_c3_read_only.py::test_c3r0_identity")      # session declares esp32c3
+    assert reports["C3R-0"]["status"] == "BLOCKED" and "does not match the observed card" in " ".join(reports["C3R-0"]["incidents"])
+    assert not commands_sent(tmp_path / "evidence")
 
 
 def test_missing_consent_or_opt_in_skips_before_creating_any_evidence(sim, tmp_path):
@@ -277,3 +302,65 @@ def test_only_partition_table_invalid_lets_the_probe_move_on():
     with pytest.raises(OperationError):                                               # a USB / link fault is NOT "no table here"
         readonly.probe_candidates(board, [0x8000, 0x10000])
     assert len(board.calls) == 1, "the probe went on after a link fault"
+
+
+class IdentifyBoard:
+    def __init__(self, events):
+        self._events, self.console_calls = events, 0
+
+    def cursor(self):
+        return object()
+
+    def identify(self):
+        return {"chip": "esp32c3", "flash_size": 4194304}
+
+    def events(self, cursor):
+        return self._events
+
+    def console(self):
+        self.console_calls += 1
+
+
+def test_identify_proves_the_console_return_and_adds_no_extra_restart_when_it_is_there():
+    board, out = IdentifyBoard([{"kind": "transport", "detail": "console opened; opening a port may reset the MCU"}]), Outcome()
+    readonly.identify_and_confirm_console(board, out)
+    assert board.console_calls == 0 and "returned by the operation itself" in out.evidence[0]
+
+
+def test_identify_issues_one_explicit_console_only_without_proof():
+    board, out = IdentifyBoard([{"kind": "uart", "data": ""}]), Outcome()
+    readonly.identify_and_confirm_console(board, out)
+    assert board.console_calls == 1 and "explicit console() issued" in out.evidence[0]
+
+
+def test_identify_recipe_leaves_the_simulated_card_in_the_console(sim, tmp_path):
+    url, client = sim()
+    run, reports = run_recipe(tmp_path, url, "test_c3_read_only.py::test_c3r0_identity")
+    assert reports["C3R-0"]["status"] == "PASS" and any("explicit console() issued" in e for e in reports["C3R-0"]["evidence"])
+    commands = [json.loads(l)["command"] for p in (tmp_path / "evidence").glob("*/board-*/operations.jsonl") for l in p.read_text().splitlines()]
+    assert [c for c in dict.fromkeys(commands)] == ["identify", "console"]            # nothing else, in this order
+
+
+def test_reenumeration_with_a_new_generation_closes_and_reopens_the_window_but_stays_indeterminate(sim, tmp_path, monkeypatch):
+    url, client = sim()
+    cfg = validate_session(base(evidence_root=str(tmp_path)))
+    case = Campaign(client, "board", tmp_path / "run", __file__, "C3R-3", manifest=build_manifest(cfg, "C3R", regions=[]))
+    case.start()
+    board = case.reserve(ttl=30)
+    real = client.device
+    state = {"broken": False}
+
+    def broken(*args, **kwargs):
+        state["broken"] = True                                   # from now on the card is a new session
+        raise ContinuityError("USB device re-enumerated")
+    monkeypatch.setattr(board, "wait_uart", broken)
+    monkeypatch.setattr(client, "device", lambda *a: {**real(*a), "generation": "f" * 32} if state["broken"] else real(*a))
+    out = Outcome()
+    with pytest.raises(ContinuityError):
+        with recorded(case, "C3R-3", out, preconditions="sim", limits="sim"):
+            readonly.reset_and_observe(case, board, client, cfg, out)
+    assert json.loads((case.directory / "report.json").read_text())["tests"][0]["status"] == "INDETERMINATE"
+    assert any("card reconnected: generation" in e for e in out.evidence)
+    events = [json.loads(l) for l in (case.directory / "windows.jsonl").read_text().splitlines()]
+    assert [e["event"] for e in events] == ["interrupted", "opened"]                  # old window closed, fresh one opened
+    assert json.loads((case.directory / "cleanup.json").read_text())["errors"] == [], "the fresh window must close cleanly"

@@ -14,6 +14,21 @@ from iobewi_bench.client import ContinuityError, OperationError
 from .harness import Blocked, wait_until
 
 
+TARGET_CHIP = "esp32c3"
+
+
+def require_target(cfg):
+    """These recipes qualify a C3. A coherent S3 session must not be able to PASS them."""
+    if cfg["chip"] != TARGET_CHIP:
+        pytest.skip(f"BLOCKED: the C3-R recipes target an {TARGET_CHIP}; the session declares {cfg['chip']}")
+
+
+def gate(cfg, scenario):
+    """Everything that can be decided from the private session alone, before any evidence or command."""
+    require_target(cfg)
+    require_consent(cfg, scenario)
+
+
 def require_consent(cfg, scenario):
     if scenario not in cfg["consent"].get("scenarios", []):
         pytest.skip(f"BLOCKED: the session lacks the {scenario} consent (operator acknowledgement of loader entry / restart effects)")
@@ -42,6 +57,21 @@ def record_transport(case, client, cfg, out):
     case.write("transport.json", record)
     out.evidence.append(f"transport declared={record['declared_by_operator']} inferred={record['inferred_by_agent']} "
                         f"({record['inference_basis'] or 'no basis'}; {record['provenance_source']})")
+
+
+def identify_and_confirm_console(board, out):
+    """identify enters the loader and, by default, returns to the console itself. Prove that from the transport
+    events; only if the proof is absent issue ONE explicit console() (which may restart the firmware)."""
+    cursor = board.cursor()
+    identity = board.identify()
+    details = [event.get("detail", "") for event in board.events(cursor) if event["kind"] == "transport"]
+    if any("console opened" in detail for detail in details):
+        out.evidence.append("console returned by the operation itself (transport events: " + "; ".join(details) + ")")
+    else:
+        board.console()
+        out.evidence.append("no console-return event after identify (transport events: " + "; ".join(details) +
+                            "): one explicit console() issued, which may restart the firmware")
+    return identity
 
 
 def decode_table(raw):

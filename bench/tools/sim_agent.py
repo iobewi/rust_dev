@@ -21,13 +21,14 @@ class SimFailure(Exception):
 
 
 class SimDevice:
-    def __init__(self, capacity=4 * 1024 * 1024):
+    def __init__(self, capacity=4 * 1024 * 1024, chip='esp32s3'):
+        self.chip = chip
         self.flash = bytearray(b'\xff') * capacity
         self.writes = 0
 
     async def execute(self, name, args, download, upload):
         if name == 'identify':
-            return {'chip': 'esp32s3', 'flash_size': len(self.flash), 'simulated': True}
+            return {'chip': self.chip, 'flash_size': len(self.flash), 'simulated': True}
         if name == 'flash.write':
             images = [(i, await download(i['artifact'])) for i in args['images']]
             for i, data in images:
@@ -66,14 +67,14 @@ class SimDevice:
         return {'command': name, 'simulated': True}
 
 
-async def run(url, token, device_id, grant=0, stop=None, script=()):
+async def run(url, token, device_id, grant=0, stop=None, script=(), chip='esp32s3'):
     """`script`: simulated operator gestures [(delay_s, grant_seconds)], 0 revokes. Simulation only."""
-    sim = SimDevice()
+    sim = SimDevice(chip=chip)
     async with ClientSession(headers={'Authorization': 'Bearer ' + token}) as session:
         async with session.ws_connect(url + '/agent/v1/ws') as ws:
             await ws.send_json({'type': 'auth', 'version': 1, 'token': token})
             await ws.receive_json()
-            await ws.send_json({'type': 'register', 'device': {'id': device_id, 'chip': 'esp32s3',
+            await ws.send_json({'type': 'register', 'device': {'id': device_id, 'chip': chip,
                                 'flash_size': len(sim.flash), 'capabilities': CAPS}})
             registered = await ws.receive_json()
             generation, seq = registered['generation'], 0
@@ -113,7 +114,7 @@ async def run(url, token, device_id, grant=0, stop=None, script=()):
                         result = await sim.execute(op['command'], op['args'], download, upload)
                         if op['command'] in {'reset', 'uart.write'}:
                             seq += 1
-                            data = b'SIM boot\r\nESP-ROM:esp32s3-sim\r\n' if op['command'] == 'reset' else base64.b64decode(op['args']['data'])
+                            data = ('SIM boot\r\nESP-ROM:%s-sim\r\n' % chip).encode() if op['command'] == 'reset' else base64.b64decode(op['args']['data'])
                             await event('uart', seq=seq, data=base64.b64encode(data).decode(), at=time.time()*1000)
                         await ws.send_json({'type': 'result', 'id': op['id'], 'state': 'completed', 'result': result})
                     except Exception as error:

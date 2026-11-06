@@ -7,7 +7,7 @@ The outcome criteria are written in readonly.reset_and_observe() before any run.
 import pytest
 
 from .harness import Outcome, make_campaign, recorded
-from .readonly import record_transport, require_consent, reset_and_observe, start_or_block
+from .readonly import record_transport, require_consent, require_target, reset_and_observe, start_or_block
 from .session import build_manifest
 
 pytestmark = pytest.mark.bench
@@ -15,6 +15,7 @@ pytestmark = pytest.mark.bench
 
 def test_c3r3_explicit_reset_and_rom_banner(bench_client, qual_session, pytestconfig):
     cfg = qual_session
+    require_target(cfg)
     if not pytestconfig.getoption("--qual-allow-reset"):
         pytest.skip("BLOCKED: --qual-allow-reset not given (an explicit reset is a deliberate restart of the card)")
     require_consent(cfg, "C3R-RESET")
