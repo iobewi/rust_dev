@@ -1,7 +1,8 @@
 # Generic bench development and qualification
 
 Discuss work in French. Keep the browser as the exclusive USB owner, the Python
-server as REST/operation broker, and recipes in consumer repositories. Do not put
+server as REST/operation broker. Version generic bench qualification recipes in
+this repository; version firmware/project recipes in their consumer repositories. Do not put
 firmware assertions or OTA business logic in the bench. No physical writes without
 explicit hardware consent; never infer one from permission to change source code.
 
@@ -47,8 +48,9 @@ explicit hardware consent; never infer one from permission to change source code
 ## Utilisation et fin de session
 
 - Utilise `BenchClient`, le plugin pytest, `CampaignManifest`, `Campaign` et
-  `Orchestrator` ; les recettes restent dans le dépôt consommateur ou un dossier
-  privé. Lis `bench/docs/api.md`, `bench/docs/pytest.md` et
+  `Orchestrator` ; versionne les recettes génériques du banc dans ce dépôt et
+  les recettes métier dans leur dépôt consommateur. Les dossiers privés servent
+  aux données et preuves d'exécution, pas à l'unique exemplaire des tests. Lis `bench/docs/api.md`, `bench/docs/pytest.md` et
   `bench/docs/reliability.md` pour le scénario concerné. Ne réimplémente pas
   l'API ni les verdicts de projet dans le serveur.
 - `--bench` autorise l'accès du test au banc ; ce n'est pas un consentement
@@ -74,6 +76,38 @@ explicit hardware consent; never infer one from permission to change source code
 - Conserve un bilan privé : révisions, epoch/génération, preuves, opérations
   pendantes et état final. À la session suivante, vérifie de nouveau l'état réel.
 
+## Méthode obligatoire — rédiger, relire, puis qualifier
+
+Lis [la méthode de qualification](bench/docs/qualification-workflow.md).
+Pour toute nouvelle recette matérielle ou modification de scénario :
+
+1. Rédige le contrat (objectif, assertions, effets, prérequis, arrêt, restauration)
+   et le code paramétré dans une branche et une PR du dépôt approprié.
+   Les recettes maintenues ne doivent pas exister uniquement sous /root ou dans
+   un dossier privé hors Git. Les contrôles logiciels sans matériel restent permis.
+2. Fais relire la PR et son SHA par l'autre assistant : Claude rédige les tests,
+   Codex réalise la revue indépendante, puis Claude corrige les remarques.
+   Ne prétends pas qu'une revue a eu lieu sans retour effectif du réviseur.
+   Lionel arbitre et valide le périmètre de campagne ; ne lui redemande pas les
+   décisions déjà explicites et encore applicables.
+3. Ne lance aucun nouvel essai matériel avant la revue du commit retenu et
+   l'accord de Lionel pour la campagne. Une PR ouverte, une CI verte ou un
+   opt-in pytest ne remplacent ni cette validation ni les autorisations matérielles.
+   Une récupération/restauration déjà autorisée reste prioritaire.
+4. Exécute le SHA validé sans modification des sources pertinentes, relève les
+   versions réelles du serveur/client/agent/recette et conserve un nouveau dossier
+   de preuves pour chaque run. Aucun correctif d'assertion en cours d'exécution.
+   Toute modification substantielle repasse en revue avant le prochain run.
+5. Examine les preuves et limites avant de proposer la fusion. Ne fusionne pas
+   et ne clôt pas d'issue sans instruction explicite de Lionel.
+
+Versionne les modèles de manifestes et les instructions de rejeu ; garde secrets,
+consentements privés, sauvegardes et traces brutes hors Git sur un stockage
+persistant vérifié. Ne suppose pas que /root/bench-evidence ou /root/bench-recipes
+survivent à une recréation du conteneur. Préserve les recettes locales historiques
+et leurs preuves avant intégration ; un PASS local ne devient pas rétroactivement
+le PASS d'un nouveau commit.
+
 ## Software checks
 
 Use Python 3.12+ and Node 22+. In `bench`:
@@ -94,7 +128,8 @@ npm run test:browser
 ```
 
 These are software simulations. General CI must never require a physical board.
-Hardware pytest recipes require an explicit opt-in and remain in the consumer.
+Hardware pytest recipes require an explicit opt-in; generic bench qualification
+recipes belong here and project-specific recipes belong in the consumer.
 Do not merge changes without explicit user validation.
 
 ## Qualification evidence

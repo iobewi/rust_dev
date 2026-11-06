@@ -162,6 +162,12 @@ preuves et demander le geste local nécessaire, sans prendre le contrôle de for
 
 ## 5. Exécuter seulement la recette demandée
 
+Applique d'abord [la méthode de qualification](qualification-workflow.md) :
+recette versionnée dans une PR, revue croisée sur un SHA identifié, puis accord
+pour la campagne avant tout nouvel essai matériel. La rédaction et les contrôles
+logiciels n'exigent pas de carte. Les preuves privées ne remplacent pas le code
+versionné des tests.
+
 Les recettes pytest nécessitent `--bench`, `BENCH_URL`, l'identifiant observé
 `BENCH_DEVICE` et `BENCH_CLIENT_TOKEN` dans l'environnement privé du processus.
 Le token lu par le script d'inspection ci-dessus reste dans ce seul processus :
