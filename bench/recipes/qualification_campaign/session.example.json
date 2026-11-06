@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "board_id": "REPLACE-logical-board-id",
+  "chip": "esp32s3",
+  "flash_size": 0,
+  "transport": "unknown",
+  "partition_table_offset": 0,
+  "approved_regions": [],
+  "evidence_root": "/ABSOLUTE/PRIVATE/PERSISTENT/outside-git",
+  "operation_timeout_s": 120,
+  "operator_timeout_s": 900,
+  "consent": {"scenarios": [], "note": "Real consent lives only in the private copy of this file"},
+  "q2": {"expires_ms": 120000, "reservation_ttl_s": 600},
+  "q3": {"allow_restart": false, "launcher_pid_file": null, "state_dir": null}
+}
