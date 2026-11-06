@@ -36,6 +36,8 @@ class Instance:
         self.work = tempfile.TemporaryDirectory()
         work = Path(self.work.name)
         (work / 'state').mkdir(mode=0o700)
+        self.work_state = str(work / 'state')
+        self.seen = set()
         self.agent_token = secrets.token_urlsafe(32)
         (work / 'tokens.json').write_text(json.dumps({self.agent_token: {'id': 'a', 'role': 'agent', 'devices': ['board']}}))
         self.port = free_port()
@@ -44,6 +46,8 @@ class Instance:
                'BENCH_TOKENS_FILE': str(work / 'tokens.json'), 'BENCH_LOCK_TIMEOUT': '5', **(extra_env or {})}
         self.log = open(work / 'server.log', 'wb')
         self.process = subprocess.Popen(command, env=env, stdout=self.log, stderr=self.log, **kwargs)
+        if Path(command[1]).name == 'bench_server.py':
+            self.seen.add(self.process.pid)
 
     async def ready(self, session):
         for _ in range(150):
@@ -57,14 +61,54 @@ class Instance:
 
     def children(self):
         text = Path(f'/proc/{self.process.pid}/task/{self.process.pid}/children').read_text().split()
-        return [int(pid) for pid in text]
+        found = [int(pid) for pid in text]
+        self.seen.update(found)
+        return found
+
+    def owned(self, pid):
+        """True only for a bench_server.py process that was started with THIS instance's throw-away state dir."""
+        try:
+            environment = Path(f'/proc/{pid}/environ').read_bytes().split(b'\0')
+            command = Path(f'/proc/{pid}/cmdline').read_bytes().split(b'\0')
+        except OSError:
+            return False
+        return (f'BENCH_STATE_DIR={self.work_state}'.encode() in environment
+                and any(part.endswith(b'bench_server.py') for part in command))
+
+    @staticmethod
+    def alive(pid):
+        try:
+            return Path(f'/proc/{pid}/stat').read_text().rsplit(')', 1)[1].split()[0] != 'Z'
+        except OSError:
+            return False
 
     def close(self):
-        if self.process.poll() is None:
-            self.process.kill()
-        self.process.wait()
-        self.log.close()
-        self.work.cleanup()
+        """Bounded, graceful first; the forced step only touches processes proven to belong to this test."""
+        try:
+            if self.process.poll() is None:
+                try:
+                    self.children()                 # remember the current (possibly replacement) server child
+                except OSError:
+                    pass
+                self.process.send_signal(signal.SIGTERM)
+                try:
+                    self.process.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    self.process.kill()
+                    self.process.wait()
+            deadline = time.monotonic() + 10
+            leftovers = [pid for pid in self.seen if self.alive(pid) and self.owned(pid)]
+            while leftovers and time.monotonic() < deadline:
+                time.sleep(0.1)
+                leftovers = [pid for pid in leftovers if self.alive(pid) and self.owned(pid)]
+            for pid in leftovers:                   # last resort, owned throw-away servers only
+                os.kill(pid, signal.SIGKILL)
+            deadline = time.monotonic() + 5
+            while any(self.alive(pid) for pid in self.seen) and time.monotonic() < deadline:
+                time.sleep(0.05)
+        finally:
+            self.log.close()
+            self.work.cleanup()
 
 
 async def connect_agent(session, instance):
@@ -143,7 +187,7 @@ class ShutdownTests(unittest.IsolatedAsyncioTestCase):
                 self.assertLess(elapsed, 10)
                 await asyncio.wait(tasks, timeout=3)
                 self.assertEqual(events['ws'], 1001, 'agent must be told "going away", not cut off')
-                self.assertTrue(events['sse_ended'])
+                self.assertIs(events['sse_ended'], True, 'the stream must end cleanly, not by a read error')
         finally:
             instance.close()
 
@@ -169,12 +213,28 @@ class ShutdownTests(unittest.IsolatedAsyncioTestCase):
                         pass
                 self.assertIsNotNone(after, 'launcher did not replace the server within its stop timeout')
                 self.assertIsNone(instance.process.poll(), 'launcher must still be running (it exits 124 when refusing)')
-                self.assertNotIn(old, instance.children())
+                self.assertNotIn(old, instance.children())      # also records the replacement for cleanup
                 self.assertEqual(events['ws'], 1001)
                 for task in tasks:
                     task.cancel()
         finally:
             instance.close()
+
+    async def test_cleanup_leaves_no_server_even_when_the_restart_is_interrupted(self):
+        """The cleanup itself: a launcher killed mid-restart must not leave an orphan server behind."""
+        instance = Instance([sys.executable, str(LAUNCHER), '--shutdown-timeout', '30'], start_new_session=True)
+        port, state = instance.port, Path(instance.work_state)
+        async with self.session() as session:
+            await instance.ready(session)
+            instance.children()
+            instance.process.send_signal(signal.SIGHUP)       # restart in flight, test "fails" here
+            await asyncio.sleep(0.05)
+        instance.close()
+        self.assertTrue(instance.seen)
+        self.assertFalse([pid for pid in instance.seen if instance.alive(pid)], 'an orphan server survived the cleanup')
+        self.assertFalse(state.exists(), 'state dir must be removed only once nothing holds it')
+        with self.assertRaises(OSError):
+            socket.create_connection(('127.0.0.1', port), timeout=1)
 
 
 if __name__ == '__main__':
