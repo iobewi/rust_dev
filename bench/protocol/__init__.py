@@ -9,9 +9,9 @@ VERSION = 1
 MAX_ARTIFACT = 16 * 1024 * 1024
 MAX_UART = 16384
 CAPABILITIES = {'identify', 'reset', 'partitions', 'flash.read', 'flash.write', 'flash.erase',
-                'uart.write', 'uart.configure', 'console', 'io0', 'mark', 'trigger', 'http.request'}
+                'uart.write', 'uart.configure', 'console', 'io0', 'boot.download', 'mark', 'trigger', 'http.request'}
 PROGRAM = {'flash.write', 'flash.erase'}
-PRIVILEGED = PROGRAM | {'uart.write', 'io0', 'trigger', 'http.request'}
+PRIVILEGED = PROGRAM | {'uart.write', 'io0', 'boot.download', 'trigger', 'http.request'}
 
 
 def trigger_disarm(name, args):
@@ -66,7 +66,7 @@ def validate_command(name, args, device, artifacts):
         'identify': set(), 'reset': set(), 'console': {'return_console'},
         'partitions': {'address', 'return_console'}, 'flash.read': {'address', 'size', 'return_console'},
         'flash.write': {'images', 'chip', 'erase', 'return_console'}, 'flash.erase': {'chip', 'return_console'},
-        'uart.write': {'data'}, 'uart.configure': {'baudrate'}, 'io0': {'duration_ms'},
+        'uart.write': {'data'}, 'uart.configure': {'baudrate'}, 'io0': {'duration_ms'}, 'boot.download': {'hold_ms'},
         'http.request': {'url', 'method', 'body', 'timeout_ms'},
         'mark': {'label'}, 'trigger': {'data', 'action', 'delay_ms', 'expires_ms'},
     }
@@ -102,6 +102,8 @@ def validate_command(name, args, device, artifacts):
         integer(args.get('baudrate'), 1200, 3000000)
     if name == 'io0':
         integer(args.get('duration_ms'), 1, 10000)
+    if name == 'boot.download':
+        integer(args.get('hold_ms'), 100, 3000)     # required: there is no default hold
     if name == 'mark':
         require(isinstance(args.get('label'), str) and len(args['label']) <= 256)
     if name == 'http.request':

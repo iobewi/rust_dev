@@ -8,7 +8,7 @@ const stages = {
   usb_connected: 'Port série connecté', reconnect_failed: 'Reconnexion en attente', identity_changed: 'Carte différente : sélection du port requise',
   console: 'Ouverture de console — peut redémarrer la carte', loader: 'Entrée en mode chargeur',
 };
-const commands = new Set(['identify', 'partitions', 'flash.read', 'flash.write', 'flash.erase', 'console', 'reset', 'io0', 'mark', 'uart.write', 'uart.configure', 'trigger', 'http.request']);
+const commands = new Set(['identify', 'partitions', 'flash.read', 'flash.write', 'flash.erase', 'console', 'reset', 'io0', 'boot.download', 'mark', 'uart.write', 'uart.configure', 'trigger', 'http.request']);
 export class AgentJournal {
   constructor(limit = 300) { this.limit = limit; this.rows = []; }
   append(event) {

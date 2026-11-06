@@ -19,10 +19,12 @@ from .harness import Blocked, describe, wait_until
 TARGET_CHIP = "esp32c3"
 
 
-def require_target(cfg):
-    """These recipes qualify a C3. A coherent S3 session must not be able to PASS them."""
-    if cfg["chip"] != TARGET_CHIP:
-        pytest.skip(f"BLOCKED: the C3-R recipes target an {TARGET_CHIP}; the session declares {cfg['chip']}")
+def require_target(cfg, chip=TARGET_CHIP, transport=None):
+    """A recipe qualifies ONE chip (and, when given, ONE declared transport). A coherent session for another card must not PASS it."""
+    if cfg["chip"] != chip:
+        pytest.skip(f"BLOCKED: this recipe targets an {chip}; the session declares {cfg['chip']}")
+    if transport is not None and cfg["transport"] != transport:
+        pytest.skip(f"BLOCKED: this recipe targets the {transport} transport; the session declares {cfg['transport']}")
 
 
 def gate(cfg, scenario):

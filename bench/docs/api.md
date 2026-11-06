@@ -60,6 +60,7 @@ Les agents utilisent REST seulement pour uploader les dumps et télécharger les
 | `uart.write` | `data` base64, 1–16 384 octets | Oui |
 | `uart.configure` | `baudrate` entier 1 200–3 000 000 | Non |
 | `io0` | `duration_ms` 1–10 000, UART externe seulement | Oui |
+| `boot.download` | `hold_ms` 100–3 000 (obligatoire), UART externe et console seulement : circuit d'auto-reset classique : EN bas (RTS), puis EN relâché IO0 bas (DTR) pendant le maintien borné, puis relâche des deux lignes ; câblage supposé, non mesuré ; ne vérifie ni le mode ni un démarrage | Oui |
 | `mark` | `label` texte ≤256 caractères | Non |
 | `trigger` | `data` base64 ≤256 octets, `action` mark/reset, `delay_ms` 0–10 000, `expires_ms` 1–120 000 | Oui |
 | `trigger` | `action:"disarm"` uniquement ; réservation active ayant armé le déclencheur dans cette génération | Non ; scope `control` et propriétaire vérifiés |

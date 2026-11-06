@@ -309,6 +309,20 @@ class CoreTests(unittest.TestCase):
         validate_command('http.request',{'url':'http://192.168.1.50/health'},d,{})
         with self.assertRaises(Fault):validate_command('http.request',{'url':'http://192.168.1.51/'},d,{})
 
+    def test_boot_download_needs_a_grant_bounded_hold_and_the_capability(self):
+        from protocol import PRIVILEGED, validate_command
+        self.assertIn('boot.download', PRIVILEGED)
+        d={**self.b.devices['board'],'capabilities':['boot.download']}
+        validate_command('boot.download',{'hold_ms':100},d,{})
+        validate_command('boot.download',{'hold_ms':3000},d,{})
+        for args in [{}, {'hold_ms':99}, {'hold_ms':3001}, {'hold_ms':'100'}, {'hold_ms':True}, {'hold_ms':100,'extra':1}]:
+            with self.assertRaises(Fault, msg=str(args)):validate_command('boot.download',args,d,{})
+        with self.assertRaises(Fault):validate_command('boot.download',{'hold_ms':100},{**d,'capabilities':['reset']},{})
+        self.b.devices['board']['capabilities'].append('boot.download'); self.b.devices['board']['grant_until']=0
+        with self.assertRaises(Fault) as error:
+            self.submit('boot.download',{'hold_ms':100})
+        self.assertEqual((error.exception.status,error.exception.code),(403,'grant_required'))
+
     def test_pending_control_is_cancelled_after_quarantine(self):
         op=self.submit('reset');self.b.devices['board']['quarantined']=True
         self.assertIsNone(self.b.offer('board'));self.assertEqual(self.b.operations[op['id']]['state'],'cancelled')

@@ -65,7 +65,7 @@ export class EspEngine {
   }
   capabilities() {
     const caps = ['identify', 'partitions', 'flash.read', 'flash.write', 'flash.erase', 'uart.write', 'uart.configure', 'console', 'mark', 'trigger', 'http.request'];
-    if (!this.native) return [...caps, 'reset', 'io0'];
+    if (!this.native) return [...caps, 'reset', 'io0', 'boot.download'];
     return this.usbSerialJtag ? [...caps, 'reset'] : caps;
   }
   async openConsole() {
@@ -150,6 +150,42 @@ export class EspEngine {
     if (this.usbSerialJtag) await sleep(200);
     return this.usbSerialJtag ? 'usb_serial_jtag' : 'en';
   }
+  // Cooperative wait: each slice re-checks the lease / grant / deadline so a revocation cuts the hold short.
+  async pause(ms, context) {
+    const end = performance.now() + ms;
+    for (;;) {
+      context.check?.();
+      const left = end - performance.now();
+      if (left <= 0) return;
+      await sleep(Math.min(left, 50));
+    }
+  }
+  // ONE atomic sequence for the external UART bridge with the CLASSIC two-transistor auto-reset circuit (esptool ClassicReset).
+  // Truth table (DTR, RTS asserted = 1) -> (EN, IO0):  (0,0)->(1,1)  (1,1)->(1,1)  (0,1)->(0,1)=EN low  (1,0)->(1,0)=IO0 low.
+  // Asserting BOTH lines therefore does NOT reset the chip: the sequence must alternate them.
+  //   1. DTR=0 RTS=1 : IO0 high, EN low (chip held in reset)
+  //   2. DTR=1 RTS=0 : EN released while IO0 is low (the ROM samples the strapping pins at the EN rising edge); bounded hold
+  //   3. DTR=0 RTS=0 : both lines released, on every path where the transport still answers.
+  // The wiring is an ASSUMPTION about the bridge (same as reset/io0): a bridge without this circuit may behave differently.
+  // Never retried. If the release itself fails the line state is unknown: operator recovery, not an idle card.
+  async bootDownload(holdMs, context) {
+    if (this.native) throw new HardwareError('external_uart_required');
+    if (this.mode !== 'console') throw new HardwareError('console_required');
+    let failure;
+    try {
+      await this.port.setSignals({ dataTerminalReady: false, requestToSend: true });
+      await this.pause(100, context);
+      await this.port.setSignals({ dataTerminalReady: true, requestToSend: false });
+      await this.pause(holdMs, context);
+    } catch (error) { failure = error; }
+    try { await this.port.setSignals({ dataTerminalReady: false, requestToSend: false }); }
+    catch (error) {
+      this.setHold(true);
+      throw new HardwareError('signal_release_failed');
+    }
+    if (failure) throw failure;
+    return 'en+io0';
+  }
   matchTrigger(chunk) {
     const trigger = this.trigger;
     if (!trigger) return;
@@ -209,6 +245,10 @@ export class EspEngine {
       }
       if (command === 'console') { this.setPhase('console', context); await this.openConsole(); return { mode: this.mode }; }
       if (command === 'reset') { const method = await this.reset(); return { reset: true, method, boot_verified: false }; }
+      if (command === 'boot.download') {
+        const method = await this.bootDownload(args.hold_ms, context);
+        return { download_mode_requested: true, method, hold_ms: args.hold_ms, boot_verified: false };
+      }
       if (command === 'io0') {
         if (this.native) throw new HardwareError('external_uart_required');
         if (this.mode !== 'console') throw new HardwareError('console_required');

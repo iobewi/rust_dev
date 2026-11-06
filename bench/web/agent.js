@@ -147,7 +147,7 @@ export class Agent {
       this.engine.persistHold(true);
       const generation = this.generation;
       const disarm = op.command === 'trigger' && op.args?.action === 'disarm' && Object.keys(op.args).length === 1;
-      const privileged = ['flash.write', 'flash.erase', 'uart.write', 'io0', 'trigger', 'http.request'].includes(op.command) && !disarm && !op.local_control;
+      const privileged = ['flash.write', 'flash.erase', 'uart.write', 'io0', 'boot.download', 'trigger', 'http.request'].includes(op.command) && !disarm && !op.local_control;
       const leaseLive = () => this.generation === generation && this.socket?.readyState === 1 && !this.revoked.has(op.lease) && this.now() < op.lease_deadline_ms - this.serverOffset - 100 && (!privileged || this.now() < this.grantUntil);
       // The server starts this deadline before sending execute; network delay cannot extend it.
       const live = () => leaseLive() && this.now() < executionUntil;

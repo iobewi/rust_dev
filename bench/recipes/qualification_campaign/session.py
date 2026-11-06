@@ -12,19 +12,20 @@ from iobewi_bench import CampaignManifest
 
 CHIPS = {"esp32s3", "esp32c3"}
 TRANSPORTS = {"external_uart", "usb_serial_jtag", "native_usb_other", "unknown"}
-SCENARIOS = {"Q1", "Q2", "Q3", "C3R-READ", "C3R-RESET"}
+SCENARIOS = {"Q1", "Q2", "Q3", "C3R-READ", "C3R-RESET", "S3R-RESET", "S3R-BOOT"}
 TOP_LEVEL = {"version", "board_id", "chip", "flash_size", "transport", "partition_table_offset",
              "approved_regions", "evidence_root", "operation_timeout_s", "operator_timeout_s",
-             "consent", "q2", "q3", "readonly", "accept_unknown_transport"}
+             "consent", "q2", "q3", "readonly", "bootloader", "accept_unknown_transport"}
 DEFAULTS = {"operation_timeout_s": 120, "operator_timeout_s": 900, "approved_regions": [],
             "consent": {"scenarios": [], "note": ""}, "q2": {}, "q3": {},
-            "readonly": {}, "accept_unknown_transport": False}
+            "readonly": {}, "bootloader": {}, "accept_unknown_transport": False}
 Q2_DEFAULTS = {"trigger_pattern_b64": "SU9CRVdJLVEyLU5FVkVSLVNUSU1VTEFURUQ=",  # inert, never stimulated
                "expires_ms": 120000, "reservation_ttl_s": 600}
 Q3_DEFAULTS = {"allow_restart": False, "launcher_pid_file": None, "state_dir": None, "launcher_log": None,
                "stop_timeout_s": 60, "health_timeout_s": 60, "agent_reconnect_timeout_s": 120}
 READONLY_KEYS = {"table_candidates", "reads", "reset"}
 RESET_KEYS = {"marker", "marker_timeout_s", "reconnect_timeout_s"}
+BOOTLOADER_KEYS = {"marker", "hold_ms", "marker_timeout_s"}
 
 
 class SessionError(ValueError):
@@ -73,6 +74,7 @@ def validate_session(document):
     if type(cfg["q2"]["expires_ms"]) is not int or not 1 <= cfg["q2"]["expires_ms"] <= 120000:
         raise SessionError("q2.expires_ms must be 1..120000")
     cfg["readonly"] = validate_readonly(cfg["readonly"], cfg)
+    cfg["bootloader"] = validate_bootloader(cfg["bootloader"])
     regions = cfg["approved_regions"]
     if not isinstance(regions, list):
         raise SessionError("approved_regions must be a list")
@@ -111,6 +113,21 @@ def validate_readonly(section, cfg):
         if type(reset[key]) is not int or not 1 <= reset[key] <= 300:
             raise SessionError(f"readonly.reset.{key} must be 1..300 seconds")
     return {"table_candidates": candidates, "reads": reads, "reset": reset}
+
+
+def validate_bootloader(section):
+    """S3R-BOOT parameters. The download-mode marker has NO default: it must be fixed from the ROM documentation BEFORE a run,
+    never copied from a previous result. Without it the recipe is BLOCKED."""
+    if not isinstance(section, dict) or section.keys() - BOOTLOADER_KEYS:
+        raise SessionError(f"bootloader accepts only {sorted(BOOTLOADER_KEYS)}")
+    out = {"hold_ms": 500, "marker_timeout_s": 15, **section}
+    if "marker" in out and (not isinstance(out["marker"], str) or not 1 <= len(out["marker"]) <= 128):
+        raise SessionError("bootloader.marker must be 1..128 characters")
+    if type(out["hold_ms"]) is not int or not 100 <= out["hold_ms"] <= 3000:
+        raise SessionError("bootloader.hold_ms must be 100..3000")
+    if type(out["marker_timeout_s"]) is not int or not 1 <= out["marker_timeout_s"] <= 300:
+        raise SessionError("bootloader.marker_timeout_s must be 1..300 seconds")
+    return out
 
 
 def table_candidates(cfg):

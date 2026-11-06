@@ -3,7 +3,7 @@ export class HardwareError extends Error {
   constructor(code, detail = {}) { super(code); this.code = code; this.detail = detail; }
 }
 const codes = new Set(['capacity', 'console_required', 'external_uart_required', 'partition_table_invalid', 'physical_identity_changed',
-  'operator_recovery_required', 'serial_disconnected', 'serial_timeout', 'serial_partial_packet', 'serial_invalid_packet', 'short_flash_read', 'artifact_transfer_failed', 'artifact_integrity_failed',
+  'operator_recovery_required', 'signal_release_failed', 'serial_disconnected', 'serial_timeout', 'serial_partial_packet', 'serial_invalid_packet', 'short_flash_read', 'artifact_transfer_failed', 'artifact_integrity_failed',
   'agent_disconnected', 'reservation_expired', 'trigger_not_owned', 'grant_expired', 'execution_deadline_exceeded', 'command_start_expired']);
 const phases = new Set(['prepare', 'identify', 'flash_read', 'artifact_upload', 'artifact_download', 'flash_write', 'flash_erase', 'console', 'control']);
 const kinds = new Set(['closed', 'no-response', 'partial-packet', 'invalid-packet']);

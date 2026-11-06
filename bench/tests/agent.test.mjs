@@ -227,3 +227,14 @@ test('server-authenticated local operation needs no remote grant, while external
  await x.agent.message({type:'result_ack',id:'op',generation:'gen',quarantined:false});
  assert.equal(x.messages.at(-1).type,'settled');assert.equal(x.agent.grantUntil,0);
 });
+
+test('boot.download cannot execute without a live local grant and never reaches the engine',async()=>{
+ const x=setup();x.agent.grantUntil=0;await x.agent.message({...x.offer(),command:'boot.download',args:{hold_ms:100}});
+ await x.agent.message({type:'execute',id:'op',execution_deadline_ms:performance.now()+121000,deadline_ms:performance.now()+11000});
+ assert.equal(x.runs(),0);assert.equal(x.messages.at(-1).state,'failed');
+});
+test('boot.download runs once with a live local grant',async()=>{
+ const x=setup();await x.agent.message({...x.offer(),command:'boot.download',args:{hold_ms:100}});
+ await x.agent.message({type:'execute',id:'op',execution_deadline_ms:performance.now()+121000,deadline_ms:performance.now()+11000});
+ assert.equal(x.runs(),1);assert.equal(x.messages.at(-1).state,'completed');
+});
