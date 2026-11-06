@@ -35,6 +35,8 @@ def test_q1_full_cycle(bench_client, qual_session, pytestconfig):
     regions = cfg["approved_regions"]
     if not pytestconfig.getoption("--bench-allow-destructive"):
         pytest.skip("BLOCKED: --bench-allow-destructive not given (this opt-in is not hardware consent)")
+    if cfg["partition_table_offset"] is None:
+        pytest.skip("BLOCKED: partition_table_offset unknown (discovery session); Q1 needs the table to check the region")
     if "Q1" not in cfg["consent"].get("scenarios", []) or len(regions) != 1:
         pytest.skip("BLOCKED: session lacks Q1 consent or exactly one operator-approved region")
     region, timeout = regions[0], cfg["operation_timeout_s"]

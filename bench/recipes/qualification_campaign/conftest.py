@@ -12,6 +12,8 @@ def pytest_addoption(parser):
                     help="Private session JSON (board facts, approved regions, consent). Never in Git.")
     group.addoption("--qual-allow-dirty", action="store_true",
                     help="Allow uncommitted bench sources (development/simulation only; recorded in the run)")
+    group.addoption("--qual-allow-reset", action="store_true",
+                    help="Allow C3R-3 to send an explicit reset command (also needs consent C3R-RESET in the session)")
     group.addoption("--qual-allow-restart", action="store_true",
                     help="Allow Q3 to signal the identified launcher; also needs q3.allow_restart in the session")
 

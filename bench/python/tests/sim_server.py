@@ -20,6 +20,7 @@ TOKENS = {
 async def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--grant", type=int, default=0)
+    parser.add_argument("--chip", default="esp32s3", help="Chip family the RAM simulator reports (simulation only)")
     parser.add_argument("--script", default="[]", help="JSON [[delay_s, grant_seconds], ...] simulated operator gestures")
     args = parser.parse_args()
     runner = web.AppRunner(create_app(TOKENS), access_log=None)
@@ -28,7 +29,7 @@ async def main():
     await site.start()
     url = "http://127.0.0.1:" + str(site._server.sockets[0].getsockname()[1])
     print(json.dumps({"url": url}), flush=True)
-    task = asyncio.create_task(run(url, "pytest-agent-test-token", "board", grant=args.grant, script=json.loads(args.script)))
+    task = asyncio.create_task(run(url, "pytest-agent-test-token", "board", grant=args.grant, script=json.loads(args.script), chip=args.chip))
     try:
         await asyncio.Event().wait()
     finally:

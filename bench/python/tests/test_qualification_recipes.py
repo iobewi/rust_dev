@@ -80,7 +80,8 @@ def test_collection_without_optin_touches_no_network_and_skips_everything(tmp_pa
     run = subprocess.run([sys.executable, "-m", "pytest", "recipes/qualification_campaign", "-q", "-rs",
                           "-p", "no:cacheprovider"], cwd=BENCH, env=env, capture_output=True, text=True, timeout=120)
     assert run.returncode == 0, run.stdout + run.stderr
-    assert "6 skipped" in run.stdout and "passed" not in run.stdout
+    import re
+    assert re.search(r"\d+ skipped", run.stdout) and "passed" not in run.stdout and "failed" not in run.stdout
     with pytest.raises(socket.timeout):
         listener.accept()                                       # nothing connected at import/collection
     listener.close()

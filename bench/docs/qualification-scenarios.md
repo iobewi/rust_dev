@@ -75,9 +75,39 @@ Réservation 600 s, déclencheur ≤ 120 s ; si le déclencheur expire avant le 
 - **Échecs** : délai d'arrêt dépassé → INDETERMINATE (inspection seule : ni verrou, ni base supprimés, aucun signal supplémentaire). L'agent peut exiger un rechargement de la page (geste annoncé, attente bornée).
 - **Hors périmètre** : coupure pendant une écriture (lot distinct avec autorisation et récupération dédiées).
 
-### Extension C3 (non exécutable tant que la carte C3 n'est pas décrite)
+### C3-R — C3 en lecture, puis reset séparé (`test_c3_read_only.py`, `test_c3_reset.py`)
 
-Aucune valeur C3 n'est inventée. Il suffit d'une **nouvelle session privée** (`chip: esp32c3`, capacité, transport, offset de table, région approuvée et consentement propres) ; Q1/Q2/Q3 sont paramétrés par cette session. Interface ou carte absente : BLOCKED/SKIP justifié. Un verdict par couple carte/transport.
+**Cible : ESP32-C3 uniquement.** Avant tout dossier de preuves ou toute commande, une session qui déclare une autre puce (une S3 cohérente comprise) donne BLOCKED : elle ne peut pas passer ces recettes. Aucune valeur C3 n'est présumée : capacité, transport, candidats de table et plages de lecture viennent d'une
+**session privée C3**. Aucune écriture ni effacement. **Les lectures ne sont pas un reset** :
+
+- **Lectures** (identify, flash.read, partitions) : elles entrent dans le chargeur ROM, ce qui peut redémarrer la carte
+  comme effet de bord. Consentement de session `C3R-READ` (reconnaît cet effet) ; retour console explicite en fin de test.
+- **Reset explicite** : redémarrage voulu d'une carte. Test à part, opt-in `--qual-allow-reset` **et** consentement `C3R-RESET`.
+
+| Test | Objectif et assertions | Verdicts |
+|---|---|---|
+| `C3R-0` identité | `identify` : puce et capacité mesurées **égales** à la déclaration (jamais la MAC dans les preuves). Le retour à la console est **prouvé côté transport** par les événements (`console opened`) — cela ne prouve pas que l'application a redémarré correctement ; sans cette preuve, un seul `console()` explicite est émis et consigné (il peut redémarrer le firmware) | PASS ; déclaration ≠ carte observée = BLOCKED avant toute commande (`CampaignManifest.check_device`) |
+| `C3R-1` lectures répétables | chaque plage de `readonly.reads` lue deux fois, tailles et octets égaux, SHA-256 consigné ; à choisir parmi des régions **immuables** | PASS ; deux lectures différentes = FAIL (région dynamique ?) ; aucune plage configurée = BLOCKED. **Sortie anticipée** (BLOCKED, échec, rupture) : un seul `console()` est tenté si toutes les opérations sont réglées et le handle intact, sans masquer la première erreur ; sinon la récupération locale nécessaire est écrite dans le champ restauration |
+| `C3R-2` table | candidats explicites (`readonly.table_candidates`, ou l'offset déclaré) ; **seul** `partition_table_invalid` autorise le candidat suivant, toute autre erreur (lien, USB) fait échouer ; exactement une table valide ; décodeur brut indépendant égal à la vue API ; pas de chevauchement ni de débordement | PASS ; 0 ou ≥ 2 tables valides = BLOCKED (donner l'adresse du firmware) ; même retour console sur sortie anticipée que C3R-1 |
+| `C3R-3` reset | un reset, curseur pris avant, bannière ROM attendue (`ESP-ROM:<puce>` par défaut) | voir ci-dessous |
+
+**Critères du reset (écrits avant tout run)** : PASS = bannière vue après le curseur, sans rupture de continuité ;
+INDETERMINATE = rupture de continuité (réénumération USB ou déconnexion) **ou reset d'issue indéterminée (`PendingOperation`, jamais rejoué ni certifié)** — la fenêtre est close explicitement, la reconnexion
+est observée et consignée (nouvelle génération ou absence), une nouvelle fenêtre est ouverte, mais la recette **n'appelle pas cela
+un succès** : un critère pour l'USB natif sera écrit après avoir constaté des résultats réels ; FAIL = reset réglé, aucune rupture,
+pas de bannière dans le délai ; BLOCKED = la carte n'expose pas la capacité `reset` sur cette interface.
+
+**Transport** : la session porte la déclaration de l'opérateur ; l'agent n'en fait qu'une inférence (VID/PID). Les deux sont
+consignées avec leur provenance (`transport.json`) et aucune ne prouve le câblage. `accept_unknown_transport: true` autorise
+explicitement une inférence « unknown » ; un conflit entre déclaration et inférence connue donne BLOCKED.
+
+Paramètres de session ajoutés : `readonly.table_candidates` (≤ 4 adresses alignées), `readonly.reads` (≤ 8 plages de ≤ 64 Kio),
+`readonly.reset` (`marker`, `marker_timeout_s`, `reconnect_timeout_s`), `accept_unknown_transport`, et `partition_table_offset: null`
+pour une session de découverte (Q1 refuse alors de s'exécuter). Une session C3 est distincte de la session S3 : ni région, ni
+approbation, ni consentement ne se transposent. Un verdict par couple carte/transport ; USB natif et UART externe se rejouent séparément.
+
+Statut : **non exécuté sur matériel**. Les simulations (`python/tests/test_c3_read_only.py`) utilisent un simulateur RAM qui se déclare
+esp32c3 (`--chip`) : elles valident la logique de décision, jamais un C3 ni une réénumération USB.
 
 ## Provenance d'un run
 
