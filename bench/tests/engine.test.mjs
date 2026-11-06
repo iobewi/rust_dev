@@ -152,15 +152,44 @@ const uartPort=(signals,{failAt=null,failRelease=false}={})=>({getInfo:()=>({usb
  setSignals:async value=>{signals.push(value);if(failAt===signals.length)throw new Error('signal failed');
   if(failRelease&&value.dataTerminalReady===false&&value.requestToSend===false)throw new Error('release failed');}});
 
-test('boot.download drives IO0 low, resets EN with IO0 still low, holds, then releases both lines',async()=>{
+// Classic two-transistor auto-reset circuit (esptool docs): (DTR,RTS) -> (EN,IO0) levels, true = high.
+//   (0,0)->(1,1)  (1,1)->(1,1)  (0,1)->EN low  (1,0)->IO0 low.  This models the ASSUMED bridge wiring, not a measured one.
+const circuit=({dataTerminalReady:dtr,requestToSend:rts})=>({en:!(!dtr&&rts),io0:!(dtr&&!rts)});
+// Replays the signals through the circuit from the idle state; reports what the chip would see.
+function chipView(signals){
+ let prev={en:true,io0:true};const edges=[];const lows=[];
+ for(const signal of signals){const now=circuit(signal);
+  if(!prev.en&&now.en)edges.push({io0AtEnRise:now.io0});
+  if(!now.en)lows.push({io0:now.io0});
+  prev=now;}
+ return {edges,enLowStates:lows,final:prev};
+}
+test('the circuit model matches the documented classic truth table',()=>{
+ assert.deepEqual(circuit({dataTerminalReady:false,requestToSend:false}),{en:true,io0:true});
+ assert.deepEqual(circuit({dataTerminalReady:true,requestToSend:true}),{en:true,io0:true});   // both asserted: NO reset
+ assert.deepEqual(circuit({dataTerminalReady:false,requestToSend:true}),{en:false,io0:true});
+ assert.deepEqual(circuit({dataTerminalReady:true,requestToSend:false}),{en:true,io0:false});
+});
+test('boot.download makes the chip see EN low with IO0 high, then EN rising with IO0 LOW, then both released',async()=>{
  const signals=[],engine=new EspEngine(uartPort(signals),{},()=>{});engine.mode='console';
  assert.equal(engine.capabilities().includes('boot.download'),true);
  const result=await engine.execute('boot.download',{hold_ms:100},{check(){}});
  assert.deepEqual(result,{download_mode_requested:true,method:'en+io0',hold_ms:100,boot_verified:false});
- assert.deepEqual(signals,[{dataTerminalReady:true,requestToSend:true},{dataTerminalReady:true,requestToSend:false},{dataTerminalReady:false,requestToSend:false}]);
+ const view=chipView(signals);
+ assert.deepEqual(view.enLowStates,[{io0:true}]);          // held in reset with IO0 high
+ assert.deepEqual(view.edges,[{io0AtEnRise:false}]);       // exactly one EN rising edge, IO0 low at that instant
+ assert.deepEqual(view.final,{en:true,io0:true});           // both lines released
  assert.equal(engine.busy,false);assert.equal(engine.mode,'console');assert.equal(engine.hold,false);
 });
-
+test('the previous sequence (DTR and RTS asserted together) is NOT a reset: the model rejects it',()=>{
+ const old=[{dataTerminalReady:true,requestToSend:true},{dataTerminalReady:true,requestToSend:false},{dataTerminalReady:false,requestToSend:false}];
+ const view=chipView(old);assert.deepEqual(view.enLowStates,[]);assert.deepEqual(view.edges,[]);   // EN never fell
+});
+test('the plain reset sequence is not a download-mode entry: IO0 stays high at the EN rising edge',async()=>{
+ const signals=[],engine=new EspEngine(uartPort(signals),{},()=>{});engine.mode='console';
+ await engine.execute('reset',{}, {check(){}});
+ assert.deepEqual(chipView(signals).edges,[{io0AtEnRise:true}]);
+});
 test('boot.download is never offered nor attempted on a native USB port, and needs the console',async()=>{
  for(const info of [{usbVendorId:0x303a,usbProductId:0x1001},{usbVendorId:0x303a},{usbVendorId:0x303a,usbProductId:0x4001}]){
   const signals=[],engine=new EspEngine({getInfo:()=>info,setSignals:async v=>signals.push(v)},{},()=>{});engine.mode='console';
@@ -177,7 +206,7 @@ test('boot.download releases both lines when the lease or grant ends during the 
  let calls=0;
  await assert.rejects(engine.execute('boot.download',{hold_ms:3000},{check(){if(++calls>3)throw new HardwareError('grant_expired');}}),e=>e.code==='grant_expired');
  assert.deepEqual(signals.at(-1),{dataTerminalReady:false,requestToSend:false});
- assert.equal(signals.filter(s=>s.dataTerminalReady===true&&s.requestToSend===true).length,1);
+ assert.equal(signals.filter(s=>s.dataTerminalReady===false&&s.requestToSend===true).length,1);   // one EN-low phase, never retried
  assert.equal(engine.busy,false);
 });
 

@@ -26,7 +26,11 @@ vérification préalable de la session est sans trace.
 ### S3R-2 : commande atomique `boot.download` (décision de revue : option « commande atomique »)
 Un déclencheur différé combiné à `io0` est **écarté** (dépend de `busy` et des temporisations).
 **Contrat de la commande** (`bench/protocol`, `web/esp-engine.js`, `web/agent.js`) :
-- séquence : `DTR=1,RTS=1` (IO0 bas, EN bas) ; pause 100 ms ; `DTR=1,RTS=0` (EN relâché, IO0 encore bas : la ROM échantillonne le strapping) ; maintien `hold_ms` ; `DTR=0,RTS=0` (**relâche des deux lignes**) ;
+- séquence pour le circuit d'auto-reset **classique à deux transistors** (esptool `ClassicReset`), table de vérité (DTR, RTS) → (EN, IO0) : (0,0)→(1,1), (1,1)→(1,1), (0,1)→EN bas, (1,0)→IO0 bas ; asserter **les deux** ne provoque donc **pas** de reset (défaut relevé par la revue de `c28b18a`) :
+  1. `DTR=0,RTS=1` : EN bas, IO0 haut (puce en reset) ; pause 100 ms ;
+  2. `DTR=1,RTS=0` : EN relâché pendant que IO0 est bas (la ROM échantillonne le strapping au front montant de EN) ; maintien `hold_ms` ;
+  3. `DTR=0,RTS=0` : **relâche des deux lignes** ;
+- **hypothèse de câblage, non mesurée** : le pont de la carte utilisée implémente ce circuit classique (même hypothèse que `reset` et `io0` existants). Un pont sans ce circuit peut se comporter autrement : à confirmer sur le schéma de la carte réelle avant la qualification ; un PASS ne vaut que pour cette carte ;
 - argument `hold_ms` **obligatoire**, entier 100..3000, aucun défaut ; champs inconnus refusés ;
 - réservée au pont **UART externe** (`external_uart_required` sinon) et à la console ouverte (`console_required` sinon) ; jamais annoncée sur USB natif ;
 - **privilégiée** : grant local vivant exigé par le serveur (`grant_required` sinon) et par l'agent (`PRIVILEGED`) ;
@@ -37,7 +41,7 @@ Un déclencheur différé combiné à `io0` est **écarté** (dépend de `busy` 
 **Recette** `test_s3_uart_boot.py` : session `esp32s3`/`external_uart`, consentement `S3R-BOOT`, `--qual-allow-bootloader`, `bootloader.marker` **fixé avant le run d'après la documentation de la ROM du S3**, sans défaut (BLOCKED sinon) ;
 l'opérateur donne le grant le plus court et ne fait ensuite rien (expiration naturelle) ; la carte reste en mode téléchargement jusqu'à son prochain reset (geste opérateur hors recette).
 - **PASS** : commande réglée, marqueur vu après le curseur, même fenêtre de preuve, sans rupture. **FAIL** : réglée, pas de marqueur dans le délai. **INDETERMINATE** : rupture de continuité ou issue inconnue. **BLOCKED** : voir plus haut ou grant non observé.
-Limites : prouve une émission en mode téléchargement, pas un démarrage applicatif ; la correspondance DTR→IO0 et RTS→EN suppose le câblage usuel du pont, **non mesuré** (même logique que `io0` et `reset` existants). Le simulateur émet un faux marqueur `SIM-DOWNLOAD-MODE` qui n'a aucune valeur de preuve sur matériel.
+Limites : prouve une émission en mode téléchargement, pas un démarrage applicatif ; la correspondance DTR→IO0 et RTS→EN suppose le câblage usuel du pont, **non mesuré** (même logique que `io0` et `reset` existants). Les tests Node vérifient la séquence à travers un **modèle de la table de vérité du circuit** (EN bas avec IO0 haut, un seul front montant de EN avec IO0 bas, lignes relâchées à la fin) et rejettent l'ancienne séquence (DTR et RTS ensemble) ; ce modèle ne remplace pas une mesure du câblage réel. Le simulateur émet un faux marqueur `SIM-DOWNLOAD-MODE` qui n'a aucune valeur de preuve sur matériel.
 
 ### S3R-3 : retour console après une opération du chargeur (contrat renforcé)
 Un événement UART quelconque ne prouve pas que le chargeur a rendu la main à la console. Preuve exigée, dans l'ordre :

@@ -160,16 +160,20 @@ export class EspEngine {
       await sleep(Math.min(left, 50));
     }
   }
-  // ONE atomic sequence for the external UART bridge (DTR -> IO0, RTS -> EN, both active low through the usual transistor pair):
-  // IO0 low + EN low, EN released while IO0 stays low (the ROM samples the strapping pins), bounded hold, then BOTH lines released
-  // on every path where the transport still answers. Never retried. If the release itself fails the line state is unknown: the
-  // engine goes into operator recovery instead of pretending the card is idle.
+  // ONE atomic sequence for the external UART bridge with the CLASSIC two-transistor auto-reset circuit (esptool ClassicReset).
+  // Truth table (DTR, RTS asserted = 1) -> (EN, IO0):  (0,0)->(1,1)  (1,1)->(1,1)  (0,1)->(0,1)=EN low  (1,0)->(1,0)=IO0 low.
+  // Asserting BOTH lines therefore does NOT reset the chip: the sequence must alternate them.
+  //   1. DTR=0 RTS=1 : IO0 high, EN low (chip held in reset)
+  //   2. DTR=1 RTS=0 : EN released while IO0 is low (the ROM samples the strapping pins at the EN rising edge); bounded hold
+  //   3. DTR=0 RTS=0 : both lines released, on every path where the transport still answers.
+  // The wiring is an ASSUMPTION about the bridge (same as reset/io0): a bridge without this circuit may behave differently.
+  // Never retried. If the release itself fails the line state is unknown: operator recovery, not an idle card.
   async bootDownload(holdMs, context) {
     if (this.native) throw new HardwareError('external_uart_required');
     if (this.mode !== 'console') throw new HardwareError('console_required');
     let failure;
     try {
-      await this.port.setSignals({ dataTerminalReady: true, requestToSend: true });
+      await this.port.setSignals({ dataTerminalReady: false, requestToSend: true });
       await this.pause(100, context);
       await this.port.setSignals({ dataTerminalReady: true, requestToSend: false });
       await this.pause(holdMs, context);
