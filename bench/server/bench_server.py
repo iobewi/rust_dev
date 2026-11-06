@@ -23,6 +23,7 @@ IDENTITY = web.RequestKey('identity', dict)
 SESSIONS = web.AppKey('ui_sessions', UISessions)
 UI_ACCESS = web.AppKey('ui_access', UIAccess)
 BUILD = web.AppKey('build', dict)
+STOPPING = web.AppKey('stopping', asyncio.Event)
 
 PAGES = Path(__file__).resolve().parents[1] / 'web'
 
@@ -181,7 +182,7 @@ async def event_stream(request):
         'X-Accel-Buffering': 'no'})
     await response.prepare(request)
     try:
-        while True:
+        while not request.app[STOPPING].is_set():     # long-lived: must observe shutdown itself
             snapshot = b.events(device, after)
             await asyncio.wait_for(response.write(('data: ' + json.dumps(snapshot) + '\n\n').encode()), timeout=5)
             after = snapshot['next']
@@ -326,6 +327,17 @@ async def dispatcher(app):
         await ws.close(code=1001, message=b'Server stopping')
 
 
+async def stop_long_lived(app):
+    """on_shutdown: runs BEFORE aiohttp waits for active handlers (cleanup_ctx teardown runs after).
+
+    Event streams and agent WebSockets never end by themselves, so without this the wait lasts up to twice
+    shutdown_timeout and exceeds the launcher's stop timeout (which then refuses the replacement)."""
+    app[STOPPING].set()
+    sockets = [ws for ws in app[BROKER].agents.values() if not ws.closed]
+    await asyncio.gather(*(asyncio.wait_for(ws.close(code=1001, message=b'Server stopping'), 2) for ws in sockets),
+                         return_exceptions=True)
+
+
 async def static(request):
     name = request.match_info.get('name') or 'index.html'
     require(name in {p.name for p in PAGES.iterdir() if p.is_file()}, 'not_found', 'Unknown asset', 404)
@@ -364,6 +376,8 @@ def create_app(tokens, broker=None, origin=None, ui_forward_peers=()):
         'source': 'observed_local_files', 'declared_build_sha': declared}
     app[UI_ACCESS] = access
     app[SESSIONS] = UISessions(app[BROKER].clock, allowed)
+    app[STOPPING] = asyncio.Event()
+    app.on_shutdown.append(stop_long_lived)
     app.cleanup_ctx.append(dispatcher)
     app.add_routes([web.get('/health', health), web.get('/agent/v1/ws', websocket), web.post('/session/v1/open', browser_session),
                     web.get('/api/v1/identity', identity), web.get('/api/v1/devices', devices), web.post('/api/v1/leases', leases),
@@ -389,9 +403,12 @@ if __name__ == '__main__':
     except (BlockingIOError, ValueError) as error:
         sys.exit(str(error))
     try:
+        stop_wait = float(os.environ.get('BENCH_SHUTDOWN_TIMEOUT', '5'))
+        if not 0 <= stop_wait <= 25:
+            sys.exit('BENCH_SHUTDOWN_TIMEOUT must be 0..25 seconds (aiohttp applies it twice; the launcher waits 30 s by default)')
         web.run_app(create_app(config, broker=broker, origin=os.environ.get('BENCH_ORIGIN'),
                 ui_forward_peers=[peer.strip() for peer in os.environ.get('BENCH_UI_FORWARD_PEERS', '').split(',') if peer.strip()]),
                 host=os.environ.get('BENCH_HOST', '127.0.0.1'), port=int(os.environ.get('BENCH_PORT', 8080)),
-                access_log=None)
+                access_log=None, shutdown_timeout=stop_wait)
     finally:
         broker.journal.close()

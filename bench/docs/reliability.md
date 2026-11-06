@@ -203,7 +203,9 @@ exited. Shutdown timeout returns 124 without killing the remaining process or
 starting another. There is no automatic crash restart. Lock waiting is bounded
 and explicit (`--lock-timeout`, or BENCH_LOCK_TIMEOUT for direct startup); the
 journal lock and database are retained. Tests use real isolated processes and
-temporary journals, including delayed shutdown, timeout and lock contention.
+temporary journals, including delayed shutdown, timeout and lock contention. `tests/test_shutdown.py` covers the real
+server and launcher with a connected agent WebSocket and an actively read UART event stream (the Q3 incident: before the
+fix the server needed about 121 s to exit, the launcher refused the replacement after 30 s and exited 124).
 
 Browser agent uploads use `X-Bench-Artifact-Role: agent`. For cookie sessions the
 server binds this role to the authenticated session's connected WebSocket agent;
