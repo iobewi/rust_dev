@@ -366,3 +366,95 @@ def test_reenumeration_with_a_new_generation_closes_and_reopens_the_window_but_s
     events = [json.loads(l) for l in (case.directory / "windows.jsonl").read_text().splitlines()]
     assert [e["event"] for e in events] == ["interrupted", "opened"]                  # old window closed, fresh one opened
     assert json.loads((case.directory / "cleanup.json").read_text())["errors"] == [], "the fresh window must close cleanly"
+
+
+# --- reads leave the loader: the console is restored on every exit (review P1) -------------------------------------------
+class ConsoleBoard:
+    def __init__(self, *, closed=False, uncertain=False, pending=None, fail=None):
+        self.closed, self.uncertain, self.pending, self.fail, self.console_calls = closed, uncertain, pending, fail, 0
+
+    def console(self):
+        self.console_calls += 1
+        if self.fail:
+            raise self.fail
+
+
+def test_console_is_restored_once_on_the_normal_path_and_a_failure_there_is_not_swallowed():
+    board, out = ConsoleBoard(), Outcome()
+    with readonly.console_on_exit(board, out):
+        pass
+    assert board.console_calls == 1
+    board = ConsoleBoard(fail=ContinuityError("gone"))
+    with pytest.raises(ContinuityError):
+        with readonly.console_on_exit(board, Outcome()):
+            pass
+
+
+@pytest.mark.parametrize("error", [harness.Blocked("two valid tables"), AssertionError("reads differ"), ValueError("x")])
+def test_an_early_exit_restores_the_console_once_and_keeps_the_first_error(error):
+    board, out = ConsoleBoard(), Outcome()
+    with pytest.raises(type(error)) as raised:
+        with readonly.console_on_exit(board, out):
+            raise error
+    assert raised.value is error and board.console_calls == 1
+    assert any("console returned after an early exit" in e for e in out.evidence)
+
+
+def test_an_unresolved_operation_means_no_console_attempt_and_an_explicit_recovery_note():
+    for board in (ConsoleBoard(uncertain=True), ConsoleBoard(pending="op-1"), ConsoleBoard(closed=True)):
+        out = Outcome()
+        with pytest.raises(AssertionError):
+            with readonly.console_on_exit(board, out):
+                raise AssertionError("first error")
+        assert board.console_calls == 0 and "local recovery required" in out.restoration
+        assert any("NOT attempted" in i for i in out.incidents)
+
+
+def test_a_console_that_cannot_be_restored_is_reported_without_masking_the_first_error():
+    board, out = ConsoleBoard(fail=ContinuityError("USB gone")), Outcome()
+    with pytest.raises(harness.Blocked):
+        with readonly.console_on_exit(board, out):
+            raise harness.Blocked("original")
+    assert "left in the ROM loader" in out.restoration and any("console return failed" in i for i in out.incidents)
+
+
+def test_blocked_table_probe_returns_the_simulated_card_to_the_console(sim, tmp_path):
+    for name, tables in (("zero", []), ("two", [(0x8000, [("a", 0x20000, 0x1000)]), (0x10000, [("b", 0x30000, 0x1000)])])):
+        url, client = prepare(sim, tables)
+        tmp = tmp_path / name
+        tmp.mkdir()
+        run, reports = run_recipe(tmp, url, "test_c3_read_only.py::test_c3r2_partition_table")
+        assert reports["C3R-2"]["status"] == "BLOCKED"
+        commands = [json.loads(l)["command"] for p in (tmp / "evidence").glob("*/board-*/operations.jsonl") for l in p.read_text().splitlines()]
+        assert list(dict.fromkeys(commands))[-1] == "console", (name, commands)           # the loader was left again
+        assert any("console returned after an early exit" in e for e in reports["C3R-2"]["evidence"])
+
+
+# --- an indeterminate reset is not a continuity error but must get the same recovery evidence (review P1) -----------------
+@pytest.mark.parametrize("reconnect", [False, True])
+def test_an_indeterminate_reset_is_observed_not_replayed_not_certified(sim, tmp_path, monkeypatch, reconnect):
+    from iobewi_bench.client import PendingOperation
+    url, client = sim()
+    cfg = validate_session(base(evidence_root=str(tmp_path)))
+    case = Campaign(client, "board", tmp_path / "run", __file__, "C3R-3", manifest=build_manifest(cfg, "C3R", regions=[]))
+    case.start()
+    board = case.reserve(ttl=30)
+    real, state, calls = client.device, {"broken": False}, []
+
+    def indeterminate(name, args=None, **kwargs):
+        calls.append(name)
+        state["broken"] = True                                  # the card disconnects between the target check and the status read
+        raise PendingOperation("Operation x has an indeterminate hardware outcome")
+    monkeypatch.setattr(board, "command", indeterminate)
+    if reconnect:
+        monkeypatch.setattr(client, "device", lambda *a: {**real(*a), "generation": "f" * 32} if state["broken"] else real(*a))
+    out = Outcome()
+    with pytest.raises(PendingOperation):
+        with recorded(case, "C3R-3", out, preconditions="sim", limits="sim"):
+            readonly.reset_and_observe(case, board, client, cfg, out)
+    assert calls == ["reset"], "the reset was replayed"
+    assert json.loads((case.directory / "report.json").read_text())["tests"][0]["status"] == "INDETERMINATE"
+    assert any("UNKNOWN" in e and "not replayed, not certified" in e for e in out.evidence)
+    events = [json.loads(l)["event"] for l in (case.directory / "windows.jsonl").read_text().splitlines()]
+    assert events == (["interrupted", "opened"] if reconnect else ["interrupted"])
+    assert any(("card reconnected" if reconnect else "NOT seen reconnected") in e for e in out.evidence)

@@ -6,12 +6,13 @@ own consent (C3R-RESET). Nothing here writes to flash.
 """
 import hashlib
 import struct
+from contextlib import contextmanager
 
 import pytest
 
-from iobewi_bench.client import ContinuityError, OperationError
+from iobewi_bench.client import ContinuityError, OperationError, PendingOperation
 
-from .harness import Blocked, wait_until
+from .harness import Blocked, describe, wait_until
 
 
 TARGET_CHIP = "esp32c3"
@@ -57,6 +58,37 @@ def record_transport(case, client, cfg, out):
     case.write("transport.json", record)
     out.evidence.append(f"transport declared={record['declared_by_operator']} inferred={record['inferred_by_agent']} "
                         f"({record['inference_basis'] or 'no basis'}; {record['provenance_source']})")
+
+
+@contextmanager
+def console_on_exit(board, out):
+    """Reads use return_console=False, so the card stays in the ROM loader until told otherwise.
+
+    Normal end: ONE explicit console() (declared; a failure there fails the test). Any early exit (BLOCKED, failed
+    assertion, continuity loss): try ONE console() only if every operation is settled and the handle is intact,
+    never mask the first error, and when the console cannot be restored say so in the restoration field so that
+    the next scenario is not started on a card that is still in the loader."""
+    try:
+        yield
+    except BaseException as error:
+        _console_after_early_exit(board, out, error)
+        raise
+    else:
+        board.console()
+
+
+def _console_after_early_exit(board, out, error):
+    if board.closed or board.uncertain or board.pending:
+        out.restoration = "UNKNOWN: an operation is unresolved; the card may be in the ROM loader - local recovery required"
+        out.incident("bench", "console return NOT attempted after an early exit: an operation is unresolved")
+        return
+    try:
+        board.console()
+    except Exception as again:
+        out.restoration = "the card may be left in the ROM loader: replug or reset it locally before the next scenario"
+        out.incident("infrastructure", f"console return failed after an early exit ({type(error).__name__}): {describe(again)}")
+    else:
+        out.evidence.append(f"console returned after an early exit ({type(error).__name__}); reads left no card in the loader")
 
 
 def identify_and_confirm_console(board, out):
@@ -122,7 +154,7 @@ def reset_and_observe(case, board, client, cfg, out):
 
     Criteria (decided before the run):
       PASS            the banner is seen after the cursor taken before the reset, with no continuity break;
-      INDETERMINATE   continuity broke (USB re-enumeration or disconnect): the window is closed explicitly, the
+      INDETERMINATE   continuity broke (USB re-enumeration or disconnect) or the reset itself is indeterminate (PendingOperation): the window is closed explicitly, the
                       reconnection is observed and recorded, a new window is opened, but this recipe does not call
                       that a pass - a criterion for native USB is written only after seeing real results;
       FAIL            the reset settled, nothing broke and no banner appeared within the bound;
@@ -139,9 +171,14 @@ def reset_and_observe(case, board, client, cfg, out):
         result = board.command("reset", {}, timeout=60)
         out.evidence.append("reset settled; result fields: " + ", ".join(sorted(result or {})))
         board.wait_uart(reset["marker"].encode(), cursor=cursor, timeout=reset["marker_timeout_s"])
-    except ContinuityError as error:
-        out.evidence.append(f"continuity broke after the reset command ({type(error).__name__}): USB re-enumeration or disconnect")
-        case.interrupt_window("reset: continuity break")
+    except (ContinuityError, PendingOperation) as error:
+        # A disconnect between the target check and the status read surfaces as PendingOperation (outcome
+        # indeterminate), a later one as ContinuityError. Same handling: never replay the reset, never certify it.
+        if isinstance(error, PendingOperation):
+            out.evidence.append("the reset outcome is UNKNOWN (indeterminate operation): not replayed, not certified")
+        else:
+            out.evidence.append(f"continuity broke after the reset command ({type(error).__name__}): USB re-enumeration or disconnect")
+        case.interrupt_window("reset: continuity break or indeterminate outcome")
         try:
             wait_until(lambda: client.device(board_id)["connected"] and client.device(board_id)["generation"] != generation,
                        timeout=reset["reconnect_timeout_s"], interval=0.5, what="card reconnected with a new generation")
