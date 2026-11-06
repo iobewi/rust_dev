@@ -172,3 +172,5 @@ indéterminée ou de blocage. La PR #13 (méthode) reste séparée.
 Les recettes locales historiques et leurs preuves (Q0, erreur de collecte v1, Q1 v2, `ref-a`/`ref-b`) sont dans
 `/root/bench-recipes` et `/root/bench-evidence` (overlay, **non persistants**) et copiés avec empreintes (47 fichiers) dans
 `/root/.claude/bench-private/2026-11-06-preserved/` (volume persistant `/dev/sdd`). Rien de cela n'est dans Git.
+
+Couverture et limites par niveau : [qualification-matrix.md](qualification-matrix.md). Plan de répétabilité (non exécuté) : [repeatability-plan.md](repeatability-plan.md). Comparateur de preuves : `bench/tools/qualification_compare.py`.

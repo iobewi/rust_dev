@@ -1,0 +1,236 @@
+{
+  "version": 1,
+  "description": "Acceptance criteria and requirement catalogue for the IOBEWI bench qualification. Written BEFORE any repeatability run; pin its sha256 with --criteria-sha256 so that it cannot change during a campaign.",
+  "repeat_min": 3,
+  "common": {
+    "required_files": [
+      "report.json",
+      "run.json",
+      "provenance.json",
+      "manifest.json",
+      "before.json",
+      "after.json",
+      "cleanup.json",
+      "events.jsonl",
+      "requests.jsonl",
+      "recipe.py",
+      "verdicts.jsonl"
+    ],
+    "hardware_grade_provenance": true
+  },
+  "scenarios": {
+    "Q1": {
+      "allowed_commands": [
+        "flash.read",
+        "flash.write",
+        "partitions"
+      ],
+      "extra_files": [],
+      "continuity": "unchanged",
+      "operator_requests": {
+        "grant": 1,
+        "revoke": 1,
+        "other": 0
+      }
+    },
+    "Q2a": {
+      "expect_trigger_ops_min": 2,
+      "refusal": [
+        403,
+        "grant_required"
+      ],
+      "continuity": "unchanged",
+      "operator_requests": {
+        "grant": 1,
+        "revoke": 0,
+        "other": 0
+      }
+    },
+    "Q2b": {
+      "min_remaining_s": 10,
+      "refusal": [
+        403,
+        "grant_required"
+      ],
+      "continuity": "unchanged",
+      "operator_requests": {
+        "grant": 1,
+        "revoke": 1,
+        "other": 0
+      }
+    },
+    "Q2c": {
+      "refusal": [
+        403,
+        "trigger_not_owned"
+      ],
+      "refusing_client": "primary",
+      "continuity": "unchanged",
+      "operator_requests": {
+        "grant": 1,
+        "revoke": 1,
+        "other": 0
+      }
+    },
+    "Q2d": {
+      "refusal": [
+        403,
+        "trigger_not_owned"
+      ],
+      "refusing_client": "other",
+      "continuity": "unchanged",
+      "operator_requests": {
+        "grant": 1,
+        "revoke": 1,
+        "other": 0
+      }
+    },
+    "Q3": {
+      "extra_files": [
+        "windows.jsonl",
+        "abandoned-handles.jsonl"
+      ],
+      "continuity": "epoch_and_generation_change",
+      "operator_requests": {
+        "grant": 0,
+        "revoke": 0,
+        "other": 1
+      }
+    },
+    "C3R-0": {
+      "allowed_commands": [
+        "identify",
+        "console"
+      ],
+      "extra_files": [
+        "transport.json",
+        "identity.json"
+      ],
+      "continuity": "unchanged",
+      "operator_requests": {
+        "grant": 0,
+        "revoke": 0,
+        "other": 0
+      }
+    },
+    "C3R-1": {
+      "allowed_commands": [
+        "flash.read",
+        "console"
+      ],
+      "extra_files": [
+        "transport.json"
+      ],
+      "continuity": "unchanged",
+      "operator_requests": {
+        "grant": 0,
+        "revoke": 0,
+        "other": 0
+      }
+    },
+    "C3R-2": {
+      "allowed_commands": [
+        "partitions",
+        "flash.read",
+        "console"
+      ],
+      "extra_files": [
+        "transport.json",
+        "table-probes.json"
+      ],
+      "continuity": "unchanged",
+      "operator_requests": {
+        "grant": 0,
+        "revoke": 0,
+        "other": 0
+      }
+    },
+    "C3R-3": {
+      "allowed_commands": [
+        "reset"
+      ],
+      "extra_files": [
+        "transport.json",
+        "reset-requests.jsonl"
+      ],
+      "continuity": "unchanged",
+      "operator_requests": {
+        "grant": 0,
+        "revoke": 0,
+        "other": 0
+      }
+    }
+  },
+  "requirements": [
+    {
+      "id": "REQ-01",
+      "text": "Complete destructive cycle through Campaign/Orchestrator: verified backups, programming, independent readback, restoration, final compare, clean close",
+      "scenarios": [
+        "Q1"
+      ]
+    },
+    {
+      "id": "REQ-02",
+      "text": "A grant that expires naturally cannot be re-armed; the owner can still disarm; no grant is re-created",
+      "scenarios": [
+        "Q2a"
+      ]
+    },
+    {
+      "id": "REQ-03",
+      "text": "A local revocation is distinguished from an expiry and has the same consequences",
+      "scenarios": [
+        "Q2b"
+      ]
+    },
+    {
+      "id": "REQ-04",
+      "text": "Ownership: a new reservation or another identity cannot disarm a trigger, with a VALID grant (not a grant refusal)",
+      "scenarios": [
+        "Q2c",
+        "Q2d"
+      ]
+    },
+    {
+      "id": "REQ-05",
+      "text": "Coordinated server restart at rest: ordered stop/start, new epoch, same durable journal, agent reconnects without replay, fresh proof window",
+      "scenarios": [
+        "Q3"
+      ]
+    },
+    {
+      "id": "REQ-06",
+      "text": "Read-only identification, repeatable reads and partition table of a C3, with declared transport and agent inference both recorded",
+      "scenarios": [
+        "C3R-0",
+        "C3R-1",
+        "C3R-2"
+      ]
+    },
+    {
+      "id": "REQ-07",
+      "text": "One explicit reset with observation of the ROM banner in the same proof window",
+      "scenarios": [
+        "C3R-3"
+      ]
+    }
+  ],
+  "not_covered": [
+    {
+      "level": "fault_injection",
+      "text": "Resistance to interruptions and faults (USB/power cut, browser/server loss during a write): NOT qualified"
+    },
+    {
+      "level": "endurance",
+      "text": "Endurance and statistical repeatability beyond the planned passes: NOT qualified"
+    },
+    {
+      "level": "consumer_firmware",
+      "text": "Behaviour of a consumer firmware, application boot (boot_verified is always false by design), OTA: out of the bench scope"
+    },
+    {
+      "level": "certification",
+      "text": "External certification: not engaged"
+    }
+  ]
+}
