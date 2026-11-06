@@ -214,3 +214,113 @@ def test_restore_refuses_reference_modified_between_segments(tmp_path):
     with pytest.raises(BenchError,match='changed after integrity'):
         runner.restore(board,path,allow_destructive=True)
     assert runner.program.call_count == 1
+
+
+# --- compare(): server readbacks are released only after the private copy was re-read and matched ----------------------------
+def compare_double(tmp_path, *, readbacks, with_copy=True, artifact_sha=None):
+    """A board whose successive reads return `readbacks`; each leaves a flash-NNN private copy like Board.read_flash does."""
+    backup = tmp_path/'reference.bin'
+    data = b'x'*4096
+    backup.write_bytes(data)
+    backup.with_suffix('.json').write_text(json.dumps({'complete':True,'address':65536,'size':4096,'sha256':hashlib.sha256(data).hexdigest()}))
+    board = Mock(output_dir=tmp_path if with_copy else None, uncertain=False, pending=None)
+    board.last_operation = None
+    queue = list(readbacks)
+
+    def read_flash(**kwargs):
+        content = queue.pop(0)
+        if isinstance(content,Exception):
+            board.last_operation = {'id':'read-1','result':{'artifact':{'id':'artifact-1','size':4096,'sha256':hashlib.sha256(data).hexdigest()}}}
+            raise content
+        board.last_operation = {'id':f'read-{len(list(tmp_path.glob("flash-*.json")))+1}',
+                                'result':{'artifact':{'id':'artifact-1','size':len(content),'sha256':artifact_sha or hashlib.sha256(content).hexdigest()}}}
+        if with_copy:
+            (tmp_path/'flash-001-00010000.bin').write_bytes(content)
+            (tmp_path/'flash-001-00010000.json').write_text(json.dumps({'address':65536,'size':len(content),'artifact':'artifact-1',
+                                                                          'sha256':hashlib.sha256(content).hexdigest()}))
+        return content
+    board.read_flash.side_effect = read_flash
+    return board, backup, Orchestrator(Mock(manifest=Mock()))
+
+
+def test_compare_releases_the_server_readback_after_its_private_copy_is_verified(tmp_path):
+    board, backup, runner = compare_double(tmp_path, readbacks=[b'x'*4096])
+    result = runner.compare(board, backup)
+    assert result['equal'] is True and result['retained_artifacts'] == []
+    board.client.delete_artifact.assert_called_once_with('artifact-1')
+
+
+def test_compare_keeps_every_server_readback_when_the_flash_differs(tmp_path):
+    board, backup, runner = compare_double(tmp_path, readbacks=[b'y'*4096])
+    with pytest.raises(BenchError, match='differs.*KEPT.*artifact-1'):
+        runner.compare(board, backup)
+    board.client.delete_artifact.assert_not_called()
+
+
+def test_compare_keeps_the_server_readback_when_the_private_copy_is_missing(tmp_path):
+    board, backup, runner = compare_double(tmp_path, readbacks=[b'x'*4096])
+    original = board.read_flash.side_effect
+
+    def without_copy(**kwargs):
+        data = original(**kwargs)
+        for f in tmp_path.glob('flash-*'):
+            f.unlink()
+        return data
+    board.read_flash.side_effect = without_copy
+    result = runner.compare(board, backup)
+    assert result['equal'] is True and result['retained_artifacts'] == ['artifact-1']
+    board.client.delete_artifact.assert_not_called()
+
+
+def test_compare_keeps_the_server_readback_when_the_private_copy_differs(tmp_path):
+    board, backup, runner = compare_double(tmp_path, readbacks=[b'x'*4096])
+    original = board.read_flash.side_effect
+
+    def corrupt_copy(**kwargs):
+        data = original(**kwargs)
+        (tmp_path/'flash-001-00010000.bin').write_bytes(b'z'*4096)
+        return data
+    board.read_flash.side_effect = corrupt_copy
+    result = runner.compare(board, backup)
+    assert result['retained_artifacts'] == ['artifact-1']
+    board.client.delete_artifact.assert_not_called()
+
+
+def test_compare_keeps_the_server_readback_when_read_flash_fails_after_the_operation_settled(tmp_path):
+    board, backup, runner = compare_double(tmp_path, readbacks=[BenchError('download failed')])
+    with pytest.raises(BenchError, match='download failed'):
+        runner.compare(board, backup)
+    board.client.delete_artifact.assert_not_called()
+
+
+def test_compare_keeps_everything_while_an_operation_is_unresolved(tmp_path):
+    board, backup, runner = compare_double(tmp_path, readbacks=[b'x'*4096])
+    board.pending = 'op-9'
+    assert runner.compare(board, backup)['retained_artifacts'] == ['artifact-1']
+    board.client.delete_artifact.assert_not_called()
+
+
+def test_compare_without_private_directory_releases_an_equal_readback(tmp_path):
+    board, backup, runner = compare_double(tmp_path, readbacks=[b'x'*4096], with_copy=False)
+    assert runner.compare(board, backup)['retained_artifacts'] == []
+    board.client.delete_artifact.assert_called_once_with('artifact-1')
+
+
+def test_compare_reports_a_failing_delete_instead_of_hiding_it(tmp_path):
+    board, backup, runner = compare_double(tmp_path, readbacks=[b'x'*4096])
+    board.client.delete_artifact.side_effect = BenchError('server busy')
+    assert runner.compare(board, backup)['retained_artifacts'] == ['artifact-1']
+
+
+def test_recipe_helper_turns_a_kept_server_readback_into_a_visible_incident():
+    import sys
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+    from recipes.qualification_campaign.harness import Outcome, compare_released
+    runner, out = Mock(), Outcome()
+    runner.compare.return_value = {'equal': True, 'retained_artifacts': ['artifact-1']}
+    assert compare_released(runner, Mock(), 'backup.bin', out, 60)['equal'] is True
+    assert out.incidents and 'KEPT' in out.incidents[0] and 'artifact-1' in out.incidents[0]
+    clean = Outcome()
+    runner.compare.return_value = {'equal': True, 'retained_artifacts': []}
+    compare_released(runner, Mock(), 'backup.bin', clean, 60)
+    assert not clean.incidents

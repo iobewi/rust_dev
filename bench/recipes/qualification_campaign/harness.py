@@ -33,6 +33,17 @@ class Outcome:
         self.incidents.append(f"[{source}] {text[:240]}")
 
 
+def compare_released(runner, board, path, out, timeout):
+    """Orchestrator.compare() that cannot hide a server readback it had to KEEP (private copy unverified, delete failed, operation unresolved).
+
+    A kept artifact is an incident: the run cannot be a plain PASS, and the id stays visible for the operator's cleanup."""
+    result = runner.compare(board, path, timeout=timeout)
+    if result.get("retained_artifacts"):
+        out.incident("infrastructure", f"{len(result['retained_artifacts'])} server readback(s) KEPT after the comparison "
+                     f"(private copy not verified or delete failed): {', '.join(map(str, result['retained_artifacts']))[:160]}")
+    return result
+
+
 def flatten(error):
     yield error
     for sub in getattr(error, "exceptions", ()):
