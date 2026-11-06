@@ -66,11 +66,12 @@ def identify_and_confirm_console(board, out):
     identity = board.identify()
     details = [event.get("detail", "") for event in board.events(cursor) if event["kind"] == "transport"]
     if any("console opened" in detail for detail in details):
-        out.evidence.append("console returned by the operation itself (transport events: " + "; ".join(details) + ")")
+        out.evidence.append("console returned by the operation itself (TRANSPORT evidence only: the console was opened; "
+                            "this does not show that the application restarted correctly) - events: " + "; ".join(details))
     else:
         board.console()
         out.evidence.append("no console-return event after identify (transport events: " + "; ".join(details) +
-                            "): one explicit console() issued, which may restart the firmware")
+                            "): one explicit console() issued, which may restart the firmware; firmware resumption is not shown either")
     return identity
 
 

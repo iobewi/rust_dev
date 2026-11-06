@@ -13,8 +13,9 @@ from .readonly import (check_rows, decode_table, gate, identify_and_confirm_cons
 from .session import build_manifest, table_candidates
 
 pytestmark = pytest.mark.bench
-LIMITS = ("Reads enter the loader and may restart the card; transport is a declaration plus an agent inference, not a "
-          "measurement; one run; says nothing about firmware validity or boot policy")
+LIMITS = ("Reads enter the loader and may restart the card; the console-return proof is about the TRANSPORT only (console "
+          "opened), not about the application having restarted correctly; transport is a declaration plus an agent inference, "
+          "not a measurement; one run; says nothing about firmware validity or boot policy")
 
 
 def _case(bench_client, cfg, test_id, pytestconfig):

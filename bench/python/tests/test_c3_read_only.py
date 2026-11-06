@@ -1,4 +1,5 @@
-"""Software checks of the C3-R recipes. SIMULATION ONLY: a RAM simulator reports an esp32s3; no C3, no real card.
+"""Software checks of the C3-R recipes. SIMULATION ONLY: a RAM simulator that DECLARES itself an esp32c3 (--chip, S3 for the
+negative cases); no real C3, no real card.
 
 Verifies session validation, the decisions the recipes take (BLOCKED / PASS / INDETERMINATE), and that nothing is
 presumed. It proves nothing about a C3, about native USB re-enumeration or about the physical interface."""
@@ -325,6 +326,7 @@ def test_identify_proves_the_console_return_and_adds_no_extra_restart_when_it_is
     board, out = IdentifyBoard([{"kind": "transport", "detail": "console opened; opening a port may reset the MCU"}]), Outcome()
     readonly.identify_and_confirm_console(board, out)
     assert board.console_calls == 0 and "returned by the operation itself" in out.evidence[0]
+    assert "TRANSPORT evidence only" in out.evidence[0] and "application restarted correctly" in out.evidence[0]
 
 
 def test_identify_issues_one_explicit_console_only_without_proof():
