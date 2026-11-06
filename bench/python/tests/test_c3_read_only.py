@@ -610,3 +610,52 @@ def test_exit_priority_read_error_then_cleanup_error_then_console_error(tmp_path
             assert "left in the ROM loader" in out.restoration or kwargs.get("body_error") is None, name
         if expected is not None:
             assert board.console_calls == 1, (name, "the console return must be attempted exactly once")
+
+
+def test_an_unverifiable_local_copy_keeps_the_artifact_and_never_masks_the_scenario_error(tmp_path):
+    """A corrupt sidecar, undecodable bytes or an unreadable blob must lead to 'kept', never to an exception that
+    replaces the original error."""
+    def corrupt_sidecar(directory):
+        next(directory.glob("flash-*.json")).write_text("{ not json")
+
+    def undecodable_sidecar(directory):
+        next(directory.glob("flash-*.json")).write_bytes(b"\xff\xfe\x00garbage")
+
+    def blob_is_a_directory(directory):
+        blob = next(directory.glob("flash-*.bin"))
+        blob.unlink()
+        blob.mkdir()
+
+    for name, damage in (("corrupt_json", corrupt_sidecar), ("bad_bytes", undecodable_sidecar), ("unreadable_blob", blob_is_a_directory)):
+        directory = tmp_path / name
+        directory.mkdir()
+        board, out = ReadBoard(directory), Outcome()
+        original = AssertionError(f"scenario failed ({name})")
+        with pytest.raises(AssertionError) as raised:
+            with readonly.retained_reads(board, out) as reads:
+                reads.read(address=0, size=4096)
+                damage(directory)
+                raise original
+        assert raised.value is original, name                    # the verification problem did not replace it
+        assert board.deleted == [], name                         # nothing deleted without a verified copy
+        assert any("KEPT" in i for i in out.incidents), name
+    # on a path that would pass, the same damage fails the test visibly and (for a JSON/bytes problem) still keeps the artifact
+    directory = tmp_path / "normal_path"
+    directory.mkdir()
+    board, out = ReadBoard(directory), Outcome()
+    with pytest.raises(AssertionError, match="cleanup failed"):
+        with readonly.retained_reads(board, out) as reads:
+            reads.read(address=0, size=4096)
+            corrupt_sidecar(directory)
+    assert board.deleted == []
+
+
+def test_a_corrupt_sidecar_of_another_read_does_not_block_the_verified_one(tmp_path):
+    board, out = ReadBoard(tmp_path), Outcome()
+    with pytest.raises(AssertionError, match="cleanup failed"):          # one copy is unverifiable: a would-be PASS fails visibly
+        with readonly.retained_reads(board, out) as reads:
+            reads.read(address=0, size=4096)
+            reads.read(address=0, size=4096)
+            sorted(tmp_path.glob("flash-*.json"))[0].write_text("{ not json")   # the FIRST copy becomes unverifiable
+    assert board.deleted == ["artifact-0002-xxxx"], "only the verified readback may be deleted, the other one is kept"
+    assert any("artifact-" not in i and "readback artifact" in i and "KEPT" in i for i in out.incidents)

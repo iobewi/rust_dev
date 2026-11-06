@@ -85,12 +85,17 @@ class ReadbackRetention:
                 self.held.append(dict(artifact))
 
     def local_copy_matches(self, artifact):
+        """True only if the private copy exists AND matches. A sidecar that cannot be read (corrupt JSON, bad bytes, I/O
+        error) is skipped, never trusted: it can only lead to "not verified", i.e. the server artifact is kept."""
         directory = self.board.output_dir
         if directory is None:
             return False
         for sidecar in sorted(directory.glob("flash-*.json")):
-            meta = json.loads(sidecar.read_text())
-            if meta.get("artifact") != artifact["id"]:
+            try:
+                meta = json.loads(sidecar.read_text())
+            except (OSError, ValueError):
+                continue
+            if not isinstance(meta, dict) or meta.get("artifact") != artifact["id"]:
                 continue
             blob = sidecar.with_suffix(".bin")
             if not blob.is_file():
@@ -108,7 +113,12 @@ class ReadbackRetention:
         problems = []
         for artifact in self.held:
             name = artifact["id"][:8]
-            if not self.local_copy_matches(artifact):
+            try:
+                verified = self.local_copy_matches(artifact)
+            except Exception as error:               # noqa: BLE001 - a verification failure must never escape and mask the scenario's error
+                problems.append(f"readback {name}: local copy could not be verified ({describe(error)}) - server artifact KEPT")
+                continue
+            if not verified:
                 problems.append(f"readback {name}: private local copy missing or different - server artifact KEPT")
                 continue
             try:
