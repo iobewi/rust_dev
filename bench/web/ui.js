@@ -10,6 +10,14 @@ import { ConsoleBuffer } from './console-buffer.js';
 import { address, hex, flashPlan } from './ui-model.js';
 
 const $ = id => document.getElementById(id);
+const localCardLabel = value => value.trim() || 'Carte non sélectionnée';
+function syncLocalCardTitle() {
+  const id = localCardLabel($('device-id').value);
+  $('local-card-title').textContent = '· ' + id;
+  document.title = id === 'Carte non sélectionnée' ? 'IOBEWI — Banc matériel' : id + ' · IOBEWI';
+}
+$('device-id').addEventListener('input', syncLocalCardTitle);
+syncLocalCardTitle();
 const terminal = new Set(['completed', 'failed', 'expired', 'cancelled', 'indeterminate']);
 const safeCommands = new Set(['identify', 'partitions', 'flash.read', 'mark']);
 const actions = { 'try-partition-address': 'partitions', read: 'flash.read', write: 'flash.write', erase: 'flash.erase', send: 'uart.write',
@@ -70,6 +78,7 @@ async function openSession() {
     if (!response.ok) throw new Error((await response.json()).error?.code || 'Session du banc indisponible');
     session = await response.json();
     if (!session.devices.includes($('device-id').value)) $('device-id').value = session.devices[0];
+    syncLocalCardTitle();
     $('server-state').textContent = 'session locale ouverte';
     return session;
   })();
