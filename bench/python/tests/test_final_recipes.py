@@ -281,3 +281,51 @@ def test_lan_http_session_refuses_loopback_public_https_or_ambiguous_origins(ori
     from qualification_campaign.session import SessionError, validate_session
     with pytest.raises(SessionError):
         validate_session({**session(), "evidence_root": "/private/e", "lan_http": {"origin": origin}})
+
+
+# --- U8 (requirement 8): sustained capture ------------------------------------------------------------------------------
+CAPTURE = {"duration_s": 8, "min_bytes": 20000, "resume_every_s": 3, "max_flagged_loss": 0}
+
+
+def test_capture_passes_with_a_sustained_source_and_resumes_without_gap(sim, tmp_path, monkeypatch):
+    monkeypatch.setenv("SIM_UART_RATE", "50:512")
+    url, _ = sim([], chip="esp32s3")
+    proc, reports = run_recipe(tmp_path, url, "test_uart_capture.py", transport="external_uart", accept_unknown_transport=True, capture=CAPTURE)
+    assert reports["U8"]["status"] == "PASS", proc.stdout[-1800:] + " ".join(reports["U8"]["incidents"])
+    stats = json.loads(next((tmp_path / "evidence").glob("U8-*/capture-stats.json")).read_text())
+    assert stats["resumes"] >= 1 and stats["silent_loss"] == 0 and stats["duplicates"] == 0 and stats["bytes"] >= 20000
+    index = [json.loads(l) for l in next((tmp_path / "evidence").glob("U8-*/capture-index.jsonl")).read_text().splitlines()]
+    assert [r["source_seq"] for r in index] == sorted({r["source_seq"] for r in index}), "a resume duplicated or reordered events"
+
+
+def test_capture_reports_a_flagged_loss_as_a_failure_never_hides_it(sim, tmp_path, monkeypatch):
+    monkeypatch.setenv("SIM_UART_RATE", "50:512:40")             # a chunk lost on the agent side every 40 events
+    url, _ = sim([], chip="esp32s3")
+    proc, reports = run_recipe(tmp_path, url, "test_uart_capture.py", transport="external_uart", accept_unknown_transport=True, capture=CAPTURE)
+    assert reports["U8"]["status"] == "FAIL" and "flagged losses" in " ".join(reports["U8"]["incidents"]), proc.stdout[-1200:]
+    stats = json.loads(next((tmp_path / "evidence").glob("U8-*/capture-stats.json")).read_text())
+    assert stats["flagged_loss"] >= 1 and stats["silent_loss"] == 0
+
+
+def test_capture_without_a_source_is_blocked_not_passed(sim, tmp_path):
+    url, _ = sim([], chip="esp32s3")
+    proc, reports = run_recipe(tmp_path, url, "test_uart_capture.py", transport="external_uart", accept_unknown_transport=True, capture=CAPTURE)
+    assert reports["U8"]["status"] == "BLOCKED" and "no sustained UART source" in " ".join(reports["U8"]["incidents"])
+
+
+def test_continuity_analysis_detects_a_silent_loss_and_a_duplicate():
+    sys.path.insert(0, str(BENCH / "tools"))
+    import sse_capture
+    ok = [{"seq": 1, "source_seq": 1, "source_lost": 0, "bytes": 10, "generation": 1}, {"seq": 2, "source_seq": 4, "source_lost": 2, "bytes": 10, "generation": 1}]
+    assert sse_capture.analyse(ok)["silent_loss"] == 0 and sse_capture.analyse(ok)["flagged_loss"] == 2
+    silent = [ok[0], {**ok[1], "source_lost": 0}]
+    assert sse_capture.analyse(silent)["silent_loss"] == 2
+    assert sse_capture.analyse([ok[0], ok[0]])["duplicates"] == 1
+
+
+@pytest.mark.parametrize("capture", [{"duration_s": 0, "min_bytes": 1}, {"duration_s": 10}, {"duration_s": 10, "min_bytes": 1, "x": 1}])
+def test_capture_session_is_validated(capture):
+    sys.path.insert(0, str(BENCH / "recipes"))
+    from qualification_campaign.session import SessionError, validate_session
+    with pytest.raises(SessionError):
+        validate_session({**session(), "evidence_root": "/private/e", "capture": capture})

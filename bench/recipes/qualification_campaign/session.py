@@ -16,10 +16,10 @@ SCENARIOS = {"Q1", "Q2", "Q3", "C3R-READ", "C3R-RESET", "S3R-RESET", "S3R-BOOT",
              "NUSB-READ", "NUSB-RESET", "T7", "R5", "H10", "U8", "M2"}
 TOP_LEVEL = {"version", "board_id", "chip", "flash_size", "transport", "partition_table_offset",
              "approved_regions", "evidence_root", "operation_timeout_s", "operator_timeout_s",
-             "consent", "q2", "q3", "readonly", "bootloader", "r4", "faults", "second_board", "lan_http", "accept_unknown_transport"}
+             "consent", "q2", "q3", "readonly", "bootloader", "r4", "faults", "second_board", "lan_http", "capture", "accept_unknown_transport"}
 DEFAULTS = {"operation_timeout_s": 120, "operator_timeout_s": 900, "approved_regions": [],
             "consent": {"scenarios": [], "note": ""}, "q2": {}, "q3": {},
-            "readonly": {}, "bootloader": {}, "r4": {}, "faults": {}, "second_board": {}, "lan_http": {}, "accept_unknown_transport": False}
+            "readonly": {}, "bootloader": {}, "r4": {}, "faults": {}, "second_board": {}, "lan_http": {}, "capture": {}, "accept_unknown_transport": False}
 Q2_DEFAULTS = {"trigger_pattern_b64": "SU9CRVdJLVEyLU5FVkVSLVNUSU1VTEFURUQ=",  # inert, never stimulated
                "expires_ms": 120000, "reservation_ttl_s": 600}
 Q3_DEFAULTS = {"allow_restart": False, "launcher_pid_file": None, "state_dir": None, "launcher_log": None,
@@ -81,6 +81,7 @@ def validate_session(document):
     cfg["faults"] = validate_faults(cfg["faults"], cfg)
     cfg["second_board"] = validate_second_board(cfg["second_board"], cfg)
     cfg["lan_http"] = validate_lan_http(cfg["lan_http"])
+    cfg["capture"] = validate_capture(cfg["capture"])
     regions = cfg["approved_regions"]
     if not isinstance(regions, list):
         raise SessionError("approved_regions must be a list")
@@ -179,6 +180,21 @@ def validate_lan_http(section):
             or parts.path not in ("", "/") or parts.username or parts.password or parts.query or parts.fragment):
         raise SessionError("lan_http.origin must be http://<private LAN IPv4>:<port> (no credentials, path or query; never loopback)")
     return {"origin": f"http://{parts.hostname}:{parts.port}"}
+
+
+def validate_capture(section):
+    """U8: the observation window of a sustained UART capture. The SOURCE (a firmware printing continuously) is not provided by the bench."""
+    keys = {"duration_s", "min_bytes", "resume_every_s", "max_flagged_loss"}
+    if not isinstance(section, dict) or section.keys() - keys:
+        raise SessionError(f"capture accepts only {sorted(keys)}")
+    if not section:
+        return {}
+    out = {"resume_every_s": 20, "max_flagged_loss": 0, **section}
+    bounds = {"duration_s": (1, 900), "min_bytes": (1, 1 << 30), "resume_every_s": (1, 900), "max_flagged_loss": (0, 1 << 20)}
+    for key, (low, high) in bounds.items():
+        if key not in out or type(out[key]) is not int or not low <= out[key] <= high:
+            raise SessionError(f"capture.{key} must be an integer {low}..{high}" + (" (required)" if key in ("duration_s", "min_bytes") else ""))
+    return out
 
 
 def validate_r4(section, cfg):

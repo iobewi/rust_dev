@@ -131,6 +131,29 @@ class BenchClient:
             raise
         return board
 
+    def event_stream(self, device_id, *, after=0, timeout=10):
+        """Yield the server's SSE batches (`data: {LOT}` every 50 ms, also empty ones) of a device from the exclusive cursor `after`.
+
+        For an external archiving client: it never reconnects by itself (the caller resumes at the last `next`), so a gap is never hidden."""
+        if type(after) is not int or after < 0:
+            raise ValueError("after must be a non-negative integer")
+        request = Request(f"{self.url}/api/v1/devices/{quote(device_id, safe='')}/events/stream?after={after}",
+                          headers={"Authorization": "Bearer " + self._token, "Accept": "text/event-stream"})
+        try:
+            response = self._http.open(request, timeout=_duration(timeout, 0.1, 600))
+        except HTTPError as error:
+            raise BenchHTTPError(error.code, "http_error") from None
+        except (URLError, TimeoutError, OSError) as error:
+            raise BenchError(f"Transport failure ({type(error).__name__}); stream not retried") from None
+        try:
+            for line in response:
+                if line.startswith(b"data: "):
+                    yield json.loads(line[6:])
+        except (URLError, TimeoutError, OSError) as error:
+            raise BenchError(f"Event stream interrupted ({type(error).__name__}); resume from the last cursor, nothing replayed") from None
+        finally:
+            response.close()
+
     def operation(self, operation_id):
         """Inspect a stable operation ID; never replay or reconcile it."""
         return self._request("GET", "/api/v1/operations/" + quote(operation_id, safe=""))

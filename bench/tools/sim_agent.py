@@ -141,6 +141,19 @@ async def serve(session, url, token, device_id, grant, script, chip, sim, connec
                 tasks.append(asyncio.create_task(fire()))
         if grant:
             await event('grant', seconds=grant)
+        if os.environ.get('SIM_UART_RATE'):                       # SIMULATES a firmware printing continuously: "chunks_per_s:bytes[:skip_every]"
+            rate, size, *skip = (int(x) for x in os.environ['SIM_UART_RATE'].split(':'))
+
+            async def source():
+                nonlocal seq
+                count = 0
+                while True:
+                    await asyncio.sleep(1 / rate)
+                    count += 1
+                    if skip and count % skip[0] == 0:
+                        seq += 1                                  # a chunk lost on the agent side: the next seq jumps, the server flags it
+                    await emit_uart(b'x' * size)
+            tasks.append(asyncio.create_task(source()))
 
         async def operator():
             start = time.monotonic()
