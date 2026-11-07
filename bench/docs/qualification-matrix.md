@@ -68,6 +68,11 @@ Limites : l'ordre d'un événement **par rapport à la commande** repose sur le 
 Règle ajoutée au comparateur : un PASS d'un scénario **inconnu** de la version de critères utilisée est rapporté `INDETERMINATE` (`scenario_criteria_known`), jamais « vérifié » par les seuls contrôles communs.
 Limites : les fenêtres de contrôle de R4 ne détectent un changement qu'où elles regardent (l'intégrité de toute la flash n'est pas démontrée) ; les preuves S3R-2 restent des preuves d'**émission** en mode téléchargement, pas d'un démarrage applicatif, et supposent le câblage du pont (non mesuré). Ces critères et leurs tests sont **simulés** : aucun run matériel n'a eu lieu.
 
+### 3 ter. Critères v3 : finalisation de l'issue #2
+
+`bench/tools/qualification_criteria_v3.json` étend la v2 (inchangée) avec NUSB-0/1/2, T7, R5-RELOAD/UNPLUG/RESTART, G9, M2, H10 et U8 ; contrats, décisions et plan
+de campagne : [issue-2-final-qualification.md](issue-2-final-qualification.md). Ces scénarios n'ont **aucun PASS matériel** à ce jour.
+
 ## 4. Pièges d'interprétation (à relire avant d'écrire un bilan)
 
 - **Stabilité d'une région ≠ identification d'une carte.** Le SHA-256 `7d2c7ac4888bfd75…` est celui de **8 Kio d'octets `0xFF`** :

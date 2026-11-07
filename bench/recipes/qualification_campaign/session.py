@@ -12,13 +12,14 @@ from iobewi_bench import CampaignManifest
 
 CHIPS = {"esp32s3", "esp32c3"}
 TRANSPORTS = {"external_uart", "usb_serial_jtag", "native_usb_other", "unknown"}
-SCENARIOS = {"Q1", "Q2", "Q3", "C3R-READ", "C3R-RESET", "S3R-RESET", "S3R-BOOT", "S3R-READ", "R4"}
+SCENARIOS = {"Q1", "Q2", "Q3", "C3R-READ", "C3R-RESET", "S3R-RESET", "S3R-BOOT", "S3R-READ", "R4",
+             "NUSB-READ", "NUSB-RESET", "T7", "R5", "H10", "U8", "M2"}
 TOP_LEVEL = {"version", "board_id", "chip", "flash_size", "transport", "partition_table_offset",
              "approved_regions", "evidence_root", "operation_timeout_s", "operator_timeout_s",
-             "consent", "q2", "q3", "readonly", "bootloader", "r4", "accept_unknown_transport"}
+             "consent", "q2", "q3", "readonly", "bootloader", "r4", "faults", "second_board", "lan_http", "capture", "accept_unknown_transport"}
 DEFAULTS = {"operation_timeout_s": 120, "operator_timeout_s": 900, "approved_regions": [],
             "consent": {"scenarios": [], "note": ""}, "q2": {}, "q3": {},
-            "readonly": {}, "bootloader": {}, "r4": {}, "accept_unknown_transport": False}
+            "readonly": {}, "bootloader": {}, "r4": {}, "faults": {}, "second_board": {}, "lan_http": {}, "capture": {}, "accept_unknown_transport": False}
 Q2_DEFAULTS = {"trigger_pattern_b64": "SU9CRVdJLVEyLU5FVkVSLVNUSU1VTEFURUQ=",  # inert, never stimulated
                "expires_ms": 120000, "reservation_ttl_s": 600}
 Q3_DEFAULTS = {"allow_restart": False, "launcher_pid_file": None, "state_dir": None, "launcher_log": None,
@@ -77,6 +78,10 @@ def validate_session(document):
     cfg["readonly"] = validate_readonly(cfg["readonly"], cfg)
     cfg["bootloader"] = validate_bootloader(cfg["bootloader"])
     cfg["r4"] = validate_r4(cfg["r4"], cfg)
+    cfg["faults"] = validate_faults(cfg["faults"], cfg)
+    cfg["second_board"] = validate_second_board(cfg["second_board"], cfg)
+    cfg["lan_http"] = validate_lan_http(cfg["lan_http"])
+    cfg["capture"] = validate_capture(cfg["capture"])
     regions = cfg["approved_regions"]
     if not isinstance(regions, list):
         raise SessionError("approved_regions must be a list")
@@ -129,6 +134,66 @@ def validate_bootloader(section):
         raise SessionError("bootloader.hold_ms must be 100..3000")
     if type(out["marker_timeout_s"]) is not int or not 1 <= out["marker_timeout_s"] <= 300:
         raise SessionError("bootloader.marker_timeout_s must be 1..300 seconds")
+    return out
+
+
+def validate_faults(section, cfg):
+    """R5 parameters: ONE long READ-ONLY range during which the operator (or the launcher) injects the fault. Nothing is presumed."""
+    if not isinstance(section, dict) or section.keys() - {"read"}:
+        raise SessionError("faults accepts only 'read'")
+    item = section.get("read")
+    if item is None:
+        return {}
+    if (not isinstance(item, dict) or set(item) != {"address", "size", "interrupt_after_s"} or type(item["address"]) is not int
+            or type(item["size"]) is not int or type(item["interrupt_after_s"]) is not int or item["address"] < 0
+            or not 4096 <= item["size"] <= 8 * 1024 * 1024 or not 1 <= item["interrupt_after_s"] <= 120
+            or item["address"] + item["size"] > cfg["flash_size"]):
+        raise SessionError("faults.read: {address, size 4 KiB..8 MiB inside the flash, interrupt_after_s 1..120}")
+    return {"read": item}
+
+
+def validate_second_board(section, cfg):
+    """M2: the logical id of a SECOND physical card of the SAME chip family, connected at the same time. Never simulated, never presumed."""
+    if not isinstance(section, dict) or section.keys() - {"board_id"}:
+        raise SessionError("second_board accepts only board_id")
+    if not section:
+        return {}
+    if not isinstance(section.get("board_id"), str) or not section["board_id"] or section["board_id"] == cfg["board_id"]:
+        raise SessionError("second_board.board_id must be a non-empty logical id different from board_id")
+    return dict(section)
+
+
+def validate_lan_http(section):
+    """H10: ONE private-network HTTP origin of the test target (tools/lan_http_target.py on another LAN machine). Nothing is presumed."""
+    from urllib.parse import urlsplit
+    import ipaddress
+    if not isinstance(section, dict) or section.keys() - {"origin"}:
+        raise SessionError("lan_http accepts only origin")
+    if not section:
+        return {}
+    parts = urlsplit(section.get("origin", "")) if isinstance(section.get("origin"), str) else None
+    try:
+        address = ipaddress.ip_address(parts.hostname) if parts and parts.hostname else None
+    except ValueError:
+        address = None
+    if (not parts or parts.scheme != "http" or address is None or not address.is_private or address.is_loopback or parts.port is None
+            or parts.path not in ("", "/") or parts.username or parts.password or parts.query or parts.fragment):
+        raise SessionError("lan_http.origin must be http://<private LAN IPv4>:<port> (no credentials, path or query; never loopback)")
+    return {"origin": f"http://{parts.hostname}:{parts.port}"}
+
+
+def validate_capture(section):
+    """U8: the observation window of a sustained UART capture. The SOURCE (a firmware printing continuously) is not provided by the bench."""
+    keys = {"duration_s", "min_bytes", "resume_every_s", "max_flagged_loss"}
+    if not isinstance(section, dict) or section.keys() - keys:
+        raise SessionError(f"capture accepts only {sorted(keys)}")
+    if not section:
+        return {}
+    out = {"resume_every_s": 20, "max_flagged_loss": 0, **section}
+    bounds = {"duration_s": (1, 900), "min_bytes": (1, 1 << 30), "resume_every_s": (1, 900), "max_flagged_loss": (0, 1 << 20)}
+    for key, (low, high) in bounds.items():
+        if key not in out or type(out[key]) is not int or not low <= out[key] <= high:
+            raise SessionError(f"capture.{key} must be an integer {low}..{high}" + (" (required)" if key in ("duration_s", "min_bytes") else ""))
     return out
 
 

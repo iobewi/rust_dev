@@ -8,10 +8,11 @@ import json
 import os
 import struct
 import time
-from aiohttp import ClientSession
+from aiohttp import ClientSession, ClientTimeout
 
 CAPS = ['identify', 'reset', 'partitions', 'flash.read', 'flash.write', 'flash.erase',
-        'uart.write', 'uart.configure', 'console', 'io0', 'boot.download', 'mark', 'trigger']
+        'uart.write', 'uart.configure', 'console', 'io0', 'boot.download', 'mark', 'trigger', 'http.request']
+NATIVE_CAPS = [c for c in CAPS if c not in {'io0', 'boot.download'}]     # a native USB Serial/JTAG card offers neither (SIM_NATIVE=1)
 
 
 class SimFailure(Exception):
@@ -25,6 +26,7 @@ class SimDevice:
         self.chip = chip
         self.flash = bytearray(b'\xff') * capacity
         self.writes = 0
+        self.trigger, self.trigger_id, self.dropped = None, 0, False
 
     async def execute(self, name, args, download, upload):
         if name == 'identify':
@@ -66,6 +68,13 @@ class SimDevice:
             if not rows:
                 raise SimFailure('partition_table_invalid')
             return {'partitions': rows, 'simulated': True}
+        if name == 'http.request':
+            # SIMULATES the page agent contract: no credentials, no referrer, redirects refused, opaque result. Real network access to the SIM_HTTP_ORIGINS target.
+            async with ClientSession() as http:
+                async with http.get(args['url'], allow_redirects=False, headers={'Cache-Control': 'no-store'}, timeout=ClientTimeout(total=5)) as response:
+                    if 300 <= response.status < 400:
+                        raise SimFailure('redirect_refused')
+            return {'response': 'opaque', 'http_status': 'unknown', 'verified': False, 'simulated': True}
         if name == 'boot.download':
             return {'download_mode_requested': True, 'method': 'en+io0', 'hold_ms': args['hold_ms'], 'boot_verified': False, 'simulated': True}
         return {'command': name, 'simulated': True}
@@ -76,63 +85,142 @@ def args_return_console(args):
 
 
 async def run(url, token, device_id, grant=0, stop=None, script=(), chip='esp32s3'):
-    """`script`: simulated operator gestures [(delay_s, grant_seconds)], 0 revokes. Simulation only."""
+    """`script`: simulated operator gestures [(delay_s, grant_seconds)], 0 revokes. Simulation only.
+
+    SIM_NATIVE=1 registers a native USB Serial/JTAG card (no io0 / boot.download); SIM_REENUMERATE=1 makes a `reset` re-enumerate the
+    USB device (the agent disconnects and registers again with a new generation)."""
     sim = SimDevice(chip=chip)
     async with ClientSession(headers={'Authorization': 'Bearer ' + token}) as session:
-        async with session.ws_connect(url + '/agent/v1/ws') as ws:
-            await ws.send_json({'type': 'auth', 'version': 1, 'token': token})
-            await ws.receive_json()
-            await ws.send_json({'type': 'register', 'device': {'id': device_id, 'chip': chip,
-                                'flash_size': len(sim.flash), 'capabilities': CAPS}})
-            registered = await ws.receive_json()
-            generation, seq = registered['generation'], 0
-            async def event(kind, **payload):
-                await ws.send_json({'type': kind, 'device': device_id, 'generation': generation, **payload})
-            if grant:
-                await event('grant', seconds=grant)
-            async def operator():
-                start = time.monotonic()
-                for delay, seconds in script:
-                    await asyncio.sleep(max(0, start + delay - time.monotonic()))
-                    await event('grant', seconds=seconds)
-            gestures = asyncio.create_task(operator())
-            pending = {}
-            async def download(key):
-                async with session.get(url + '/api/v1/artifacts/' + key) as r:
-                    r.raise_for_status(); return await r.read()
-            async def upload(data):
-                async with session.post(url + '/api/v1/artifacts', data=data,
-                    headers={'X-SHA256': hashlib.sha256(data).hexdigest()}) as r:
-                    r.raise_for_status(); return await r.json()
-            print(json.dumps({'simulation': True, 'device': device_id, 'connected': True}), flush=True)
-            async for frame in ws:
-                if frame.type.name != 'TEXT':
-                    break
-                m = json.loads(frame.data)
-                if m['type'] == 'offer':
-                    pending[m['id']] = m
-                    await ws.send_json({'type': 'ready', 'id': m['id']})
-                elif m['type'] == 'result_ack':
-                    await event('settled', id=m['id'])
-                elif m['type'] == 'execute':
-                    op = pending.pop(m['id'], None)
-                    if not op:
-                        continue
-                    try:
-                        result = await sim.execute(op['command'], op['args'], download, upload)
-                        if op['command'] in {'reset', 'uart.write', 'boot.download'}:
-                            seq += 1
-                            data = (('SIM boot\r\nESP-ROM:%s-sim\r\n' % chip).encode() if op['command'] == 'reset' else
-                                    ('SIM download mode\r\nESP-ROM:%s-sim\r\nSIM-DOWNLOAD-MODE\r\n' % chip).encode() if op['command'] == 'boot.download'
-                                    else base64.b64decode(op['args']['data']))
-                            await event('uart', seq=seq, data=base64.b64encode(data).decode(), at=time.time()*1000)
-                        if op['command'] == 'flash.read' and args_return_console(op['args']) and os.environ.get('SIM_CONSOLE_EVENT') == '1':
-                            await event('transport', detail='console opened')
-                        await ws.send_json({'type': 'result', 'id': op['id'], 'state': 'completed', 'result': result})
-                    except Exception as error:
-                        await ws.send_json({'type': 'result', 'id': op['id'], 'state': 'failed', 'error': {'code': getattr(error, 'code', 'simulated_failure')}})
-            gestures.cancel()
+        first, connection = True, 0
+        while True:
+            again = await serve(session, url, token, device_id, grant if first else 0, script, chip, sim, connection)
+            first, connection = False, connection + 1
+            if not again:
+                break
+            await asyncio.sleep(0.5)
     return sim
+
+
+async def serve(session, url, token, device_id, grant, script, chip, sim, connection=0):
+    """One agent connection. Returns True when the card re-enumerated (the caller reconnects)."""
+    reenumerate = False
+    async with session.ws_connect(url + '/agent/v1/ws') as ws:
+        await ws.send_json({'type': 'auth', 'version': 1, 'token': token})
+        await ws.receive_json()
+        native = os.environ.get('SIM_NATIVE') == '1'
+        await ws.send_json({'type': 'register', 'device': {'id': device_id, 'chip': chip, 'flash_size': len(sim.flash),
+                            'capabilities': NATIVE_CAPS if native and os.environ.get('SIM_NATIVE_WITH_IO0') != '1' else CAPS,
+                            'http_origins': [o for o in os.environ.get('SIM_HTTP_ORIGINS', '').split(',') if o],
+                            **({'provenance': {'usb_vid': 0x303a, 'usb_pid': 0x1001, 'transport': 'usb_serial_jtag',
+                                               'transport_basis': 'inferred_from_webserial_vid_pid'}} if native else {})}})
+        registered = await ws.receive_json()
+        generation, seq = registered['generation'], 0
+        tasks = []
+
+        async def event(kind, **payload):
+            await ws.send_json({'type': kind, 'device': device_id, 'generation': generation, **payload})
+
+        async def emit_uart(data):
+            nonlocal seq
+            seq += 1
+            await event('uart', seq=seq, data=base64.b64encode(data).decode(), at=time.time() * 1000)
+            trigger = sim.trigger
+            if trigger and trigger['pattern'] in data and time.monotonic() < trigger['until']:
+                sim.trigger = None
+                await event('trigger', detail='one-shot byte pattern matched')
+                token_id = trigger['id']
+
+                async def fire():
+                    await asyncio.sleep(trigger['delay'] / 1000)
+                    if sim.trigger_id != token_id:
+                        return                                    # re-armed or disarmed meanwhile: the pending action is cancelled
+                    if trigger['action'] == 'reset':
+                        await emit_uart(('SIM boot\r\nESP-ROM:%s-sim\r\n' % chip).encode())
+                    else:
+                        await event('mark', detail='trigger')
+                tasks.append(asyncio.create_task(fire()))
+        if grant:
+            await event('grant', seconds=grant)
+        if os.environ.get('SIM_UART_RATE'):                       # SIMULATES a firmware printing continuously: "chunks_per_s:bytes[:skip_every]"
+            rate, size, *skip = (int(x) for x in os.environ['SIM_UART_RATE'].split(':'))
+
+            async def source():
+                nonlocal seq
+                count = 0
+                while True:
+                    await asyncio.sleep(1 / rate)
+                    count += 1
+                    if skip and count % skip[0] == 0:
+                        seq += 1                                  # a chunk lost on the agent side: the next seq jumps, the server flags it
+                    await emit_uart(b'x' * size)
+            tasks.append(asyncio.create_task(source()))
+
+        async def operator():
+            start = time.monotonic()
+            for delay, seconds in script:
+                if (seconds == 'recover') != (connection > 0):
+                    continue                                          # numeric grants: first connection; 'recover' gestures: after a reconnection
+                await asyncio.sleep(max(0, start + delay - time.monotonic()))
+                await (event('recover') if seconds == 'recover' else event('grant', seconds=seconds))
+        gestures = asyncio.create_task(operator())
+        pending = {}
+
+        async def download(key):
+            async with session.get(url + '/api/v1/artifacts/' + key) as r:
+                r.raise_for_status(); return await r.read()
+
+        async def upload(data):
+            async with session.post(url + '/api/v1/artifacts', data=data,
+                headers={'X-SHA256': hashlib.sha256(data).hexdigest()}) as r:
+                r.raise_for_status(); return await r.json()
+        print(json.dumps({'simulation': True, 'device': device_id, 'connected': True}), flush=True)
+        async for frame in ws:
+            if frame.type.name != 'TEXT':
+                break
+            m = json.loads(frame.data)
+            if m['type'] == 'offer':
+                pending[m['id']] = m
+                await ws.send_json({'type': 'ready', 'id': m['id']})
+            elif m['type'] == 'result_ack':
+                await event('settled', id=m['id'])
+                if reenumerate:
+                    break                                         # the USB device went away: the socket closes, the caller reconnects
+            elif m['type'] == 'execute':
+                op = pending.pop(m['id'], None)
+                if not op:
+                    continue
+                try:
+                    command, args = op['command'], op['args']
+                    if command == 'trigger':
+                        sim.trigger_id += 1
+                        sim.trigger = None if args.get('action') == 'disarm' else {
+                            'pattern': base64.b64decode(args['data']), 'action': args['action'], 'delay': args.get('delay_ms', 0),
+                            'until': time.monotonic() + args['expires_ms'] / 1000, 'id': sim.trigger_id}
+                        result = {'armed': sim.trigger is not None, 'simulated': True}
+                    else:
+                        result = await sim.execute(command, args, download, upload)
+                    if command == 'flash.read' and os.environ.get('SIM_DROP_DURING_READ') == '1' and not sim.dropped:
+                        sim.dropped = True                        # the page/agent vanishes mid-operation: no result is ever reported
+                        await asyncio.sleep(1)
+                        reenumerate = True
+                        break
+                    if command == 'reset' and os.environ.get('SIM_REENUMERATE') == '1':
+                        reenumerate = True                        # no banner here: it would appear after the USB device returned
+                    elif command == 'reset':
+                        await emit_uart(('SIM boot\r\nESP-ROM:%s-sim\r\n' % chip).encode())
+                    elif command == 'boot.download':
+                        await emit_uart(('SIM download mode\r\nESP-ROM:%s-sim\r\nSIM-DOWNLOAD-MODE\r\n' % chip).encode())
+                    elif command == 'uart.write':
+                        await emit_uart(base64.b64decode(args['data']))
+                    if command == 'flash.read' and args_return_console(args) and os.environ.get('SIM_CONSOLE_EVENT') == '1':
+                        await event('transport', detail='console opened')
+                    await ws.send_json({'type': 'result', 'id': op['id'], 'state': 'completed', 'result': result})
+                except Exception as error:
+                    await ws.send_json({'type': 'result', 'id': op['id'], 'state': 'failed', 'error': {'code': getattr(error, 'code', 'simulated_failure')}})
+        gestures.cancel()
+        for task in tasks:
+            task.cancel()
+    return reenumerate
 
 
 if __name__ == '__main__':
