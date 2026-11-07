@@ -164,6 +164,7 @@ def test_deliberate_failure_stays_a_failure_with_successful_cleanup(pytester, mo
     assert sim_bench.device("board")["reservation"] is None
 
 
+@pytest.mark.slow_integration
 def test_m5_recipes_record_both_identities_and_exact_expiration(pytester, monkeypatch, sim_bench):
     monkeypatch.setenv("BENCH_CLIENT_TOKEN", "pytest-client-test-token")
     monkeypatch.setenv("BENCH_CLIENT_TOKEN_B", "pytest-second-test-token")
