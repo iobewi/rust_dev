@@ -56,6 +56,32 @@ def judge_lease_after_fault(*, op, state, generation_before, owner):
     return "held_by_owner"
 
 
+def advance_transport_cycle(progress, events):
+    """Fold server events into {"disconnected": bool, "connected": bool}: the page drops its agent when the USB device goes away and re-attaches the
+    SAME board when it returns (ui.js `disconnect` handler + SerialReconnect). 'connected' counts only AFTER a 'disconnected'. No generation or epoch
+    value is required, only that the transport was observed leaving and coming back."""
+    for event in events:
+        if event.get("kind") == "disconnected":
+            progress["disconnected"] = True
+        elif event.get("kind") == "connected" and progress["disconnected"]:
+            progress["connected"] = True
+    return progress
+
+
+def wait_for_transport_cycle(client, device_id, after, *, timeout):
+    """Bounded wait (BLOCKED on timeout) for the operator's reconnection, observed from the server's own event log; read-only."""
+    progress, cursor = {"disconnected": False, "connected": False}, after
+
+    def done():
+        nonlocal cursor
+        batch = client._request("GET", f"/api/v1/devices/{quote(device_id, safe='')}/events?after={cursor}")
+        advance_transport_cycle(progress, batch["events"])
+        cursor = batch["next"]
+        return progress["connected"] and client.device(device_id)["connected"]
+    wait_until(done, timeout=timeout, interval=1.0, what="the USB device to leave and come back (disconnected then connected events)")
+    return progress
+
+
 def release_surviving_lease(client, lease_id):
     """The explicit release the abandoned handle can no longer do (same DELETE as Board.close; an expired lease is already released)."""
     try:
@@ -77,7 +103,7 @@ def _setup(cfg, pytestconfig, *, restart):
     return fault
 
 
-def _run(bench_client, cfg, pytestconfig, test_id, kind, fault, inject):
+def _run(bench_client, cfg, pytestconfig, test_id, kind, fault, inject, *, await_transport_cycle=False):
     manifest = build_manifest(cfg, "R5", regions=[], steps=[f"Fault injected during a read: {kind}", "Operator recovery after reconnection"])
     case, out = make_campaign(bench_client, cfg, test_id, __file__, pytestconfig, manifest=manifest), Outcome()
     with recorded(case, test_id, out, preconditions=f"{cfg['chip']} declared {cfg['transport']}, read {fault['address']:#x}+{fault['size']:#x}", limits=LIMITS):
@@ -95,6 +121,7 @@ def _run(bench_client, cfg, pytestconfig, test_id, kind, fault, inject):
                 result["error"] = error
         thread = threading.Thread(target=long_read, daemon=True)
         thread.start()
+        events_after = bench_client.device(board_id)["seq"]          # server event cursor taken before the fault
         wait_until(lambda: board.pending or "error" in result or "data" in result, timeout=30, interval=0.1, what="the read operation to start")
         time.sleep(fault["interrupt_after_s"])
         if "data" in result:
@@ -144,6 +171,10 @@ def _run(bench_client, cfg, pytestconfig, test_id, kind, fault, inject):
         case.write("interrupted-operation.json", {"after_fault": keep(op), "after_recovery": keep(again)})      # the SERVER's own answers, kept raw
         assert again["state"] == op["state"], f"the interrupted operation changed state after recovery ({op['state']} -> {again['state']}): replay?"
         out.evidence.append("the interrupted operation kept its final state after recovery")
+        if await_transport_cycle:
+            progress = wait_for_transport_cycle(bench_client, board_id, events_after, timeout=cfg["operator_timeout_s"])
+            case.write("transport-cycle.json", progress)
+            out.evidence.append("the transport was observed leaving and coming back (disconnected then connected events); the card is re-attached")
         case.open_window("after the interruption and recovery")
         fresh = case.reserve(ttl=120)
         fresh.identify()
@@ -165,7 +196,7 @@ def test_r5_unplug(bench_client, qual_session, pytestconfig):
 
     def inject(case, out):
         operator_gesture(case, "UNPLUG the USB cable NOW, wait 3 s, plug it back and reconnect the port", timeout=cfg["operator_timeout_s"])
-    _run(bench_client, cfg, pytestconfig, "R5-UNPLUG", "USB unplug", fault, inject)
+    _run(bench_client, cfg, pytestconfig, "R5-UNPLUG", "USB unplug", fault, inject, await_transport_cycle=True)
 
 
 def test_r5_restart(bench_client, qual_session, pytestconfig, request):

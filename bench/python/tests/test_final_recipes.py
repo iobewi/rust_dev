@@ -154,6 +154,9 @@ def test_unplug_with_the_agent_still_connected_keeps_the_lease_which_is_released
     seen = json.loads(next((tmp_path / "evidence").glob("R5-UNPLUG-*/interruption.json")).read_text())
     assert seen["state"] == "failed" and seen["reservation_judgement"] == "held_by_owner" and seen["submissions"] == 1
     assert client.device("board")["reservation"] is None and not client.device("board")["quarantined"]
+    cycle = json.loads(next((tmp_path / "evidence").glob("R5-UNPLUG-*/transport-cycle.json")).read_text())
+    assert cycle == {"disconnected": True, "connected": True}
+    assert any("leaving and coming back" in e for e in reports["R5-UNPLUG"]["evidence"])
 
 
 def test_a_read_that_completes_before_the_fault_is_blocked_not_passed(sim, tmp_path):
@@ -367,3 +370,27 @@ def test_lease_judgement_accepts_only_the_exact_surviving_case():
                 {"state": {"connected": False}}, {"state": {"quarantined": True}}, {"owner": "someone-else"}):
         with pytest.raises(AssertionError):
             _judge(**bad)
+
+
+# --- R5-UNPLUG: synchronisation on the transport cycle (no generation or epoch value is required) -----------------------
+def test_transport_cycle_needs_a_disconnect_then_a_connect():
+    from recipes.qualification_campaign.test_interruption import advance_transport_cycle as advance
+    fresh = lambda: {"disconnected": False, "connected": False}                     # noqa: E731
+    assert advance(fresh(), [{"kind": "uart"}, {"kind": "disconnected"}, {"kind": "uart"}, {"kind": "connected"}]) == {"disconnected": True, "connected": True}
+    assert advance(fresh(), [{"kind": "disconnected"}]) == {"disconnected": True, "connected": False}
+    assert advance(fresh(), [{"kind": "connected"}]) == {"disconnected": False, "connected": False}          # a connect before any loss is not the return
+    assert advance(fresh(), [{"kind": "connected"}, {"kind": "disconnected"}])["connected"] is False
+
+
+def test_the_wait_for_the_transport_cycle_is_bounded_and_blocked_not_failed():
+    from recipes.qualification_campaign.harness import Blocked
+    from recipes.qualification_campaign.test_interruption import wait_for_transport_cycle
+
+    class Quiet:
+        def _request(self, method, path):
+            return {"events": [{"kind": "uart"}], "next": 1}
+
+        def device(self, device_id):
+            return {"connected": True}
+    with pytest.raises(Blocked):
+        wait_for_transport_cycle(Quiet(), "board", 0, timeout=2)
