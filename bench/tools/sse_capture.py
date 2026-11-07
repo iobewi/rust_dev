@@ -11,6 +11,7 @@ index with metadata only (no UART content) and computes the continuity independe
 Library: capture(client, device, seconds, ...). CLI: BENCH_URL / BENCH_CLIENT_TOKEN from the environment, never printed."""
 import argparse
 import base64
+import hashlib
 import json
 import os
 import sys
@@ -58,6 +59,7 @@ def capture(client, device, seconds, *, index_path, archive_path, resume_every_s
                         data = base64.b64decode(event["data"])
                         archive.write(data)
                         row = {"seq": event["seq"], "source_seq": event["source_seq"], "source_lost": event["source_lost"], "bytes": len(data),
+                               "sha256": hashlib.sha256(data).hexdigest(),     # digest of this chunk of the archive (never its content)
                                "generation": generation, "at": event["at"]}
                         rows.append(row)
                         index.write(json.dumps(row) + "\n")
@@ -71,6 +73,8 @@ def capture(client, device, seconds, *, index_path, archive_path, resume_every_s
         archive.flush()
         os.fsync(archive.fileno())
     stats["generations"] = generation
+    stats["archive_bytes"] = archive_path.stat().st_size                  # re-read from disk: what was actually persisted
+    stats["archive_sha256"] = hashlib.sha256(archive_path.read_bytes()).hexdigest()
     return {**stats, **analyse(rows), "rate_bytes_s": round(sum(r["bytes"] for r in rows) / max(seconds, 1), 1)}
 
 

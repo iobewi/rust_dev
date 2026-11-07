@@ -848,10 +848,35 @@ def capture_checks(run, spec, ops):
         problems.append(f"silent_loss={again['silent_loss']} duplicates={again['duplicates']} server_lost={stats.get('server_lost')}")
     if again["flagged_loss"] > spec["max_flagged_loss"]:
         problems.append(f"{again['flagged_loss']} flagged losses > {spec['max_flagged_loss']}")
+    problems += archive_problems(run, stats, index)
     if stats.get("resumes", 0) < 1 or len(stats.get("epochs", [])) != 1 or stats.get("disconnected_events") or stats.get("generations", 0) > 1:
         problems.append("no deliberate resume, or the epoch / generation / connection changed during the window")
     _check(out, "capture_continuity", problems)
     return out
+
+
+def archive_problems(run, stats, index):
+    """The archive must be the exact concatenation of the indexed chunks: size, whole-file SHA-256 and the SHA-256 of every chunk."""
+    path = run.path / "uart-archive.bin"
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return ["uart-archive.bin is missing or unreadable"]
+    problems, expected = [], sum(r["bytes"] for r in index)
+    if len(data) != expected:
+        problems.append(f"archive is {len(data)} bytes, the index accounts for {expected} (truncated or extended)")
+    if stats.get("archive_bytes") != len(data):
+        problems.append(f"archive size {len(data)} != recorded {stats.get('archive_bytes')}")
+    if stats.get("archive_sha256") != hashlib.sha256(data).hexdigest():
+        problems.append("archive SHA-256 differs from the recorded one (corrupted)")
+    offset, bad = 0, 0
+    for row in index:
+        chunk = data[offset:offset + row["bytes"]]
+        offset += row["bytes"]
+        bad += hashlib.sha256(chunk).hexdigest() != row.get("sha256")
+    if bad:
+        problems.append(f"{bad} indexed chunk(s) do not match their recorded SHA-256")
+    return problems
 
 
 def analyse_capture(rows):

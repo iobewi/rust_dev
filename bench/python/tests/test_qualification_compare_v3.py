@@ -1,5 +1,6 @@
 """Criteria v3 and the raw-data checks of the comparator. SIMULATED/hand-made evidence only. v1 and v2 stay untouched; every v3 check must reject
 the inconsistent raw files it exists for (a recipe's summary is never trusted over the server's own records)."""
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -26,6 +27,9 @@ def test_v1_and_v2_are_untouched_and_v3_extends_v2_without_changing_any_entry():
 
 def run_dir(tmp_path, files):
     for name, value in files.items():
+        if name == "_archive":
+            (tmp_path / "uart-archive.bin").write_bytes(value)
+            continue
         path = tmp_path / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("".join(json.dumps(r) + "\n" for r in value) if name.endswith(".jsonl") else json.dumps(value))
@@ -155,10 +159,17 @@ def test_lan_contract(tmp_path, label, change, count, ok):
     assert (outcome(out)["lan_contract"] == "OK") is ok, label
 
 
+def _chunk(row):
+    return bytes([row["seq"] % 251]) * row["bytes"]
+
+
 def capture_files(rows=None, **stats):
-    rows = rows or [{"seq": i, "source_seq": i, "source_lost": 0, "bytes": 2000, "generation": 1} for i in range(1, 61)]
-    base = {**qc.analyse_capture(rows), "seconds": 40, "resumes": 3, "epochs": ["e"], "disconnected_events": 0, "generations": 1, "server_lost": 0}
-    return {"capture-stats.json": {**base, **stats}, "capture-index.jsonl": rows}
+    rows = [{**r, "sha256": hashlib.sha256(_chunk(r)).hexdigest()} for r in
+            (rows or [{"seq": i, "source_seq": i, "source_lost": 0, "bytes": 2000, "generation": 1} for i in range(1, 61)])]
+    archive = b"".join(_chunk(r) for r in rows)
+    base = {**qc.analyse_capture(rows), "seconds": 40, "resumes": 3, "epochs": ["e"], "disconnected_events": 0, "generations": 1, "server_lost": 0,
+            "archive_bytes": len(archive), "archive_sha256": hashlib.sha256(archive).hexdigest()}
+    return {"capture-stats.json": {**base, **stats}, "capture-index.jsonl": rows, "_archive": archive}
 
 
 SPEC_U8 = V3["scenarios"]["U8"]["capture"]
@@ -190,3 +201,35 @@ def test_a_missing_raw_file_is_unverified_never_ok(tmp_path):
 def test_unknown_scenario_under_v2_is_never_a_verified_pass_for_the_new_ones():
     for scenario in NEW:
         assert scenario not in V2["scenarios"]
+
+
+# --- U8 : the archive must match its index ----------------------------------------------------------------------------
+def _archive_verdict(tmp_path, mutate):
+    files = capture_files()
+    archive = files["_archive"]
+    mutated = mutate(archive)
+    run = run_dir(tmp_path, {k: v for k, v in files.items() if k != "_archive"})
+    if mutated is not None:
+        (tmp_path / "uart-archive.bin").write_bytes(mutated)
+    return outcome(qc.capture_checks(run, SPEC_U8, []))["capture_continuity"]
+
+
+@pytest.mark.parametrize("label,mutate,ok", [
+    ("intact", lambda a: a, True),
+    ("truncated", lambda a: a[:-1], False),
+    ("extended", lambda a: a + b"x", False),
+    ("one byte flipped", lambda a: a[:5] + bytes([a[5] ^ 1]) + a[6:], False),
+    ("absent", lambda a: None, False),
+    ("empty", lambda a: b"", False),
+])
+def test_u8_archive_matches_the_index(tmp_path, label, mutate, ok):
+    assert (_archive_verdict(tmp_path, mutate) == "OK") is ok, label
+
+
+def test_u8_archive_with_forged_summary_but_corrupt_chunk(tmp_path):
+    """Rewriting the recorded size/SHA-256 to fit a corrupted archive is still caught by the per-chunk digests of the index."""
+    files = capture_files()
+    bad = files["_archive"][:5] + b"\xff" + files["_archive"][6:]
+    files["capture-stats.json"].update(archive_bytes=len(bad), archive_sha256=hashlib.sha256(bad).hexdigest())
+    files["_archive"] = bad
+    assert outcome(qc.capture_checks(run_dir(tmp_path, files), SPEC_U8, []))["capture_continuity"] == "FAIL"

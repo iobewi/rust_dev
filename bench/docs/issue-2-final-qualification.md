@@ -27,7 +27,7 @@ Légende : **PASS** démontrée selon les critères retenus · **PASS WITH LIMIT
 | 3 | C3 | **PASS WITH LIMITATIONS** (C3R-0…3, Q1–Q3, historiques) | NUSB-2 sur le C3 si l'on veut caractériser la réénumération après reset | pas de critère de réénumération avant NUSB-2 ; PASS historiques sous `0e1f890` et `69f4183` | C3 (déjà disponible) |
 | 4 | Multi-images | **PASS WITH LIMITATIONS** (R4, lot 1) | — (ne pas rejouer) | une exécution, deux régions ; fenêtres de contrôle partielles ; pas d'atomicité ; aucune coupure | — |
 | 5 | Interruptions, rechargement, redémarrage | **PARTIEL** (débranchement en lecture historique ; Q3 au repos) | **R5-RELOAD / R5-UNPLUG / R5-RESTART** prêtes (lecture seule) | **coupure pendant une écriture : exclue** (autorisation, sauvegardes, procédure de récupération à part) | opérateur (onglet, câble), lanceur serveur |
-| 6 | Timeouts, ACK/résultats perdus | **PASS WITH LIMITATIONS proposé** après R5 : tests logiciels déterministes + faute naturelle (le résultat ne peut plus être livré) | R5-* | **aucune injection déterministe de perte d'ACK** n'est construite (disproportionné, décision ci-dessous) | — |
+| 6 | Timeouts, ACK/résultats perdus | **PASS WITH LIMITATIONS proposé** après R5, en deux volets distincts : (a) **perte d'un résultat lors d'une interruption** (R5 : l'agent ne peut plus délivrer son résultat, opération `indeterminate`, quarantaine, pas de rejeu) : démontrée sur matériel par R5 ; (b) **perte d'un ACK après exécution** : couverte par les tests logiciels déterministes uniquement, **non démontrée sur matériel** | R5-* (volet a) | **volet b non démontré matériellement, limite conservée dans le verdict** ; aucune injection déterministe de perte d'ACK n'est construite (disproportionné, décision ci-dessous) | — |
 | 7 | Déclencheurs UART | **PARTIEL** (Q2 : armement/désarmement/propriété) | **T7** prête (tir unique sur bannière ROM, reset différé, réarmement annule l'action) | verrouillage et concurrence du reset différé : tests moteur seulement | grant local, reset (consentement) |
 | 8 | Capture soutenue, SSE, pertes | **BLOCKED** | **U8** prête (client SSE externe, reprise au curseur, pertes recomptées) | l'état « onglet en arrière-plan » est un geste annoncé, pas une condition vérifiée | **une source UART soutenue** (firmware qui journalise en continu, par exemple celui de `rust-ota`) |
 | 9 | Grants, expiration, deux cartes | grants/révocations/propriété : **PASS** (Q1, Q2) ; expiration : non démontrée ; deux cartes : **BLOCKED** | **G9** (expiration, sans matériel supplémentaire) ; **M2** (deux cartes) prêtes | M2 jamais simulée en campagne | deux cartes de la même famille connectées ensemble (S3 + S3 Zero) |
@@ -38,8 +38,8 @@ les attend pas.
 
 ## 3. Décisions de conception (compromis assumés)
 
-- **Pas d'infrastructure générale d'injection de fautes.** Les exigences 5 et 6 sont couvertes par des fautes **naturelles en lecture seule** (rechargement
-  de l'onglet, câble, signal au lanceur serveur) : l'agent ne peut plus délivrer son résultat, ce qui est la forme réelle d'un résultat ou d'un ACK perdu. Une
+- **Pas d'infrastructure générale d'injection de fautes.** L'exigence 5 et le volet (a) de l'exigence 6 (résultat perdu à l'interruption) sont couverts par des fautes **naturelles en lecture seule** (rechargement
+  de l'onglet, câble, signal au lanceur serveur) : l'agent ne peut plus délivrer son résultat : c'est la forme réelle d'un **résultat** perdu, pas celle d'un **ACK perdu après exécution** (la commande a abouti, seule la réponse manque), qui reste couvert par les tests logiciels et **non démontré sur matériel**. Une
   perte déterministe d'ACK demanderait une instrumentation côté agent (désactivée par défaut, preuve persistante anti-rejeu, procédure de restauration
   validée) : disproportionné pour un outil de développement ; **refus explicite**, à rouvrir seulement si une campagne OTA révèle une lacune.
 - **Aucune coupure pendant une écriture** : exclue de cette PR et de la campagne. Elle exige sauvegardes vérifiées, chemin de récupération local
@@ -87,6 +87,6 @@ Elle ne l'est pas tant qu'une exigence est `FAIL`. Sans exécution des lots A à
 ## 7. Proposition de mise à jour de l'issue #2 (non publiée)
 
 > **Finalisation (PR « issue 2 final qualification »)** : les recettes NUSB-0/1/2, T7, R5-*, G9, M2, H10 et U8, les critères v3 et leurs tests simulés sont prêts.
-> Aucune n'a été exécutée sur matériel. Décisions de conception : pas d'injection déterministe de perte d'ACK, pas de coupure pendant une écriture, USB OTG exclu.
+> Aucune n'a été exécutée sur matériel. Décisions de conception : pas d'injection déterministe de perte d'ACK (exigence 6 : ACK perdu après exécution couvert par les tests logiciels, non démontré sur matériel), pas de coupure pendant une écriture, USB OTG exclu.
 > Tableau des dix exigences et plan de la campagne en trois lots : `bench/docs/issue-2-final-qualification.md`. Dépendances physiques ouvertes : S3 en USB natif
 > (exigence 2), source UART soutenue (8), deuxième carte de la même famille (9), cible HTTP sur le LAN (10).
