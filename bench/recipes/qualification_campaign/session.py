@@ -16,10 +16,10 @@ SCENARIOS = {"Q1", "Q2", "Q3", "C3R-READ", "C3R-RESET", "S3R-RESET", "S3R-BOOT",
              "NUSB-READ", "NUSB-RESET", "T7", "R5", "H10", "U8", "M2"}
 TOP_LEVEL = {"version", "board_id", "chip", "flash_size", "transport", "partition_table_offset",
              "approved_regions", "evidence_root", "operation_timeout_s", "operator_timeout_s",
-             "consent", "q2", "q3", "readonly", "bootloader", "r4", "faults", "accept_unknown_transport"}
+             "consent", "q2", "q3", "readonly", "bootloader", "r4", "faults", "second_board", "accept_unknown_transport"}
 DEFAULTS = {"operation_timeout_s": 120, "operator_timeout_s": 900, "approved_regions": [],
             "consent": {"scenarios": [], "note": ""}, "q2": {}, "q3": {},
-            "readonly": {}, "bootloader": {}, "r4": {}, "faults": {}, "accept_unknown_transport": False}
+            "readonly": {}, "bootloader": {}, "r4": {}, "faults": {}, "second_board": {}, "accept_unknown_transport": False}
 Q2_DEFAULTS = {"trigger_pattern_b64": "SU9CRVdJLVEyLU5FVkVSLVNUSU1VTEFURUQ=",  # inert, never stimulated
                "expires_ms": 120000, "reservation_ttl_s": 600}
 Q3_DEFAULTS = {"allow_restart": False, "launcher_pid_file": None, "state_dir": None, "launcher_log": None,
@@ -79,6 +79,7 @@ def validate_session(document):
     cfg["bootloader"] = validate_bootloader(cfg["bootloader"])
     cfg["r4"] = validate_r4(cfg["r4"], cfg)
     cfg["faults"] = validate_faults(cfg["faults"], cfg)
+    cfg["second_board"] = validate_second_board(cfg["second_board"], cfg)
     regions = cfg["approved_regions"]
     if not isinstance(regions, list):
         raise SessionError("approved_regions must be a list")
@@ -147,6 +148,17 @@ def validate_faults(section, cfg):
             or item["address"] + item["size"] > cfg["flash_size"]):
         raise SessionError("faults.read: {address, size 4 KiB..8 MiB inside the flash, interrupt_after_s 1..120}")
     return {"read": item}
+
+
+def validate_second_board(section, cfg):
+    """M2: the logical id of a SECOND physical card of the SAME chip family, connected at the same time. Never simulated, never presumed."""
+    if not isinstance(section, dict) or section.keys() - {"board_id"}:
+        raise SessionError("second_board accepts only board_id")
+    if not section:
+        return {}
+    if not isinstance(section.get("board_id"), str) or not section["board_id"] or section["board_id"] == cfg["board_id"]:
+        raise SessionError("second_board.board_id must be a non-empty logical id different from board_id")
+    return dict(section)
 
 
 def validate_r4(section, cfg):

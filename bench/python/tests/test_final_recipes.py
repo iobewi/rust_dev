@@ -156,3 +156,57 @@ def test_r5_is_blocked_before_any_command(sim, tmp_path, selector, change):
     proc, reports = run_recipe(tmp_path, url, f"test_interruption.py::{selector}", transport="external_uart", accept_unknown_transport=True,
                                **({"faults": FAULT} if "faults" not in change else {}), **change)
     assert not reports and "BLOCKED" in proc.stdout and not list((tmp_path / "evidence").glob("*/requests.jsonl")), proc.stdout[-800:]
+
+
+# --- G9 (requirement 9): reservation expiry ---------------------------------------------------------------------------
+def test_reservation_expires_by_itself_and_the_old_handle_is_refused(sim, tmp_path):
+    url, client = sim([], chip="esp32s3")
+    proc, reports = run_recipe(tmp_path, url, "test_reservation_expiry.py", transport="external_uart", accept_unknown_transport=True)
+    assert reports["G9"]["status"] == "PASS", proc.stdout[-1800:] + " ".join(reports["G9"]["incidents"])
+    refusals = [json.loads(l) for p in (tmp_path / "evidence").glob("G9-*/requests.jsonl") for l in p.read_text().splitlines()]
+    codes = [r.get("code") for r in refusals if r.get("status")]
+    assert codes.count("lease_expired") >= 2 and "device_reserved" in codes
+    assert not client.device("board")["quarantined"]
+
+
+# --- M2 (requirement 9): two cards of one family -----------------------------------------------------------------------
+@pytest.fixture
+def sim_two():
+    import json as _json
+    import selectors
+    import subprocess as sp
+    from iobewi_bench import BenchClient
+    processes = []
+
+    def start():
+        process = sp.Popen([sys.executable, str(BENCH / "python/tests/sim_server.py"), "--second", "--chip", "esp32s3"], stdout=sp.PIPE, stderr=sp.PIPE, text=True)
+        processes.append(process)
+        selector = selectors.DefaultSelector()
+        selector.register(process.stdout, selectors.EVENT_READ)
+        assert selector.select(10)
+        url = _json.loads(process.stdout.readline())["url"]
+        client = BenchClient(url, "pytest-client-test-token")
+        deadline = time.monotonic() + 10
+        while len(client.devices()) < 2:
+            assert time.monotonic() < deadline
+            time.sleep(0.05)
+        return url, client
+    yield start
+    for process in processes:
+        process.terminate()
+        process.communicate(timeout=5)
+
+
+def test_two_boards_are_reserved_together_and_released_independently(sim_two, tmp_path):
+    url, client = sim_two()
+    proc, reports = run_recipe(tmp_path, url, "test_two_boards.py", transport="external_uart", accept_unknown_transport=True, second_board={"board_id": "board2"})
+    assert reports["M2"]["status"] == "PASS", proc.stdout[-1800:] + " ".join(reports["M2"]["incidents"])
+    assert client.device("board")["reservation"] is None and client.device("board2")["reservation"] is None
+
+
+@pytest.mark.parametrize("change", [{}, {"consent": {"scenarios": []}}, {"second_board": {"board_id": "missing"}}])
+def test_two_boards_is_blocked_without_a_second_real_card(sim, tmp_path, change):
+    url, _ = sim([], chip="esp32s3")
+    proc, reports = run_recipe(tmp_path, url, "test_two_boards.py", transport="external_uart", accept_unknown_transport=True, **change)
+    status = {k: v["status"] for k, v in reports.items()}
+    assert status in ({}, {"M2": "BLOCKED"}) and "BLOCKED" in proc.stdout, proc.stdout[-800:]
