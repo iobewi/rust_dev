@@ -106,6 +106,15 @@ test(`local browser session and direct control over ${usbJtag?'USB Serial/JTAG':
   },usbJtag);
   await page.goto(url);assert.equal(await page.locator('#access-panel').isVisible(),false);
   await page.waitForFunction(()=>document.querySelector('#device-id').value==='board');
+  assert.equal(await page.title(),'board · IOBEWI');
+  assert.equal(await page.textContent('#local-card-title'),'· board');
+  await openStatus(page,'agent');await page.click('#access-toggle');
+  await page.locator('#device-id').fill('esp32-zero');
+  assert.equal(await page.title(),'esp32-zero · IOBEWI');
+  assert.equal(await page.textContent('#local-card-title'),'· esp32-zero');
+  await page.locator('#device-id').fill('board');
+  assert.equal(await page.title(),'board · IOBEWI');
+  await closeStatus(page);
   assert.equal(await page.locator('#card-details').isVisible(),false);
   assert.equal(await page.locator('#status-label-card').isVisible(),false);
   assert.equal(await page.locator('.device-panel #usb-toggle').isVisible(),true);
