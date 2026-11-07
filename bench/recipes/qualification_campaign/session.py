@@ -12,7 +12,8 @@ from iobewi_bench import CampaignManifest
 
 CHIPS = {"esp32s3", "esp32c3"}
 TRANSPORTS = {"external_uart", "usb_serial_jtag", "native_usb_other", "unknown"}
-SCENARIOS = {"Q1", "Q2", "Q3", "C3R-READ", "C3R-RESET", "S3R-RESET", "S3R-BOOT", "S3R-READ", "R4"}
+SCENARIOS = {"Q1", "Q2", "Q3", "C3R-READ", "C3R-RESET", "S3R-RESET", "S3R-BOOT", "S3R-READ", "R4",
+             "NUSB-READ", "NUSB-RESET", "T7", "R5", "H10", "U8", "M2"}
 TOP_LEVEL = {"version", "board_id", "chip", "flash_size", "transport", "partition_table_offset",
              "approved_regions", "evidence_root", "operation_timeout_s", "operator_timeout_s",
              "consent", "q2", "q3", "readonly", "bootloader", "r4", "accept_unknown_transport"}
