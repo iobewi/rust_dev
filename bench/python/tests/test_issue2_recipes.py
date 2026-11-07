@@ -121,6 +121,7 @@ def prepared(sim, env=None):
     return url, client
 
 
+@pytest.mark.slow_integration
 def test_multi_image_passes_and_restores_every_region(sim, tmp_path):
     url, client = prepared(sim)
     proc, reports = run(tmp_path, url, "test_r4_multi_image.py", R4, "--bench-allow-destructive")
@@ -137,6 +138,7 @@ def regions_are_blank(client):
         return all(set(board.read_flash(address=r["address"], size=r["size"], return_console=False)) == {0xFF} for r in R4["approved_regions"])
 
 
+@pytest.mark.slow_integration
 def test_r4_leaves_no_server_artifact_after_verified_private_copies(sim, tmp_path):
     url, client = prepared(sim)
     proc, reports = run(tmp_path, url, "test_r4_multi_image.py", R4, "--bench-allow-destructive")
@@ -204,6 +206,7 @@ def test_a_tampered_private_copy_keeps_the_server_artifact(tmp_path):
     assert board2.deleted == [] and any("KEPT" in p for p in problems)
 
 
+@pytest.mark.slow_integration
 def test_a_simulated_implicit_global_erase_is_seen_by_the_control_windows_and_regions_are_restored(sim, tmp_path):
     url, client = prepared(sim, env={"SIM_FAULT_GLOBAL_ERASE": "1"})
     proc, reports = run(tmp_path, url, "test_r4_multi_image.py", R4, "--bench-allow-destructive")
@@ -213,6 +216,7 @@ def test_a_simulated_implicit_global_erase_is_seen_by_the_control_windows_and_re
     assert regions_are_blank(client)
 
 
+@pytest.mark.slow_integration
 def test_a_write_that_does_not_read_back_fails_and_the_regions_are_restored(sim, tmp_path):
     url, client = prepared(sim, env={"SIM_FAULT_CORRUPT_WRITE": "1"})
     proc, reports = run(tmp_path, url, "test_r4_multi_image.py", R4, "--bench-allow-destructive")
@@ -288,6 +292,7 @@ def test_r4_is_blocked_before_any_mutation(sim, tmp_path, change, flag, why):
     assert not reports and why in proc.stdout, proc.stdout[-800:]
 
 
+@pytest.mark.slow_integration
 def test_all_ff_control_windows_cannot_detect_an_erase_so_r4_is_blocked(sim, tmp_path):
     url, client = prepared(sim)                                    # a valid table exists, but the only window is all 0xFF
     proc, reports = run(tmp_path, url, "test_r4_multi_image.py",
