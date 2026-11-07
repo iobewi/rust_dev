@@ -22,7 +22,7 @@ import re
 import sys
 from pathlib import Path
 
-TOOL_VERSION = "2"
+TOOL_VERSION = "3"
 STATUSES = ("PASS", "FAIL", "SKIP", "BLOCKED", "INDETERMINATE")
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
 GRANT_OK_LINE = re.compile(r"^(?:\d+)")
@@ -202,6 +202,10 @@ def continuity_check(before, after, expected):
     epoch_changed = before.get("epoch") != after.get("epoch")
     if expected == "unchanged":
         bad = [n for n, c in (("generation changed", gen_changed), ("epoch changed", epoch_changed)) if c]
+    elif expected == "generation_any":          # the card may return with a new generation (USB re-enumeration), the server epoch never changes
+        bad = [n for n, c in (("epoch changed", epoch_changed),) if c]
+    elif expected == "generation_changed":      # an interruption of the agent / USB link: new generation, same server
+        bad = [n for n, c in (("epoch changed", epoch_changed), ("generation did not change", not gen_changed)) if c]
     else:
         bad = [n for n, c in (("epoch did not change", not epoch_changed), ("generation did not change", not gen_changed)) if c]
     return Check("continuity", "FAIL" if bad else "OK", "; ".join(bad))
@@ -366,6 +370,10 @@ def driven_checks(run, scenario, params, lines, ops, grants):
         got = (boards[0].get("chip"), (boards[0].get("transports") or [None])[0])
         want = (params["context"]["chip"], params["context"]["transport"])
         add("context_matches", got == want, f"the manifest declares {got}, the scenario requires {want}", manifest is None)
+    if params.get("transport_equals"):
+        transport = run.json("transport.json") or {}
+        add("transport_is_native_serial_jtag", transport.get("declared_by_operator") == params["transport_equals"] == transport.get("inferred_by_agent"),
+            f"declared {transport.get('declared_by_operator')!r} and inferred {transport.get('inferred_by_agent')!r} must both be {params['transport_equals']!r}", not transport)
     if params.get("needs_transport"):
         transport = run.json("transport.json")
         ok = isinstance(transport, dict) and {"declared_by_operator", "inferred_by_agent", "provenance_source"} <= set(transport)
@@ -429,6 +437,7 @@ def driven_checks(run, scenario, params, lines, ops, grants):
                 problems.append(f"region {i}: backups differ, are incomplete or do not match the manifest region")
         if regions:
             add("backups_equal_per_region", not problems, "; ".join(problems), any("unreadable" in x for x in problems))
+    checks.extend(raw_checks(run, scenario, params, ops, lines))
     if params.get("restoration_prefix"):
         test = run.report_test()
         checks.append(Check("restored_and_compared", "OK" if str((test or {}).get("restoration", "")).startswith(params["restoration_prefix"]) else "MISSING",
@@ -652,6 +661,213 @@ def r4_correlation_checks(run, regions, ops):
         wp.append("every window is all 0xFF: an erase could not be seen")
     add("r4_control_windows_unchanged", not wp, "; ".join(wp))
     return out
+
+
+
+# ---- criteria v3 checks: raw files written by the recipes and the client, cross-checked with the server's own records -------------------
+def raw_checks(run, scenario, params, ops, lines):
+    out = []
+
+    def add(name, ok, detail="", missing=False):
+        out.append(Check(name, "MISSING" if missing else ("OK" if ok else "FAIL"), detail))
+    for command, states in (params.get("final_states") or {}).items():
+        mine = [o for o in ops or [] if o["command"] == command]
+        add(f"final_state_{command}", ops is not None and bool(mine) and all(o["state"] in states for o in mine),
+            f"{command} ended {[o['state'] for o in mine]}, allowed {states}", ops is None)
+    if params.get("exact_submissions"):
+        rows = [r for p in sorted(run.path.glob("board-*/commands.jsonl")) for r in (run.jsonl(str(p.relative_to(run.path))) or [])]
+        for command, count in params["exact_submissions"].items():
+            seen = sum(1 for r in rows if r.get("command") == command)
+            add(f"submitted_{count}_{command}", seen == count, f"{seen} {command} submission(s) recorded BEFORE their POST, expected {count} (a replay adds one)", not rows)
+    for want in params.get("required_refusals", []):
+        rows = [r for r in (refusals(run) or []) if (r["status"], r.get("code")) == (want["status"], want["code"])]
+        add(f"refused_{want['status']}_{want['code']}", len(rows) >= want["min"], f"{len(rows)} refusal(s) {want['status']} {want['code']}, expected >= {want['min']}", refusals(run) is None)
+    for name in ("trigger_observations", "reenumeration", "interruption", "expiry", "identities", "lan_observations", "capture"):
+        if params.get(name):
+            out.extend(globals()[f"{name}_checks"](run, params[name], ops))
+    return out
+
+
+def _check(out, name, problems, missing=False):
+    out.append(Check(name, "MISSING" if missing else ("FAIL" if problems else "OK"), "; ".join(problems)))
+
+
+def trigger_observations_checks(run, spec, ops):
+    out, seen, events = [], run.json("trigger-observations.json"), run.events()
+    if not isinstance(seen, dict) or events is None:
+        _check(out, "trigger_observations", [], True)
+        return out
+    log = {(e["kind"], e["seq"]) for e in events}
+    problems, by_name = [], {c.get("name"): c for c in seen.get("cases", [])}
+    for case in spec["cases"]:
+        got = by_name.get(case["name"])
+        if got is None:
+            problems.append(f"case {case['name']} absent")
+            continue
+        if (len(got["banners"]), len(got["triggers"])) != (case["banners"], case["triggers"]):
+            problems.append(f"{case['name']}: {len(got['banners'])} banner(s) / {len(got['triggers'])} trigger event(s), expected {case['banners']} / {case['triggers']}")
+        # every observed event must exist in the server's own event log (the recipe's list is corroborated, not trusted)
+        problems += [f"{case['name']}: {kind} event seq {e['seq']} absent from the server log" for kind, key in (("uart", "banners"), ("trigger", "triggers"))
+                     for e in got[key] if (kind, e["seq"]) not in log]
+        if case["triggers"] and got["banners"] and got["triggers"] and not got["banners"][0]["seq"] < got["triggers"][0]["seq"]:
+            problems.append(f"{case['name']}: the trigger event does not follow banner #1")
+        if case.get("deferred_after_trigger") and len(got["banners"]) == 2 and not got["triggers"][0]["seq"] < got["banners"][1]["seq"]:
+            problems.append(f"{case['name']}: the deferred banner does not follow the trigger event")
+        if case.get("min_gap_factor") and len(got["banners"]) == 2:
+            gap = (got["banners"][1]["at"] - got["banners"][0]["at"]) * 1000
+            if gap < case["min_gap_factor"] * got["delay_ms"]:
+                problems.append(f"{case['name']}: deferred reset after {gap:.0f} ms, before {case['min_gap_factor']} x {got['delay_ms']} ms")
+    resets = sum(1 for o in ops or [] if o["command"] == "reset")
+    if resets != spec["resets"]:
+        problems.append(f"{resets} reset operation(s), expected {spec['resets']}")
+    _check(out, "trigger_observations", problems)
+    return out
+
+
+def reenumeration_checks(run, spec, ops):
+    out, seen = [], run.json("reenumeration.json")
+    before, after = run.json("before.json"), run.json("after.json")
+    windows = run.jsonl("windows.jsonl") if run.exists("windows.jsonl") else []
+    if not isinstance(seen, dict) or not before or not after:
+        _check(out, "reenumeration_consistent", [], True)
+        return out
+    changed = before["device"].get("generation") != after["device"].get("generation")
+    interrupted = [w for w in windows or [] if w.get("event") == "interrupted"]
+    problems = []
+    if bool(seen.get("observed")) != changed:
+        problems.append(f"reenumeration.json says observed={seen.get('observed')} but the generation {'changed' if changed else 'did not change'}")
+    if bool(seen.get("observed")) != bool(interrupted):
+        problems.append("a re-enumeration must close a proof window explicitly (and only then)")
+    if seen.get("observed") and sum(1 for w in windows if w.get("event") == "opened") < 1:
+        problems.append("no new proof window was opened after the re-enumeration")
+    _check(out, "reenumeration_consistent", problems)
+    return out
+
+
+def interruption_checks(run, spec, ops):
+    out, seen, server = [], run.json("interruption.json"), run.json("interrupted-operation.json")
+    after = (run.json("after.json") or {}).get("device") or {}
+    if not isinstance(seen, dict) or not isinstance(server, dict) or ops is None:
+        _check(out, "interruption_consistent", [], True)
+        return out
+    reads = [o for o in ops if o["command"] == spec["command"]]
+    fault, recovered = server.get("after_fault") or {}, server.get("after_recovery") or {}
+    problems = []
+    if len(reads) != 1:
+        problems.append(f"{len(reads)} {spec['command']} operation(s), exactly one expected (no replay)")
+    elif reads[0]["state"] == "completed" or reads[0]["id"] != fault.get("id"):
+        problems.append(f"the client journal ends {reads[0]['state']!r} for {reads[0]['id']}; the server record is for {fault.get('id')}")
+    if fault.get("state") not in spec["states"]:
+        problems.append(f"the server reports state {fault.get('state')!r}, allowed {spec['states']}")
+    if fault.get("state") != recovered.get("state") or fault.get("id") != recovered.get("id"):
+        problems.append("the interrupted operation changed after the recovery (replay?)")
+    if seen.get("state") != fault.get("state"):
+        problems.append(f"the recipe summary says {seen.get('state')!r}, the server says {fault.get('state')!r}")
+    if seen.get("submissions") != 1:
+        problems.append(f"{seen.get('submissions')} submissions before the interruption was judged")
+    if fault.get("state") == "indeterminate" and not seen.get("quarantined_after_reconnect"):
+        problems.append("an indeterminate operation did not keep the card blocked after reconnection")
+    if after.get("quarantined"):
+        problems.append("the card is still quarantined at the end (no operator recovery observed)")
+    if fault.get("state") == "indeterminate" and not has_evidence(lines_of(run), r"block lifted only after the operator"):
+        problems.append("no recovery-by-the-operator evidence for an indeterminate operation")
+    _check(out, "interruption_consistent", problems)
+    return out
+
+
+def lines_of(run):
+    return evidence_lines(run) or []
+
+
+def expiry_checks(run, spec, ops):
+    out, seen = [], run.json("expiry.json")
+    if not isinstance(seen, dict):
+        _check(out, "expiry_timing", [], True)
+        return out
+    ttl, elapsed = seen.get("ttl_s"), seen.get("device_free_after_s")
+    ok = type(ttl) is int and isinstance(elapsed, (int, float)) and ttl - 1 <= elapsed <= ttl + 10 and ttl <= spec["max_ttl_s"]
+    _check(out, "expiry_timing", [] if ok else [f"device free after {elapsed} s for a TTL of {ttl} s (allowed {ttl}-1..{ttl}+10, TTL <= {spec['max_ttl_s']})"])
+    return out
+
+
+def identities_checks(run, spec, ops):
+    out, seen = [], run.json("identities.json")
+    if not isinstance(seen, dict) or ops is None:
+        _check(out, "two_boards", [], True)
+        return out
+    chip = ((run.json("before.json") or {}).get("device") or {}).get("chip")
+    problems = [f"{label} card measured {item.get('chip')!r}, the declared card is {chip!r}" for label, item in seen.items() if item.get("chip") != chip]
+    if len(seen) != 2:
+        problems.append(f"{len(seen)} identities recorded, two expected")
+    if len({o["_board"] for o in ops if o["command"] == "identify"}) < 2:
+        problems.append("identify did not run through two distinct reservations")
+    _check(out, "two_boards", problems)
+    return out
+
+
+def lan_observations_checks(run, spec, ops):
+    out, seen = [], run.json("lan-observations.json")
+    if not isinstance(seen, dict) or ops is None:
+        _check(out, "lan_contract", [], True)
+        return out
+    cases, hits = {c["name"]: c for c in seen.get("cases", [])}, seen.get("target_hits", [])
+    problems = []
+    if set(cases) != {"ok", "redirect", "not_listed", "https", "credentials"}:
+        problems.append(f"cases {sorted(cases)}")
+    else:
+        paths = [h["path"] for h in hits]
+        if cases["ok"].get("result") != {"response": "opaque", "verified": False}:
+            problems.append("the ok case is not an opaque, unverified response")
+        if cases["redirect"].get("state") not in ("failed", "indeterminate"):
+            problems.append("the redirect case did not fail")
+        if sorted(paths) != ["/ok", "/redirect"] or "/after-redirect" in paths:
+            problems.append(f"the target saw {sorted(paths)}")
+        if any(h.get(k) for h in hits for k in ("cookie", "authorization", "referer", "origin")):
+            problems.append("a request carried a Cookie, Authorization, Referer or Origin header")
+        for name in ("not_listed", "https", "credentials"):
+            if "refused" not in cases[name]:
+                problems.append(f"{name} was not refused")
+    if sum(1 for o in ops if o["command"] == "http.request") != 2:
+        problems.append("exactly two http.request operations must have reached the agent (the other three are refused by the server)")
+    _check(out, "lan_contract", problems)
+    return out
+
+
+def capture_checks(run, spec, ops):
+    out, stats, index = [], run.json("capture-stats.json"), run.jsonl("capture-index.jsonl")
+    if not isinstance(stats, dict) or index is None:
+        _check(out, "capture_continuity", [], True)
+        return out
+    again = analyse_capture(index)                    # recomputed from the index, not from the recipe's summary
+    problems = [f"{k}: summary {stats.get(k)} != recomputed {again[k]}" for k in ("events", "bytes", "silent_loss", "flagged_loss", "duplicates") if stats.get(k) != again[k]]
+    if again["bytes"] < spec["min_bytes"]:
+        problems.append(f"{again['bytes']} bytes, below the criterion {spec['min_bytes']}")
+    if stats.get("seconds", 0) < spec["min_seconds"]:
+        problems.append(f"{stats.get('seconds')} s window, below the criterion {spec['min_seconds']} s")
+    if again["silent_loss"] or again["duplicates"] or stats.get("server_lost"):
+        problems.append(f"silent_loss={again['silent_loss']} duplicates={again['duplicates']} server_lost={stats.get('server_lost')}")
+    if again["flagged_loss"] > spec["max_flagged_loss"]:
+        problems.append(f"{again['flagged_loss']} flagged losses > {spec['max_flagged_loss']}")
+    if stats.get("resumes", 0) < 1 or len(stats.get("epochs", [])) != 1 or stats.get("disconnected_events") or stats.get("generations", 0) > 1:
+        problems.append("no deliberate resume, or the epoch / generation / connection changed during the window")
+    _check(out, "capture_continuity", problems)
+    return out
+
+
+def analyse_capture(rows):
+    """Same continuity analysis as tools/sse_capture.analyse (kept here so that the comparator depends on nothing but its inputs)."""
+    silent = flagged = duplicates = 0
+    seen, previous = set(), {}
+    for row in rows:
+        duplicates += row["seq"] in seen
+        seen.add(row["seq"])
+        last = previous.get(row.get("generation"))
+        gap = 0 if last is None else max(0, row["source_seq"] - last - 1)
+        previous[row.get("generation")] = row["source_seq"]
+        flagged += row["source_lost"]
+        if last is not None and gap != row["source_lost"]:
+            silent += abs(gap - row["source_lost"])
+    return {"events": len(rows), "bytes": sum(r["bytes"] for r in rows), "silent_loss": silent, "flagged_loss": flagged, "duplicates": duplicates}
 
 
 # ---- assessment, fingerprint --------------------------------------------------------------------------------------------

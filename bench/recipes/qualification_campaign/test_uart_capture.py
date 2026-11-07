@@ -44,6 +44,10 @@ def test_u8_sustained_capture_with_loss_detection(bench_client, qual_session, py
         start_or_block(case)
         record_transport(case, bench_client, cfg, out)
         operator_gesture(case, "Keep the bench page in a BACKGROUND tab during the capture window, bring it back at the end", timeout=window["duration_s"])
+        # A sustained source overflows the server's bounded event ring between the opening and the closing of the campaign's own proof window
+        # (Campaign.close() refuses a window with lost events). The external archiving client below is the witness of THIS scenario, so the
+        # window is closed explicitly instead of being allowed to fail at the end.
+        case.interrupt_window("U8: a sustained UART stream outlasts the server ring by design; the external client is the witness")
         stats = sse_capture.capture(bench_client, cfg["board_id"], window["duration_s"], index_path=case.directory / "capture-index.jsonl",
                                     archive_path=case.directory / "uart-archive.bin", resume_every_s=window["resume_every_s"])
         stats["thresholds"] = {"min_bytes": window["min_bytes"], "max_flagged_loss": window["max_flagged_loss"]}

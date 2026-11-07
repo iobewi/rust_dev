@@ -1,0 +1,993 @@
+{
+  "version": 3,
+  "description": "Acceptance criteria v3: v2 UNCHANGED plus the issue #2 finalisation scenarios (NUSB-0/1/2, T7, R5-RELOAD/UNPLUG/RESTART, G9, M2, H10, U8). Written BEFORE any run of these scenarios; pin its sha256 with --criteria-sha256. v1 (2dfc47e2...760760c) and v2 (57fa046e...a43e) stay valid and are never edited. The comparator is unchanged in spirit: the new scenarios only use data-driven checks over raw files.",
+  "repeat_min": 3,
+  "common": {
+    "required_files": [
+      "report.json",
+      "run.json",
+      "provenance.json",
+      "manifest.json",
+      "before.json",
+      "after.json",
+      "cleanup.json",
+      "events.jsonl",
+      "requests.jsonl",
+      "recipe.py",
+      "verdicts.jsonl"
+    ],
+    "hardware_grade_provenance": true
+  },
+  "scenarios": {
+    "Q1": {
+      "allowed_commands": [
+        "flash.read",
+        "flash.write",
+        "partitions"
+      ],
+      "extra_files": [],
+      "continuity": "unchanged",
+      "operator_requests": {
+        "grant": 1,
+        "revoke": 1,
+        "other": 0
+      }
+    },
+    "Q2a": {
+      "expect_trigger_ops_min": 2,
+      "refusal": [
+        403,
+        "grant_required"
+      ],
+      "continuity": "unchanged",
+      "operator_requests": {
+        "grant": 1,
+        "revoke": 0,
+        "other": 0
+      }
+    },
+    "Q2b": {
+      "min_remaining_s": 10,
+      "refusal": [
+        403,
+        "grant_required"
+      ],
+      "continuity": "unchanged",
+      "operator_requests": {
+        "grant": 1,
+        "revoke": 1,
+        "other": 0
+      }
+    },
+    "Q2c": {
+      "refusal": [
+        403,
+        "trigger_not_owned"
+      ],
+      "refusing_client": "primary",
+      "continuity": "unchanged",
+      "operator_requests": {
+        "grant": 1,
+        "revoke": 1,
+        "other": 0
+      }
+    },
+    "Q2d": {
+      "refusal": [
+        403,
+        "trigger_not_owned"
+      ],
+      "refusing_client": "other",
+      "continuity": "unchanged",
+      "operator_requests": {
+        "grant": 1,
+        "revoke": 1,
+        "other": 0
+      }
+    },
+    "Q3": {
+      "extra_files": [
+        "windows.jsonl",
+        "abandoned-handles.jsonl"
+      ],
+      "continuity": "epoch_and_generation_change",
+      "operator_requests": {
+        "grant": 0,
+        "revoke": 0,
+        "other": 1
+      }
+    },
+    "C3R-0": {
+      "allowed_commands": [
+        "identify",
+        "console"
+      ],
+      "extra_files": [
+        "transport.json",
+        "identity.json"
+      ],
+      "continuity": "unchanged",
+      "operator_requests": {
+        "grant": 0,
+        "revoke": 0,
+        "other": 0
+      }
+    },
+    "C3R-1": {
+      "allowed_commands": [
+        "flash.read",
+        "console"
+      ],
+      "extra_files": [
+        "transport.json"
+      ],
+      "continuity": "unchanged",
+      "operator_requests": {
+        "grant": 0,
+        "revoke": 0,
+        "other": 0
+      }
+    },
+    "C3R-2": {
+      "allowed_commands": [
+        "partitions",
+        "flash.read",
+        "console"
+      ],
+      "extra_files": [
+        "transport.json",
+        "table-probes.json"
+      ],
+      "continuity": "unchanged",
+      "operator_requests": {
+        "grant": 0,
+        "revoke": 0,
+        "other": 0
+      }
+    },
+    "C3R-3": {
+      "allowed_commands": [
+        "reset"
+      ],
+      "extra_files": [
+        "transport.json",
+        "reset-requests.jsonl"
+      ],
+      "continuity": "unchanged",
+      "operator_requests": {
+        "grant": 0,
+        "revoke": 0,
+        "other": 0
+      }
+    },
+    "S3R-1": {
+      "context": {
+        "chip": "esp32s3",
+        "transport": "external_uart"
+      },
+      "allowed_commands": [
+        "reset"
+      ],
+      "exact_commands": {
+        "reset": 1
+      },
+      "extra_files": [
+        "transport.json",
+        "reset-requests.jsonl"
+      ],
+      "continuity": "unchanged",
+      "needs_transport": true,
+      "no_interrupted_window": true,
+      "no_grant_events": true,
+      "evidence_patterns": [
+        {
+          "name": "rom_banner_same_window",
+          "pattern": "'ESP-ROM:esp32s3' observed after the reset, same proof window",
+          "detail": "no ROM banner evidence for the S3"
+        }
+      ],
+      "operator_requests": {
+        "grant": 0,
+        "revoke": 0,
+        "other": 0
+      },
+      "submitted_args": {
+        "reset": {}
+      },
+      "uart_match": {
+        "command": "reset",
+        "requests": "reset-requests.jsonl",
+        "pattern_sha256": "50e5d07d26964fa69998b5bbda1213b091ebc1116811b72ccfaa949fba418d5a"
+      }
+    },
+    "S3R-2": {
+      "context": {
+        "chip": "esp32s3",
+        "transport": "external_uart"
+      },
+      "allowed_commands": [
+        "boot.download"
+      ],
+      "exact_commands": {
+        "boot.download": 1
+      },
+      "extra_files": [
+        "transport.json",
+        "bootloader-requests.jsonl"
+      ],
+      "continuity": "unchanged",
+      "needs_transport": true,
+      "no_interrupted_window": true,
+      "grant_timeline": "natural_expiry",
+      "hold_ms": [
+        100,
+        3000
+      ],
+      "evidence_patterns": [
+        {
+          "name": "download_marker_same_window",
+          "pattern": "download-mode marker observed after the command, same proof window",
+          "detail": "no download-mode marker evidence"
+        },
+        {
+          "name": "grant_expired_naturally",
+          "pattern": "the grant expired naturally",
+          "detail": "natural expiry not recorded"
+        }
+      ],
+      "operator_requests": {
+        "grant": 1,
+        "revoke": 0,
+        "other": 0
+      },
+      "submitted_args": {
+        "boot.download": {
+          "hold_ms": "*"
+        }
+      },
+      "uart_match": {
+        "command": "boot.download",
+        "requests": "bootloader-requests.jsonl"
+      }
+    },
+    "S3R-3": {
+      "context": {
+        "chip": "esp32s3",
+        "transport": "external_uart"
+      },
+      "allowed_commands": [
+        "flash.read"
+      ],
+      "exact_commands": {
+        "flash.read": 1
+      },
+      "extra_files": [
+        "transport.json",
+        "console-events.jsonl"
+      ],
+      "continuity": "unchanged",
+      "needs_transport": true,
+      "no_interrupted_window": true,
+      "no_grant_events": true,
+      "evidence_patterns": [
+        {
+          "name": "console_return_transport_event",
+          "pattern": "console return shown by a transport event after the settled read",
+          "detail": "no console-return transport evidence"
+        },
+        {
+          "name": "server_readback_released",
+          "pattern": "server readback \\w+ deleted after its private copy was re-read and matched",
+          "detail": "no verified-release evidence"
+        }
+      ],
+      "operator_requests": {
+        "grant": 0,
+        "revoke": 0,
+        "other": 0
+      },
+      "submitted_args": {
+        "flash.read": {
+          "address": "*",
+          "size": "*",
+          "return_console": true
+        }
+      },
+      "console_return": {
+        "command": "flash.read"
+      }
+    },
+    "R4": {
+      "context": {
+        "chip": "esp32s3",
+        "transport": "external_uart"
+      },
+      "allowed_commands": [
+        "partitions",
+        "flash.read",
+        "flash.write"
+      ],
+      "min_regions": 2,
+      "max_regions": 4,
+      "flash_write_count": "1_plus_regions",
+      "extra_files": [
+        "r4-windows.json"
+      ],
+      "continuity": "unchanged",
+      "no_interrupted_window": true,
+      "grant_revoked_locally": true,
+      "evidence_patterns": [
+        {
+          "name": "regions_disjoint_recorded",
+          "pattern": "\\d+ regions disjoint from the table and from non-owned partitions",
+          "detail": "no disjointness evidence"
+        },
+        {
+          "name": "single_multi_image_write",
+          "pattern": "single multi-image write; every region equal to its own pattern",
+          "detail": "no multi-image write evidence"
+        },
+        {
+          "name": "windows_unchanged_after_write",
+          "pattern": "control windows byte-identical after the write",
+          "detail": "no post-write control-window evidence"
+        },
+        {
+          "name": "windows_unchanged_after_restore",
+          "pattern": "control windows byte-identical after the restoration",
+          "detail": "no post-restore control-window evidence"
+        },
+        {
+          "name": "server_readback_released",
+          "pattern": "server readback \\w+ deleted after its private copy was re-read and matched",
+          "detail": "no verified-release evidence"
+        }
+      ],
+      "restoration_prefix": "restored; independent compare equal to every verified backup",
+      "operator_requests": {
+        "grant": 1,
+        "revoke": 1,
+        "other": 0
+      },
+      "r4_correlation": true
+    },
+    "NUSB-0": {
+      "transport_equals": "usb_serial_jtag",
+      "needs_transport": true,
+      "no_grant_events": true,
+      "allowed_commands": [
+        "identify",
+        "console"
+      ],
+      "exact_commands": {
+        "identify": 1
+      },
+      "extra_files": [
+        "transport.json",
+        "identity.json"
+      ],
+      "continuity": "unchanged",
+      "no_interrupted_window": true,
+      "required_refusals": [
+        {
+          "status": 400,
+          "code": "unsupported",
+          "min": 2
+        }
+      ],
+      "evidence_patterns": [
+        {
+          "name": "capabilities_native",
+          "pattern": "capabilities: reset offered; io0 and boot.download absent",
+          "detail": "capability set of a native interface not recorded"
+        },
+        {
+          "name": "io0_refused",
+          "pattern": "io0 refused 400 unsupported before any hardware effect",
+          "detail": "io0 refusal not recorded"
+        },
+        {
+          "name": "boot_download_refused",
+          "pattern": "boot.download refused 400 unsupported before any hardware effect",
+          "detail": "boot.download refusal not recorded"
+        },
+        {
+          "name": "identity_measured_equals_declared",
+          "pattern": "measured chip=\\S+ flash_size=\\d+ \\(equal to the declaration\\)",
+          "detail": "no equality evidence"
+        }
+      ],
+      "operator_requests": {
+        "grant": 0,
+        "revoke": 0,
+        "other": 0
+      }
+    },
+    "NUSB-1": {
+      "transport_equals": "usb_serial_jtag",
+      "needs_transport": true,
+      "no_grant_events": true,
+      "allowed_commands": [
+        "flash.read",
+        "partitions",
+        "console"
+      ],
+      "extra_files": [
+        "transport.json",
+        "table-probes.json"
+      ],
+      "continuity": "unchanged",
+      "no_interrupted_window": true,
+      "evidence_patterns": [
+        {
+          "name": "repeated_reads_equal",
+          "pattern": "two reads equal, sha256=[0-9a-f]{64}",
+          "detail": "no repeated-read evidence"
+        },
+        {
+          "name": "one_valid_table",
+          "pattern": "one valid table at 0x[0-9a-f]+",
+          "detail": "no table evidence"
+        },
+        {
+          "name": "server_readbacks_released",
+          "pattern": "server readback \\w+ deleted after its private copy was re-read and matched",
+          "detail": "no verified-release evidence"
+        }
+      ],
+      "operator_requests": {
+        "grant": 0,
+        "revoke": 0,
+        "other": 0
+      }
+    },
+    "NUSB-2": {
+      "transport_equals": "usb_serial_jtag",
+      "needs_transport": true,
+      "no_grant_events": true,
+      "allowed_commands": [
+        "reset"
+      ],
+      "exact_commands": {
+        "reset": 1
+      },
+      "extra_files": [
+        "transport.json",
+        "reset-requests.jsonl",
+        "reenumeration.json"
+      ],
+      "continuity": "generation_any",
+      "reenumeration": {},
+      "evidence_patterns": [
+        {
+          "name": "restart_shown",
+          "pattern": "('\\S+' observed after the reset, same proof window|re-enumeration observed: window closed explicitly, card reconnected with a new generation)",
+          "detail": "neither a banner in the same window nor an observed re-enumeration"
+        }
+      ],
+      "operator_requests": {
+        "grant": 0,
+        "revoke": 0,
+        "other": 0
+      }
+    },
+    "T7": {
+      "allowed_commands": [
+        "reset",
+        "trigger"
+      ],
+      "exact_commands": {
+        "reset": 2,
+        "trigger": 4
+      },
+      "needs_transport": true,
+      "extra_files": [
+        "transport.json",
+        "trigger-observations.json",
+        "operator-requests.jsonl"
+      ],
+      "continuity": "unchanged",
+      "no_interrupted_window": true,
+      "grant_revoked_locally": true,
+      "trigger_observations": {
+        "resets": 2,
+        "cases": [
+          {
+            "name": "fire_once",
+            "banners": 2,
+            "triggers": 1,
+            "deferred_after_trigger": true,
+            "min_gap_factor": 0.8
+          },
+          {
+            "name": "rearm_cancels",
+            "banners": 1,
+            "triggers": 1
+          }
+        ]
+      },
+      "evidence_patterns": [
+        {
+          "name": "fire_once_proven",
+          "pattern": "fire_once: exactly one trigger event and one deferred reset, no third banner",
+          "detail": "fire_once conclusion not recorded"
+        },
+        {
+          "name": "rearm_cancels_proven",
+          "pattern": "rearm_cancels: re-arming before the delay cancelled the pending deferred reset",
+          "detail": "rearm_cancels conclusion not recorded"
+        }
+      ],
+      "operator_requests": {
+        "grant": 1,
+        "revoke": 1,
+        "other": 0
+      }
+    },
+    "R5-RELOAD": {
+      "allowed_commands": [
+        "flash.read",
+        "identify",
+        "console"
+      ],
+      "exact_commands": {
+        "flash.read": 1,
+        "identify": 1
+      },
+      "exact_submissions": {
+        "flash.read": 1
+      },
+      "needs_transport": true,
+      "no_grant_events": true,
+      "extra_files": [
+        "transport.json",
+        "interruption.json",
+        "windows.jsonl",
+        "interrupted-operation.json"
+      ],
+      "continuity": "generation_changed",
+      "interruption": {
+        "command": "flash.read",
+        "states": [
+          "failed",
+          "indeterminate"
+        ]
+      },
+      "evidence_patterns": [
+        {
+          "name": "read_interrupted",
+          "pattern": "read interrupted by .+: client raised \\w+",
+          "detail": "no interruption evidence"
+        },
+        {
+          "name": "never_replayed",
+          "pattern": "one submission, never replayed; reservation released",
+          "detail": "no-replay conclusion not recorded"
+        },
+        {
+          "name": "kept_final_state",
+          "pattern": "the interrupted operation kept its final state after recovery",
+          "detail": "final-state stability not recorded"
+        }
+      ]
+    },
+    "R5-UNPLUG": {
+      "allowed_commands": [
+        "flash.read",
+        "identify",
+        "console"
+      ],
+      "exact_commands": {
+        "flash.read": 1,
+        "identify": 1
+      },
+      "exact_submissions": {
+        "flash.read": 1
+      },
+      "needs_transport": true,
+      "no_grant_events": true,
+      "extra_files": [
+        "transport.json",
+        "interruption.json",
+        "windows.jsonl",
+        "interrupted-operation.json"
+      ],
+      "continuity": "generation_changed",
+      "interruption": {
+        "command": "flash.read",
+        "states": [
+          "failed",
+          "indeterminate"
+        ]
+      },
+      "evidence_patterns": [
+        {
+          "name": "read_interrupted",
+          "pattern": "read interrupted by .+: client raised \\w+",
+          "detail": "no interruption evidence"
+        },
+        {
+          "name": "never_replayed",
+          "pattern": "one submission, never replayed; reservation released",
+          "detail": "no-replay conclusion not recorded"
+        },
+        {
+          "name": "kept_final_state",
+          "pattern": "the interrupted operation kept its final state after recovery",
+          "detail": "final-state stability not recorded"
+        }
+      ]
+    },
+    "R5-RESTART": {
+      "allowed_commands": [
+        "flash.read",
+        "identify",
+        "console"
+      ],
+      "exact_commands": {
+        "flash.read": 1,
+        "identify": 1
+      },
+      "exact_submissions": {
+        "flash.read": 1
+      },
+      "needs_transport": true,
+      "no_grant_events": true,
+      "extra_files": [
+        "transport.json",
+        "interruption.json",
+        "windows.jsonl",
+        "interrupted-operation.json"
+      ],
+      "continuity": "changed",
+      "interruption": {
+        "command": "flash.read",
+        "states": [
+          "failed",
+          "indeterminate"
+        ]
+      },
+      "evidence_patterns": [
+        {
+          "name": "read_interrupted",
+          "pattern": "read interrupted by .+: client raised \\w+",
+          "detail": "no interruption evidence"
+        },
+        {
+          "name": "never_replayed",
+          "pattern": "one submission, never replayed; reservation released",
+          "detail": "no-replay conclusion not recorded"
+        },
+        {
+          "name": "kept_final_state",
+          "pattern": "the interrupted operation kept its final state after recovery",
+          "detail": "final-state stability not recorded"
+        }
+      ]
+    },
+    "G9": {
+      "allowed_commands": [
+        "mark"
+      ],
+      "exact_commands": {
+        "mark": 2
+      },
+      "needs_transport": true,
+      "no_grant_events": true,
+      "extra_files": [
+        "transport.json",
+        "expiry.json"
+      ],
+      "continuity": "unchanged",
+      "no_interrupted_window": true,
+      "required_refusals": [
+        {
+          "status": 409,
+          "code": "device_reserved",
+          "min": 1
+        },
+        {
+          "status": 409,
+          "code": "lease_expired",
+          "min": 2
+        }
+      ],
+      "expiry": {
+        "max_ttl_s": 60
+      },
+      "evidence_patterns": [
+        {
+          "name": "expired_by_itself",
+          "pattern": "the reservation expired by itself after [0-9.]+ s \\(TTL \\d+ s\\)",
+          "detail": "no expiry evidence"
+        },
+        {
+          "name": "old_handle_refused",
+          "pattern": "the expired handle was refused 409 lease_expired for a command and for a renewal",
+          "detail": "old-handle refusal not recorded"
+        },
+        {
+          "name": "new_reservation_works",
+          "pattern": "a new reservation was granted after the expiry and works; the card was never quarantined",
+          "detail": "post-expiry reservation not recorded"
+        }
+      ],
+      "operator_requests": {
+        "grant": 0,
+        "revoke": 0,
+        "other": 0
+      }
+    },
+    "M2": {
+      "allowed_commands": [
+        "identify",
+        "flash.read",
+        "console"
+      ],
+      "exact_commands": {
+        "identify": 4,
+        "flash.read": 2
+      },
+      "needs_transport": true,
+      "no_grant_events": true,
+      "extra_files": [
+        "transport.json",
+        "identities.json"
+      ],
+      "continuity": "unchanged",
+      "no_interrupted_window": true,
+      "identities": {},
+      "evidence_patterns": [
+        {
+          "name": "both_reserved",
+          "pattern": "one client holds a reservation on each of the two cards at the same time",
+          "detail": "no simultaneous reservation evidence"
+        },
+        {
+          "name": "independent_release",
+          "pattern": "the first reservation was released; the second card stayed reserved and answered",
+          "detail": "no independent-release evidence"
+        },
+        {
+          "name": "first_card_reserved_again",
+          "pattern": "the first card was reserved again and answered",
+          "detail": "no re-reservation evidence"
+        }
+      ]
+    },
+    "H10": {
+      "allowed_commands": [
+        "http.request"
+      ],
+      "exact_commands": {
+        "http.request": 2
+      },
+      "needs_transport": true,
+      "extra_files": [
+        "transport.json",
+        "lan-observations.json",
+        "operator-requests.jsonl"
+      ],
+      "continuity": "unchanged",
+      "no_interrupted_window": true,
+      "grant_revoked_locally": true,
+      "required_refusals": [
+        {
+          "status": 403,
+          "code": "http_origin_forbidden",
+          "min": 1
+        },
+        {
+          "status": 400,
+          "code": "invalid_request",
+          "min": 2
+        }
+      ],
+      "lan_observations": {},
+      "operator_requests": {
+        "grant": 1,
+        "revoke": 1,
+        "other": 0
+      }
+    },
+    "U8": {
+      "needs_transport": true,
+      "no_grant_events": true,
+      "extra_files": [
+        "transport.json",
+        "capture-stats.json",
+        "capture-index.jsonl",
+        "operator-requests.jsonl",
+        "windows.jsonl"
+      ],
+      "continuity": "unchanged",
+      "capture": {
+        "min_bytes": 100000,
+        "min_seconds": 30,
+        "max_flagged_loss": 0
+      },
+      "operator_requests": {
+        "grant": 0,
+        "revoke": 0,
+        "other": 1
+      }
+    }
+  },
+  "requirements": [
+    {
+      "id": "REQ-01",
+      "text": "Complete destructive cycle through Campaign/Orchestrator: verified backups, programming, independent readback, restoration, final compare, clean close",
+      "scenarios": [
+        "Q1"
+      ]
+    },
+    {
+      "id": "REQ-02",
+      "text": "A grant that expires naturally cannot be re-armed; the owner can still disarm; no grant is re-created",
+      "scenarios": [
+        "Q2a"
+      ]
+    },
+    {
+      "id": "REQ-03",
+      "text": "A local revocation is distinguished from an expiry and has the same consequences",
+      "scenarios": [
+        "Q2b"
+      ]
+    },
+    {
+      "id": "REQ-04",
+      "text": "Ownership: a new reservation or another identity cannot disarm a trigger, with a VALID grant (not a grant refusal)",
+      "scenarios": [
+        "Q2c",
+        "Q2d"
+      ]
+    },
+    {
+      "id": "REQ-05",
+      "text": "Coordinated server restart at rest: ordered stop/start, new epoch, same durable journal, agent reconnects without replay, fresh proof window",
+      "scenarios": [
+        "Q3"
+      ]
+    },
+    {
+      "id": "REQ-06",
+      "text": "Read-only identification, repeatable reads and partition table of a C3, with declared transport and agent inference both recorded",
+      "scenarios": [
+        "C3R-0",
+        "C3R-1",
+        "C3R-2"
+      ]
+    },
+    {
+      "id": "REQ-07",
+      "text": "One explicit reset with observation of the ROM banner in the same proof window",
+      "scenarios": [
+        "C3R-3"
+      ]
+    },
+    {
+      "id": "REQ-08",
+      "text": "S3 behind an external UART bridge: one EN reset and the ROM banner in the same proof window (issue #2, requirement 1)",
+      "scenarios": [
+        "S3R-1"
+      ]
+    },
+    {
+      "id": "REQ-09",
+      "text": "S3 behind an external UART bridge: one atomic boot.download (IO0 + EN), grant natural expiry, download-mode marker in the same window (issue #2, requirement 1; the wiring is an assumption)",
+      "scenarios": [
+        "S3R-2"
+      ]
+    },
+    {
+      "id": "REQ-10",
+      "text": "S3 behind an external UART bridge: console reopened after a settled loader read, shown by a transport event (transport proof only)",
+      "scenarios": [
+        "S3R-3"
+      ]
+    },
+    {
+      "id": "REQ-11",
+      "text": "Multi-image programming under a real manifest: one multi-image write, per-region backups, restoration and comparison, control windows unchanged where they look (issue #2, requirement 4)",
+      "scenarios": [
+        "R4"
+      ]
+    },
+    {
+      "id": "REQ-12",
+      "text": "Native USB Serial/JTAG (never an external bridge or USB OTG): identity, refusal of EN/BOOT commands, repeatable reads and one valid table, one explicit reset with the restart shown by a banner or an observed re-enumeration (issue #2, requirement 2)",
+      "scenarios": [
+        "NUSB-0",
+        "NUSB-1",
+        "NUSB-2"
+      ]
+    },
+    {
+      "id": "REQ-13",
+      "text": "UART trigger fired by a controlled stimulus: fires once, deferred reset after the delay, re-arming cancels a pending action (issue #2, requirement 7)",
+      "scenarios": [
+        "T7"
+      ]
+    },
+    {
+      "id": "REQ-14",
+      "text": "Interruption during a read (tab reload, USB unplug, server restart): never replayed, indeterminate outcomes keep the card blocked until the operator's local recovery (issue #2, requirements 5 and 6)",
+      "scenarios": [
+        "R5-RELOAD",
+        "R5-UNPLUG",
+        "R5-RESTART"
+      ]
+    },
+    {
+      "id": "REQ-15",
+      "text": "A reservation expires by itself and the expired handle is refused (issue #2, requirement 9)",
+      "scenarios": [
+        "G9"
+      ]
+    },
+    {
+      "id": "REQ-16",
+      "text": "Two cards of the same family reserved together and released independently (issue #2, requirement 9)",
+      "scenarios": [
+        "M2"
+      ]
+    },
+    {
+      "id": "REQ-17",
+      "text": "HTTP to a LAN target through the agent: one listed origin, opaque response, redirects refused, no credentials, other origins / https / credentials refused (issue #2, requirement 10)",
+      "scenarios": [
+        "H10"
+      ]
+    },
+    {
+      "id": "REQ-18",
+      "text": "Sustained UART capture seen by an external archiving client: no silent loss, no duplicate, losses announced, resume at the cursor (issue #2, requirement 8)",
+      "scenarios": [
+        "U8"
+      ]
+    }
+  ],
+  "not_covered": [
+    {
+      "level": "fault_injection",
+      "text": "Resistance to interruptions and faults (USB/power cut, browser/server loss during a write): NOT qualified"
+    },
+    {
+      "level": "endurance",
+      "text": "Endurance and statistical repeatability beyond the planned passes: NOT qualified"
+    },
+    {
+      "level": "consumer_firmware",
+      "text": "Behaviour of a consumer firmware, application boot (boot_verified is always false by design), OTA: out of the bench scope"
+    },
+    {
+      "level": "certification",
+      "text": "External certification: not engaged"
+    },
+    {
+      "level": "global_erase_integrity",
+      "text": "R4 control windows detect a change only where they look; the integrity of the whole flash is NOT demonstrated"
+    },
+    {
+      "level": "interrupted_write",
+      "text": "A fault during a flash WRITE (cut, unplug, restart) is NOT qualified: it needs its own authorisation, verified backups and a validated recovery procedure"
+    },
+    {
+      "level": "usb_otg",
+      "text": "USB OTG mode is NOT qualified; only USB Serial/JTAG is covered by NUSB-*"
+    },
+    {
+      "level": "ack_loss_injection",
+      "text": "No deterministic ACK / result loss injection exists; loss is observed only through the natural faults of R5-*"
+    },
+    {
+      "level": "background_tab_state",
+      "text": "The background state of the page during U8 is an announced gesture, not a verified condition"
+    },
+    {
+      "level": "deferred_reset_locking",
+      "text": "Locking / concurrency of the deferred reset with other commands is covered by engine tests only"
+    }
+  ]
+}

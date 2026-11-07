@@ -103,6 +103,8 @@ def _run(bench_client, cfg, pytestconfig, test_id, kind, fault, inject):
             wait_until(lambda: not bench_client.device(board_id)["quarantined"], timeout=cfg["operator_timeout_s"], what="local operator recovery")
             out.evidence.append("block lifted only after the operator's local recovery gesture")
         again = bench_client.operation(operation_id)
+        keep = lambda o: {k: o.get(k) for k in ("id", "command", "state", "device", "generation")} | {"error_code": (o.get("error") or {}).get("code")}   # noqa: E731
+        case.write("interrupted-operation.json", {"after_fault": keep(op), "after_recovery": keep(again)})      # the SERVER's own answers, kept raw
         assert again["state"] == op["state"], f"the interrupted operation changed state after recovery ({op['state']} -> {again['state']}): replay?"
         out.evidence.append("the interrupted operation kept its final state after recovery")
         case.open_window("after the interruption and recovery")
