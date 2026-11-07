@@ -132,7 +132,7 @@ def _run(bench_client, cfg, pytestconfig, test_id, kind, fault, inject):
             release_surviving_lease(bench_client, lease_id)
             assert bench_client.device(board_id)["reservation"] is None, "the reservation remains after its explicit release"
             out.evidence.append("the lease survived the serial failure (agent still connected, same generation, same owner, failed operation); released explicitly")
-        out.evidence.append(f"operation {op['state']} (code {(op.get('error') or {}).get('code')}); one submission, never replayed; no reservation remains")
+        out.evidence.append(f"operation {op['state']} (code {(op.get('error') or {}).get('code')}); one submission, never replayed; reservation released")
         if op["state"] == "indeterminate":
             assert state["quarantined"], "an indeterminate operation did not keep the card blocked"
             out.evidence.append("card BLOCKED (quarantined) after reconnection: operator recovery required")
