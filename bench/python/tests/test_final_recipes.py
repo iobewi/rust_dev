@@ -210,3 +210,74 @@ def test_two_boards_is_blocked_without_a_second_real_card(sim, tmp_path, change)
     proc, reports = run_recipe(tmp_path, url, "test_two_boards.py", transport="external_uart", accept_unknown_transport=True, **change)
     status = {k: v["status"] for k, v in reports.items()}
     assert status in ({}, {"M2": "BLOCKED"}) and "BLOCKED" in proc.stdout, proc.stdout[-800:]
+
+
+# --- H10 (requirement 10): LAN HTTP ------------------------------------------------------------------------------------
+def lan_address():
+    import socket
+    probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        probe.connect(("10.255.255.255", 1))
+        address = probe.getsockname()[0]
+    except OSError:
+        return None
+    finally:
+        probe.close()
+    import ipaddress
+    return address if ipaddress.ip_address(address).is_private and not ipaddress.ip_address(address).is_loopback else None
+
+
+@pytest.fixture
+def lan_target():
+    import socket
+    address = lan_address()
+    if address is None:
+        pytest.skip("no private non-loopback address in this environment")
+    holder = socket.socket(); holder.bind((address, 0)); port = holder.getsockname()[1]; holder.close()
+    process = subprocess.Popen([sys.executable, str(BENCH / "tools/lan_http_target.py"), "--bind", address, "--port", str(port)],
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    origin = f"http://{address}:{port}"
+    import urllib.request
+    deadline = time.monotonic() + 10
+    while True:
+        try:
+            urllib.request.urlopen(origin + "/__log", timeout=1).read()
+            break
+        except OSError:
+            assert time.monotonic() < deadline
+            time.sleep(0.1)
+    yield origin
+    process.terminate()
+    process.communicate(timeout=5)
+
+
+def test_lan_http_contract_passes_against_a_simulated_agent_and_a_real_target(sim, tmp_path, monkeypatch, lan_target):
+    monkeypatch.setenv("SIM_HTTP_ORIGINS", lan_target)
+    url, client = sim([[6, 600], [40, 0]], chip="esp32s3")
+    proc, reports = run_recipe(tmp_path, url, "test_lan_http.py", transport="external_uart", accept_unknown_transport=True, lan_http={"origin": lan_target})
+    assert reports["H10"]["status"] == "PASS", proc.stdout[-2000:] + " ".join(reports["H10"]["incidents"])
+    seen = json.loads(next((tmp_path / "evidence").glob("H10-*/lan-observations.json")).read_text())
+    assert [c["name"] for c in seen["cases"]] == ["ok", "redirect", "not_listed", "https", "credentials"]
+    assert sorted(h["path"] for h in seen["target_hits"]) == ["/ok", "/redirect"]
+
+
+@pytest.mark.parametrize("change,why", [({}, "no lan_http.origin"), ({"consent": {"scenarios": []}}, "H10 consent")])
+def test_lan_http_is_blocked_without_a_target_or_consent(sim, tmp_path, change, why):
+    url, _ = sim([], chip="esp32s3")
+    proc, reports = run_recipe(tmp_path, url, "test_lan_http.py", transport="external_uart", accept_unknown_transport=True, **change)
+    assert not reports and why in proc.stdout and not list((tmp_path / "evidence").glob("*/requests.jsonl"))
+
+
+def test_lan_http_blocks_when_the_origin_is_not_listed_by_the_agent_or_the_target_is_unreachable(sim, tmp_path, lan_target):
+    url, _ = sim([], chip="esp32s3")                         # the simulated agent lists no http_origins
+    proc, reports = run_recipe(tmp_path, url, "test_lan_http.py", transport="external_uart", accept_unknown_transport=True, lan_http={"origin": lan_target})
+    assert reports["H10"]["status"] == "BLOCKED" and "http_origins" in " ".join(reports["H10"]["incidents"])
+
+
+@pytest.mark.parametrize("origin", ["http://127.0.0.1:8099", "https://192.168.1.5:8099", "http://8.8.8.8:80", "http://192.168.1.5", "http://192.168.1.5:80/x",
+                                    "http://user@192.168.1.5:80"])
+def test_lan_http_session_refuses_loopback_public_https_or_ambiguous_origins(origin):
+    sys.path.insert(0, str(BENCH / "recipes"))
+    from qualification_campaign.session import SessionError, validate_session
+    with pytest.raises(SessionError):
+        validate_session({**session(), "evidence_root": "/private/e", "lan_http": {"origin": origin}})

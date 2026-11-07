@@ -16,10 +16,10 @@ SCENARIOS = {"Q1", "Q2", "Q3", "C3R-READ", "C3R-RESET", "S3R-RESET", "S3R-BOOT",
              "NUSB-READ", "NUSB-RESET", "T7", "R5", "H10", "U8", "M2"}
 TOP_LEVEL = {"version", "board_id", "chip", "flash_size", "transport", "partition_table_offset",
              "approved_regions", "evidence_root", "operation_timeout_s", "operator_timeout_s",
-             "consent", "q2", "q3", "readonly", "bootloader", "r4", "faults", "second_board", "accept_unknown_transport"}
+             "consent", "q2", "q3", "readonly", "bootloader", "r4", "faults", "second_board", "lan_http", "accept_unknown_transport"}
 DEFAULTS = {"operation_timeout_s": 120, "operator_timeout_s": 900, "approved_regions": [],
             "consent": {"scenarios": [], "note": ""}, "q2": {}, "q3": {},
-            "readonly": {}, "bootloader": {}, "r4": {}, "faults": {}, "second_board": {}, "accept_unknown_transport": False}
+            "readonly": {}, "bootloader": {}, "r4": {}, "faults": {}, "second_board": {}, "lan_http": {}, "accept_unknown_transport": False}
 Q2_DEFAULTS = {"trigger_pattern_b64": "SU9CRVdJLVEyLU5FVkVSLVNUSU1VTEFURUQ=",  # inert, never stimulated
                "expires_ms": 120000, "reservation_ttl_s": 600}
 Q3_DEFAULTS = {"allow_restart": False, "launcher_pid_file": None, "state_dir": None, "launcher_log": None,
@@ -80,6 +80,7 @@ def validate_session(document):
     cfg["r4"] = validate_r4(cfg["r4"], cfg)
     cfg["faults"] = validate_faults(cfg["faults"], cfg)
     cfg["second_board"] = validate_second_board(cfg["second_board"], cfg)
+    cfg["lan_http"] = validate_lan_http(cfg["lan_http"])
     regions = cfg["approved_regions"]
     if not isinstance(regions, list):
         raise SessionError("approved_regions must be a list")
@@ -159,6 +160,25 @@ def validate_second_board(section, cfg):
     if not isinstance(section.get("board_id"), str) or not section["board_id"] or section["board_id"] == cfg["board_id"]:
         raise SessionError("second_board.board_id must be a non-empty logical id different from board_id")
     return dict(section)
+
+
+def validate_lan_http(section):
+    """H10: ONE private-network HTTP origin of the test target (tools/lan_http_target.py on another LAN machine). Nothing is presumed."""
+    from urllib.parse import urlsplit
+    import ipaddress
+    if not isinstance(section, dict) or section.keys() - {"origin"}:
+        raise SessionError("lan_http accepts only origin")
+    if not section:
+        return {}
+    parts = urlsplit(section.get("origin", "")) if isinstance(section.get("origin"), str) else None
+    try:
+        address = ipaddress.ip_address(parts.hostname) if parts and parts.hostname else None
+    except ValueError:
+        address = None
+    if (not parts or parts.scheme != "http" or address is None or not address.is_private or address.is_loopback or parts.port is None
+            or parts.path not in ("", "/") or parts.username or parts.password or parts.query or parts.fragment):
+        raise SessionError("lan_http.origin must be http://<private LAN IPv4>:<port> (no credentials, path or query; never loopback)")
+    return {"origin": f"http://{parts.hostname}:{parts.port}"}
 
 
 def validate_r4(section, cfg):

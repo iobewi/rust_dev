@@ -8,10 +8,10 @@ import json
 import os
 import struct
 import time
-from aiohttp import ClientSession
+from aiohttp import ClientSession, ClientTimeout
 
 CAPS = ['identify', 'reset', 'partitions', 'flash.read', 'flash.write', 'flash.erase',
-        'uart.write', 'uart.configure', 'console', 'io0', 'boot.download', 'mark', 'trigger']
+        'uart.write', 'uart.configure', 'console', 'io0', 'boot.download', 'mark', 'trigger', 'http.request']
 NATIVE_CAPS = [c for c in CAPS if c not in {'io0', 'boot.download'}]     # a native USB Serial/JTAG card offers neither (SIM_NATIVE=1)
 
 
@@ -68,6 +68,13 @@ class SimDevice:
             if not rows:
                 raise SimFailure('partition_table_invalid')
             return {'partitions': rows, 'simulated': True}
+        if name == 'http.request':
+            # SIMULATES the page agent contract: no credentials, no referrer, redirects refused, opaque result. Real network access to the SIM_HTTP_ORIGINS target.
+            async with ClientSession() as http:
+                async with http.get(args['url'], allow_redirects=False, headers={'Cache-Control': 'no-store'}, timeout=ClientTimeout(total=5)) as response:
+                    if 300 <= response.status < 400:
+                        raise SimFailure('redirect_refused')
+            return {'response': 'opaque', 'http_status': 'unknown', 'verified': False, 'simulated': True}
         if name == 'boot.download':
             return {'download_mode_requested': True, 'method': 'en+io0', 'hold_ms': args['hold_ms'], 'boot_verified': False, 'simulated': True}
         return {'command': name, 'simulated': True}
@@ -103,6 +110,7 @@ async def serve(session, url, token, device_id, grant, script, chip, sim, connec
         native = os.environ.get('SIM_NATIVE') == '1'
         await ws.send_json({'type': 'register', 'device': {'id': device_id, 'chip': chip, 'flash_size': len(sim.flash),
                             'capabilities': NATIVE_CAPS if native and os.environ.get('SIM_NATIVE_WITH_IO0') != '1' else CAPS,
+                            'http_origins': [o for o in os.environ.get('SIM_HTTP_ORIGINS', '').split(',') if o],
                             **({'provenance': {'usb_vid': 0x303a, 'usb_pid': 0x1001, 'transport': 'usb_serial_jtag',
                                                'transport_basis': 'inferred_from_webserial_vid_pid'}} if native else {})}})
         registered = await ws.receive_json()
