@@ -110,3 +110,49 @@ def test_nusb_reset_needs_its_opt_in(sim, tmp_path, monkeypatch):
     url, _ = prepared(sim, monkeypatch, {"SIM_NATIVE": "1"})
     proc, reports = run_recipe(tmp_path, url, "test_native_usb.py::test_nusb2_reset_and_reenumeration")
     assert not reports and "--qual-allow-reset not given" in proc.stdout
+
+
+# --- T7 (requirement 7) -----------------------------------------------------------------------------------------------
+def test_trigger_fires_once_and_rearm_cancels_the_pending_action(sim, tmp_path, monkeypatch):
+    url, client = sim([[6, 600], [50, 0]], chip="esp32s3")
+    proc, reports = run_recipe(tmp_path, url, "test_triggers.py", transport="external_uart", accept_unknown_transport=True)
+    assert reports["T7"]["status"] == "PASS", proc.stdout[-2000:] + " ".join(reports["T7"]["incidents"])
+    seen = json.loads(next((tmp_path / "evidence").glob("T7-*/trigger-observations.json")).read_text())
+    fire, cancel = seen["cases"]
+    assert (len(fire["banners"]), len(fire["triggers"]), len(cancel["banners"]), len(cancel["triggers"])) == (2, 1, 1, 1)
+    assert client.device("board")["reservation"] is None and client.device("board")["privileged_seconds"] == 0
+
+
+def test_trigger_recipe_needs_its_consent(sim, tmp_path):
+    url, _ = sim([], chip="esp32s3")
+    proc, reports = run_recipe(tmp_path, url, "test_triggers.py", consent={"scenarios": []})
+    assert not reports and "BLOCKED" in proc.stdout and not list((tmp_path / "evidence").glob("*/requests.jsonl"))
+
+
+# --- R5 (requirements 5 and 6): interruption during a read ------------------------------------------------------------
+FAULT = {"read": {"address": 0x100000, "size": 0x100000, "interrupt_after_s": 1}}
+
+
+def test_interrupted_read_is_never_replayed_keeps_the_block_and_needs_the_operators_recovery(sim, tmp_path, monkeypatch):
+    monkeypatch.setenv("SIM_DROP_DURING_READ", "1")
+    url, client = sim([[8, "recover"]], chip="esp32s3")
+    proc, reports = run_recipe(tmp_path, url, "test_interruption.py::test_r5_reload", transport="external_uart", accept_unknown_transport=True, faults=FAULT)
+    assert reports["R5-RELOAD"]["status"] == "PASS", proc.stdout[-2500:] + " ".join(reports["R5-RELOAD"]["incidents"])
+    seen = json.loads(next((tmp_path / "evidence").glob("R5-RELOAD-*/interruption.json")).read_text())
+    assert seen["state"] == "indeterminate" and seen["quarantined_after_reconnect"] is True and seen["submissions"] == 1
+    assert any("BLOCKED" in e for e in reports["R5-RELOAD"]["evidence"]) and any("only after the operator" in e for e in reports["R5-RELOAD"]["evidence"])
+
+
+def test_a_read_that_completes_before_the_fault_is_blocked_not_passed(sim, tmp_path):
+    url, _ = sim([], chip="esp32s3")                                   # nothing interrupts the read
+    proc, reports = run_recipe(tmp_path, url, "test_interruption.py::test_r5_reload", transport="external_uart", accept_unknown_transport=True, faults=FAULT)
+    assert reports["R5-RELOAD"]["status"] == "BLOCKED" and "completed before the fault" in " ".join(reports["R5-RELOAD"]["incidents"]), proc.stdout[-1500:]
+
+
+@pytest.mark.parametrize("selector,change", [("test_r5_reload", {"consent": {"scenarios": []}}), ("test_r5_unplug", {"faults": {}}),
+                                             ("test_r5_restart", {})])
+def test_r5_is_blocked_before_any_command(sim, tmp_path, selector, change):
+    url, _ = sim([], chip="esp32s3")
+    proc, reports = run_recipe(tmp_path, url, f"test_interruption.py::{selector}", transport="external_uart", accept_unknown_transport=True,
+                               **({"faults": FAULT} if "faults" not in change else {}), **change)
+    assert not reports and "BLOCKED" in proc.stdout and not list((tmp_path / "evidence").glob("*/requests.jsonl")), proc.stdout[-800:]

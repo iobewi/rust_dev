@@ -16,10 +16,10 @@ SCENARIOS = {"Q1", "Q2", "Q3", "C3R-READ", "C3R-RESET", "S3R-RESET", "S3R-BOOT",
              "NUSB-READ", "NUSB-RESET", "T7", "R5", "H10", "U8", "M2"}
 TOP_LEVEL = {"version", "board_id", "chip", "flash_size", "transport", "partition_table_offset",
              "approved_regions", "evidence_root", "operation_timeout_s", "operator_timeout_s",
-             "consent", "q2", "q3", "readonly", "bootloader", "r4", "accept_unknown_transport"}
+             "consent", "q2", "q3", "readonly", "bootloader", "r4", "faults", "accept_unknown_transport"}
 DEFAULTS = {"operation_timeout_s": 120, "operator_timeout_s": 900, "approved_regions": [],
             "consent": {"scenarios": [], "note": ""}, "q2": {}, "q3": {},
-            "readonly": {}, "bootloader": {}, "r4": {}, "accept_unknown_transport": False}
+            "readonly": {}, "bootloader": {}, "r4": {}, "faults": {}, "accept_unknown_transport": False}
 Q2_DEFAULTS = {"trigger_pattern_b64": "SU9CRVdJLVEyLU5FVkVSLVNUSU1VTEFURUQ=",  # inert, never stimulated
                "expires_ms": 120000, "reservation_ttl_s": 600}
 Q3_DEFAULTS = {"allow_restart": False, "launcher_pid_file": None, "state_dir": None, "launcher_log": None,
@@ -78,6 +78,7 @@ def validate_session(document):
     cfg["readonly"] = validate_readonly(cfg["readonly"], cfg)
     cfg["bootloader"] = validate_bootloader(cfg["bootloader"])
     cfg["r4"] = validate_r4(cfg["r4"], cfg)
+    cfg["faults"] = validate_faults(cfg["faults"], cfg)
     regions = cfg["approved_regions"]
     if not isinstance(regions, list):
         raise SessionError("approved_regions must be a list")
@@ -131,6 +132,21 @@ def validate_bootloader(section):
     if type(out["marker_timeout_s"]) is not int or not 1 <= out["marker_timeout_s"] <= 300:
         raise SessionError("bootloader.marker_timeout_s must be 1..300 seconds")
     return out
+
+
+def validate_faults(section, cfg):
+    """R5 parameters: ONE long READ-ONLY range during which the operator (or the launcher) injects the fault. Nothing is presumed."""
+    if not isinstance(section, dict) or section.keys() - {"read"}:
+        raise SessionError("faults accepts only 'read'")
+    item = section.get("read")
+    if item is None:
+        return {}
+    if (not isinstance(item, dict) or set(item) != {"address", "size", "interrupt_after_s"} or type(item["address"]) is not int
+            or type(item["size"]) is not int or type(item["interrupt_after_s"]) is not int or item["address"] < 0
+            or not 4096 <= item["size"] <= 8 * 1024 * 1024 or not 1 <= item["interrupt_after_s"] <= 120
+            or item["address"] + item["size"] > cfg["flash_size"]):
+        raise SessionError("faults.read: {address, size 4 KiB..8 MiB inside the flash, interrupt_after_s 1..120}")
+    return {"read": item}
 
 
 def validate_r4(section, cfg):

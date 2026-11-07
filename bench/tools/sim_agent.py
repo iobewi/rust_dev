@@ -26,7 +26,7 @@ class SimDevice:
         self.chip = chip
         self.flash = bytearray(b'\xff') * capacity
         self.writes = 0
-        self.trigger, self.trigger_id = None, 0
+        self.trigger, self.trigger_id, self.dropped = None, 0, False
 
     async def execute(self, name, args, download, upload):
         if name == 'identify':
@@ -84,17 +84,17 @@ async def run(url, token, device_id, grant=0, stop=None, script=(), chip='esp32s
     USB device (the agent disconnects and registers again with a new generation)."""
     sim = SimDevice(chip=chip)
     async with ClientSession(headers={'Authorization': 'Bearer ' + token}) as session:
-        first = True
+        first, connection = True, 0
         while True:
-            again = await serve(session, url, token, device_id, grant if first else 0, script if first else (), chip, sim)
-            first = False
+            again = await serve(session, url, token, device_id, grant if first else 0, script, chip, sim, connection)
+            first, connection = False, connection + 1
             if not again:
                 break
             await asyncio.sleep(0.5)
     return sim
 
 
-async def serve(session, url, token, device_id, grant, script, chip, sim):
+async def serve(session, url, token, device_id, grant, script, chip, sim, connection=0):
     """One agent connection. Returns True when the card re-enumerated (the caller reconnects)."""
     reenumerate = False
     async with session.ws_connect(url + '/agent/v1/ws') as ws:
@@ -137,8 +137,10 @@ async def serve(session, url, token, device_id, grant, script, chip, sim):
         async def operator():
             start = time.monotonic()
             for delay, seconds in script:
+                if (seconds == 'recover') != (connection > 0):
+                    continue                                          # numeric grants: first connection; 'recover' gestures: after a reconnection
                 await asyncio.sleep(max(0, start + delay - time.monotonic()))
-                await event('grant', seconds=seconds)
+                await (event('recover') if seconds == 'recover' else event('grant', seconds=seconds))
         gestures = asyncio.create_task(operator())
         pending = {}
 
@@ -176,6 +178,11 @@ async def serve(session, url, token, device_id, grant, script, chip, sim):
                         result = {'armed': sim.trigger is not None, 'simulated': True}
                     else:
                         result = await sim.execute(command, args, download, upload)
+                    if command == 'flash.read' and os.environ.get('SIM_DROP_DURING_READ') == '1' and not sim.dropped:
+                        sim.dropped = True                        # the page/agent vanishes mid-operation: no result is ever reported
+                        await asyncio.sleep(1)
+                        reenumerate = True
+                        break
                     if command == 'reset' and os.environ.get('SIM_REENUMERATE') == '1':
                         reenumerate = True                        # no banner here: it would appear after the USB device returned
                     elif command == 'reset':
