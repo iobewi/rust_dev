@@ -120,6 +120,7 @@ test(`local browser session and direct control over ${usbJtag?'USB Serial/JTAG':
   assert.equal(await page.locator('.device-panel #usb-toggle').isVisible(),true);
   await page.click('#usb-toggle');await page.waitForFunction(()=>document.querySelector('#usb-state').textContent==='connecté'||!document.querySelector('#client-state').textContent.startsWith('Connectez un port série'));
   assert.equal(await page.textContent('#usb-state'),'connecté',JSON.stringify({feedback:await page.textContent('#client-state'),errors}));
+  assert.equal(await page.title(),'board · IOBEWI');
   assert.equal(await page.locator('#card-details').isVisible(),true);
   const usbTop=await page.locator('.usb-group').evaluate(node=>node.getBoundingClientRect().top), cardTop=await page.locator('#status-card').evaluate(node=>node.getBoundingClientRect().top);
   assert.ok(usbTop<cardTop);
@@ -349,6 +350,7 @@ test(`local browser session and direct control over ${usbJtag?'USB Serial/JTAG':
   const closesBefore=await page.evaluate(()=>window.__serialPort.closeCalls||0);
   await page.click('#usb-toggle');
   await page.waitForFunction(()=>document.querySelector('#usb-state').textContent==='non connecté'&&document.querySelector('#usb-toggle').textContent==='Connecter');
+  assert.equal(await page.title(),'board · IOBEWI');
   assert.equal(await page.locator('#card-details').isVisible(),false);
   assert.equal(await page.locator('#status-label-card').isVisible(),false);
   const closed=await page.evaluate(()=>({readable:window.__serialPort.readable,writable:window.__serialPort.writable,closes:window.__serialPort.closeCalls}));
@@ -371,6 +373,7 @@ test(`local browser session and direct control over ${usbJtag?'USB Serial/JTAG':
   await page.click('#usb-toggle');
   await page.waitForFunction(()=>document.querySelector('#usb-state').textContent==='connecté'&&!document.querySelector('#usb-toggle').disabled);
   assert.equal(await page.textContent('#usb-toggle'),'Déconnecter');assert.equal(await page.evaluate(()=>window.__chooserCount),3);
+  assert.equal(await page.title(),'board · IOBEWI');
   assert.equal(await page.evaluate(()=>window.__serialPort===window.__replacementPort),true);
   assert.equal(await page.textContent('#interface-info'),usbJtag?'UART externe':'USB Serial/JTAG');
   assert.equal(await page.textContent('#reset-device'),usbJtag?'Reset EN':'Reset USB');
