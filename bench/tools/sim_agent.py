@@ -199,6 +199,10 @@ async def serve(session, url, token, device_id, grant, script, chip, sim, connec
                         result = {'armed': sim.trigger is not None, 'simulated': True}
                     else:
                         result = await sim.execute(command, args, download, upload)
+                    if command == 'flash.read' and os.environ.get('SIM_SERIAL_FAIL_DURING_READ') == '1':
+                        await asyncio.sleep(2)                    # the serial port vanishes under the read; the browser agent stays connected
+                        err = RuntimeError('serial_disconnected'); err.code = 'serial_disconnected'
+                        raise err
                     if command == 'flash.read' and os.environ.get('SIM_DROP_DURING_READ') == '1' and not sim.dropped:
                         sim.dropped = True                        # the page/agent vanishes mid-operation: no result is ever reported
                         await asyncio.sleep(1)

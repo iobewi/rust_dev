@@ -22,7 +22,9 @@ import time
 
 import pytest
 
-from iobewi_bench.client import BenchError, ContinuityError, PendingOperation
+from urllib.parse import quote
+
+from iobewi_bench.client import BenchError, BenchHTTPError, ContinuityError, PendingOperation
 
 from . import restart as real_ops
 from .harness import Blocked, Outcome, abandon_stale, make_campaign, operator_gesture, recorded, seal, wait_until
@@ -33,6 +35,34 @@ from .session import build_manifest
 pytestmark = pytest.mark.bench
 LIMITS = ("One read-only operation interrupted once; the fault is injected by an operator gesture or a launcher signal, its exact timing "
           "inside the operation is not controlled; writes are not covered; one run")
+
+
+def judge_lease_after_fault(*, op, state, generation_before, owner):
+    """What the reservation may look like after the fault. Returns "released" or "held_by_owner"; anything else raises AssertionError.
+
+    Contract (docs/api.md, server `disconnect`): a lease is released when the AGENT disconnects, not when its serial port fails. After a
+    definitive `serial_disconnected` failure with the browser agent still connected, the lease legitimately remains. It is accepted ONLY if
+    the operation is definitively failed (never indeterminate/completed), the same agent generation is still connected and not quarantined,
+    and the lease belongs to the identity running this recipe. The caller then releases it explicitly.
+    """
+    reservation = state["reservation"]
+    if reservation is None:
+        return "released"
+    assert op is not None and op["state"] == "failed" and (op.get("error") or {}).get("code"), \
+        "a reservation survived an operation that is not definitively failed"
+    assert state["connected"] and state["generation"] == generation_before and not state["quarantined"], \
+        "a reservation survived although the agent generation changed, the card is disconnected or quarantined"
+    assert reservation.get("owner") == owner, "the surviving reservation belongs to another identity"
+    return "held_by_owner"
+
+
+def release_surviving_lease(client, lease_id):
+    """The explicit release the abandoned handle can no longer do (same DELETE as Board.close; an expired lease is already released)."""
+    try:
+        client._request("DELETE", "/api/v1/leases/" + quote(lease_id, safe=""))
+    except BenchHTTPError as error:
+        if error.code != "lease_expired":
+            raise
 
 
 def _setup(cfg, pytestconfig, *, restart):
@@ -55,6 +85,7 @@ def _run(bench_client, cfg, pytestconfig, test_id, kind, fault, inject):
         record_transport(case, bench_client, cfg, out)
         board_id = cfg["board_id"]
         board = case.reserve(ttl=600)
+        lease_id, generation_before = board.lease_id, board.generation
         result = {}
 
         def long_read():
@@ -94,8 +125,14 @@ def _run(bench_client, cfg, pytestconfig, test_id, kind, fault, inject):
         case.write("interruption.json", record)
         assert op is not None and op["state"] != "completed", "the interrupted read is reported completed"
         assert submissions == 1, f"{submissions} operations were submitted: the read was replayed or another command ran"
-        assert state["reservation"] is None, "the reservation survived the fault"
-        out.evidence.append(f"operation {op['state']} (code {(op.get('error') or {}).get('code')}); one submission, never replayed; reservation released")
+        lease = judge_lease_after_fault(op=op, state=state, generation_before=generation_before, owner=bench_client.identity()["id"])
+        record["reservation_judgement"] = lease
+        case.write("interruption.json", record)
+        if lease == "held_by_owner":
+            release_surviving_lease(bench_client, lease_id)
+            assert bench_client.device(board_id)["reservation"] is None, "the reservation remains after its explicit release"
+            out.evidence.append("the lease survived the serial failure (agent still connected, same generation, same owner, failed operation); released explicitly")
+        out.evidence.append(f"operation {op['state']} (code {(op.get('error') or {}).get('code')}); one submission, never replayed; no reservation remains")
         if op["state"] == "indeterminate":
             assert state["quarantined"], "an indeterminate operation did not keep the card blocked"
             out.evidence.append("card BLOCKED (quarantined) after reconnection: operator recovery required")

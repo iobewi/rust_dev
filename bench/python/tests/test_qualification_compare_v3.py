@@ -100,11 +100,12 @@ def test_reenumeration_is_consistent_with_the_generation_and_the_windows(tmp_pat
 SPEC_R5 = V3["scenarios"]["R5-RELOAD"]["interruption"]
 
 
-def r5_files(state="indeterminate", quarantined=True, after_state=None, submissions=1, end_quarantine=False, evidence=True):
+def r5_files(state="indeterminate", quarantined=True, after_state=None, submissions=1, end_quarantine=False, evidence=True, held=None, end_reservation=None):
     keep = lambda s: {"id": "op0", "command": "flash.read", "state": s}            # noqa: E731
-    files = {"interruption.json": {"state": state, "quarantined_after_reconnect": quarantined, "submissions": submissions},
+    files = {"interruption.json": {"state": state, "quarantined_after_reconnect": quarantined, "submissions": submissions,
+                                   **({"reservation_after": {"owner": "claude"}, "reservation_judgement": held} if held is not None else {})},
              "interrupted-operation.json": {"after_fault": keep(state), "after_recovery": keep(after_state or state)},
-             "after.json": {"device": {"quarantined": end_quarantine}},
+             "after.json": {"device": {"quarantined": end_quarantine, "reservation": end_reservation}},
              "report.json": {"tests": [{"id": "R5-RELOAD", "evidence": ["the card BLOCKED...", "block lifted only after the operator's local recovery gesture"] if evidence else []}]}}
     return files
 
@@ -119,6 +120,11 @@ def r5_files(state="indeterminate", quarantined=True, after_state=None, submissi
     ("state changed after recovery", {"after_state": "completed"}, ops(("flash.read", "running", "board-0")), False),
     ("still quarantined at the end", {"end_quarantine": True}, ops(("flash.read", "running", "board-0")), False),
     ("no operator recovery evidence", {"evidence": False}, ops(("flash.read", "running", "board-0")), False),
+    # R5-UNPLUG: a lease may survive a SERIAL failure (agent still connected), only if judged so, failed, and gone at the end
+    ("lease survived a failed op, judged held_by_owner, released", {"state": "failed", "quarantined": False, "evidence": False, "held": "held_by_owner"}, ops(("flash.read", "running", "board-0")), True),
+    ("lease survived without the judgement", {"state": "failed", "quarantined": False, "evidence": False, "held": "released"}, ops(("flash.read", "running", "board-0")), False),
+    ("lease survived an indeterminate op", {"held": "held_by_owner"}, ops(("flash.read", "running", "board-0")), False),
+    ("lease still there at the end", {"state": "failed", "quarantined": False, "evidence": False, "held": "held_by_owner", "end_reservation": {"owner": "claude"}}, ops(("flash.read", "running", "board-0")), False),
 ])
 def test_interruption(tmp_path, label, kwargs, operations, ok):
     run = run_dir(tmp_path, r5_files(**kwargs))
