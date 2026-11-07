@@ -769,6 +769,12 @@ def interruption_checks(run, spec, ops):
         problems.append("an indeterminate operation did not keep the card blocked after reconnection")
     if after.get("quarantined"):
         problems.append("the card is still quarantined at the end (no operator recovery observed)")
+    if seen.get("reservation_after") is not None:
+        # a lease may outlive a SERIAL failure only (agent still connected); it must be judged so, belong to a definitively failed operation and be gone at the end
+        if seen.get("reservation_judgement") != "held_by_owner" or fault.get("state") != "failed":
+            problems.append("a reservation survived the fault without the held_by_owner judgement on a definitively failed operation")
+    if after.get("reservation") is not None:
+        problems.append("a reservation remains at the end of the run")
     if fault.get("state") == "indeterminate" and not has_evidence(lines_of(run), r"block lifted only after the operator"):
         problems.append("no recovery-by-the-operator evidence for an indeterminate operation")
     _check(out, "interruption_consistent", problems)

@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from test_c3_read_only import base, sim, table_image                      # noqa: E402,F401  (sim is a fixture)
 
 BENCH = Path(__file__).resolve().parents[2]
@@ -141,6 +142,16 @@ def test_interrupted_read_is_never_replayed_keeps_the_block_and_needs_the_operat
     seen = json.loads(next((tmp_path / "evidence").glob("R5-RELOAD-*/interruption.json")).read_text())
     assert seen["state"] == "indeterminate" and seen["quarantined_after_reconnect"] is True and seen["submissions"] == 1
     assert any("BLOCKED" in e for e in reports["R5-RELOAD"]["evidence"]) and any("only after the operator" in e for e in reports["R5-RELOAD"]["evidence"])
+
+
+def test_unplug_with_the_agent_still_connected_keeps_the_lease_which_is_released_explicitly(sim, tmp_path, monkeypatch):
+    monkeypatch.setenv("SIM_SERIAL_FAIL_DURING_READ", "1")
+    url, client = sim([], chip="esp32s3")
+    proc, reports = run_recipe(tmp_path, url, "test_interruption.py::test_r5_unplug", transport="external_uart", accept_unknown_transport=True, faults=FAULT)
+    assert reports["R5-UNPLUG"]["status"] == "PASS", proc.stdout[-2500:] + " ".join(reports["R5-UNPLUG"]["incidents"])
+    seen = json.loads(next((tmp_path / "evidence").glob("R5-UNPLUG-*/interruption.json")).read_text())
+    assert seen["state"] == "failed" and seen["reservation_judgement"] == "held_by_owner" and seen["submissions"] == 1
+    assert client.device("board")["reservation"] is None and not client.device("board")["quarantined"]
 
 
 def test_a_read_that_completes_before_the_fault_is_blocked_not_passed(sim, tmp_path):
@@ -329,3 +340,23 @@ def test_capture_session_is_validated(capture):
     from qualification_campaign.session import SessionError, validate_session
     with pytest.raises(SessionError):
         validate_session({**session(), "evidence_root": "/private/e", "capture": capture})
+
+
+# --- R5-UNPLUG lease judgement (pure) ---------------------------------------------------------------------------------
+def _judge(**change):
+    from recipes.qualification_campaign.test_interruption import judge_lease_after_fault
+    args = {"op": {"state": "failed", "error": {"code": "serial_disconnected"}},
+            "state": {"reservation": {"owner": "claude"}, "connected": True, "generation": "g1", "quarantined": False},
+            "generation_before": "g1", "owner": "claude"}
+    for key, value in change.items():
+        args[key] = {**args[key], **value} if isinstance(value, dict) and key in ("op", "state") else value
+    return judge_lease_after_fault(**args)
+
+
+def test_lease_judgement_accepts_only_the_exact_surviving_case():
+    assert _judge() == "held_by_owner"
+    assert _judge(state={"reservation": None}) == "released"
+    for bad in ({"op": {"state": "indeterminate"}}, {"op": {"state": "completed"}}, {"op": {"error": None}}, {"state": {"generation": "g2"}},
+                {"state": {"connected": False}}, {"state": {"quarantined": True}}, {"owner": "someone-else"}):
+        with pytest.raises(AssertionError):
+            _judge(**bad)
