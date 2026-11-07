@@ -39,6 +39,7 @@ def test_s3r1_real_evidence_satisfies_the_raw_correlation(sim_s3, tmp_path):
     judge(tmp_path, "S3R-1")
 
 
+@pytest.mark.slow_integration
 def test_s3r2_real_evidence_satisfies_the_raw_correlation(sim_s3, tmp_path):
     proc, reports, _ = s3.run_boot(sim_s3, tmp_path, script=[(4, 15)])
     assert reports["S3R-2"]["status"] == "PASS", proc.stdout[-800:]
@@ -52,6 +53,7 @@ def test_s3r3_real_evidence_satisfies_the_raw_correlation(sim_issue2, tmp_path):
     judge(tmp_path, "S3R-3")
 
 
+@pytest.mark.slow_integration
 def test_r4_real_evidence_satisfies_the_raw_correlation(sim_issue2, tmp_path):
     url, _ = issue2.prepared(sim_issue2)
     proc, reports = issue2.run(tmp_path, url, "test_r4_multi_image.py", issue2.R4, "--bench-allow-destructive")

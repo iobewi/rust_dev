@@ -165,6 +165,7 @@ def test_read_only_recipes_pass_against_a_simulated_card_with_one_valid_table(si
     assert client.device("board")["reservation"] is None
 
 
+@pytest.mark.slow_integration
 def test_no_valid_table_or_two_valid_tables_are_blocked_not_failed_or_passed(sim, tmp_path):
     url, client = prepare(sim, [])
     run, reports = run_recipe(tmp_path, url, "test_c3_read_only.py::test_c3r2_partition_table")
@@ -419,6 +420,7 @@ def test_a_console_that_cannot_be_restored_is_reported_without_masking_the_first
     assert "left in the ROM loader" in out.restoration and any("console return failed" in i for i in out.incidents)
 
 
+@pytest.mark.slow_integration
 def test_blocked_table_probe_returns_the_simulated_card_to_the_console(sim, tmp_path):
     for name, tables in (("zero", []), ("two", [(0x8000, [("a", 0x20000, 0x1000)]), (0x10000, [("b", 0x30000, 0x1000)])])):
         url, client = prepare(sim, tables)

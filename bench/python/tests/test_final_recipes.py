@@ -114,6 +114,7 @@ def test_nusb_reset_needs_its_opt_in(sim, tmp_path, monkeypatch):
 
 
 # --- T7 (requirement 7) -----------------------------------------------------------------------------------------------
+@pytest.mark.slow_integration
 def test_trigger_fires_once_and_rearm_cancels_the_pending_action(sim, tmp_path, monkeypatch):
     url, client = sim([[6, 600], [50, 0]], chip="esp32s3")
     proc, reports = run_recipe(tmp_path, url, "test_triggers.py", transport="external_uart", accept_unknown_transport=True)
@@ -134,6 +135,7 @@ def test_trigger_recipe_needs_its_consent(sim, tmp_path):
 FAULT = {"read": {"address": 0x100000, "size": 0x100000, "interrupt_after_s": 1}}
 
 
+@pytest.mark.slow_integration
 def test_interrupted_read_is_never_replayed_keeps_the_block_and_needs_the_operators_recovery(sim, tmp_path, monkeypatch):
     monkeypatch.setenv("SIM_DROP_DURING_READ", "1")
     url, client = sim([[8, "recover"]], chip="esp32s3")
@@ -170,6 +172,7 @@ def test_r5_is_blocked_before_any_command(sim, tmp_path, selector, change):
 
 
 # --- G9 (requirement 9): reservation expiry ---------------------------------------------------------------------------
+@pytest.mark.slow_integration
 def test_reservation_expires_by_itself_and_the_old_handle_is_refused(sim, tmp_path):
     url, client = sim([], chip="esp32s3")
     proc, reports = run_recipe(tmp_path, url, "test_reservation_expiry.py", transport="external_uart", accept_unknown_transport=True)
@@ -262,6 +265,7 @@ def lan_target():
     process.communicate(timeout=5)
 
 
+@pytest.mark.slow_integration
 def test_lan_http_contract_passes_against_a_simulated_agent_and_a_real_target(sim, tmp_path, monkeypatch, lan_target):
     monkeypatch.setenv("SIM_HTTP_ORIGINS", lan_target)
     url, client = sim([[6, 600], [40, 0]], chip="esp32s3")
@@ -298,6 +302,7 @@ def test_lan_http_session_refuses_loopback_public_https_or_ambiguous_origins(ori
 CAPTURE = {"duration_s": 8, "min_bytes": 20000, "resume_every_s": 3, "max_flagged_loss": 0}
 
 
+@pytest.mark.slow_integration
 def test_capture_passes_with_a_sustained_source_and_resumes_without_gap(sim, tmp_path, monkeypatch):
     monkeypatch.setenv("SIM_UART_RATE", "50:512")
     url, _ = sim([], chip="esp32s3")
@@ -309,6 +314,7 @@ def test_capture_passes_with_a_sustained_source_and_resumes_without_gap(sim, tmp
     assert [r["source_seq"] for r in index] == sorted({r["source_seq"] for r in index}), "a resume duplicated or reordered events"
 
 
+@pytest.mark.slow_integration
 def test_capture_reports_a_flagged_loss_as_a_failure_never_hides_it(sim, tmp_path, monkeypatch):
     monkeypatch.setenv("SIM_UART_RATE", "50:512:40")             # a chunk lost on the agent side every 40 events
     url, _ = sim([], chip="esp32s3")
@@ -318,6 +324,7 @@ def test_capture_reports_a_flagged_loss_as_a_failure_never_hides_it(sim, tmp_pat
     assert stats["flagged_loss"] >= 1 and stats["silent_loss"] == 0
 
 
+@pytest.mark.slow_integration
 def test_capture_without_a_source_is_blocked_not_passed(sim, tmp_path):
     url, _ = sim([], chip="esp32s3")
     proc, reports = run_recipe(tmp_path, url, "test_uart_capture.py", transport="external_uart", accept_unknown_transport=True, capture=CAPTURE)

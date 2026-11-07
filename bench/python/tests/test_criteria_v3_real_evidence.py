@@ -44,6 +44,7 @@ def test_nusb2_both_outcomes(sim, tmp_path, monkeypatch, reenumerate):
     judge(tmp_path, "NUSB-2")
 
 
+@pytest.mark.slow_integration
 def test_trigger_scenario(sim, tmp_path):
     url, _ = sim([[6, 600], [50, 0]], chip="esp32s3")
     proc, reports = run_recipe(tmp_path, url, "test_triggers.py", transport="external_uart", accept_unknown_transport=True)
@@ -51,6 +52,7 @@ def test_trigger_scenario(sim, tmp_path):
     judge(tmp_path, "T7")
 
 
+@pytest.mark.slow_integration
 def test_interruption_scenario(sim, tmp_path, monkeypatch):
     monkeypatch.setenv("SIM_DROP_DURING_READ", "1")
     url, _ = sim([[8, "recover"]], chip="esp32s3")
@@ -59,6 +61,7 @@ def test_interruption_scenario(sim, tmp_path, monkeypatch):
     judge(tmp_path, "R5-RELOAD")
 
 
+@pytest.mark.slow_integration
 def test_reservation_expiry_scenario(sim, tmp_path):
     url, _ = sim([], chip="esp32s3")
     proc, reports = run_recipe(tmp_path, url, "test_reservation_expiry.py", transport="external_uart", accept_unknown_transport=True)
@@ -73,6 +76,7 @@ def test_two_boards_scenario(sim_two, tmp_path):
     judge(tmp_path, "M2")
 
 
+@pytest.mark.slow_integration
 def test_lan_http_scenario(sim, tmp_path, monkeypatch, lan_target):
     monkeypatch.setenv("SIM_HTTP_ORIGINS", lan_target)
     url, _ = sim([[6, 600], [40, 0]], chip="esp32s3")
@@ -81,6 +85,7 @@ def test_lan_http_scenario(sim, tmp_path, monkeypatch, lan_target):
     judge(tmp_path, "H10")
 
 
+@pytest.mark.slow_integration
 def test_capture_scenario_meets_the_pinned_thresholds(sim, tmp_path, monkeypatch):
     monkeypatch.setenv("SIM_UART_RATE", "100:1024")
     url, _ = sim([], chip="esp32s3")

@@ -89,6 +89,7 @@ def run_boot(sim, tmp_path, *, script=((4, 15), ), allow=True, **change):
     return proc, reports, client
 
 
+@pytest.mark.slow_integration
 def test_boot_download_passes_when_the_marker_follows_the_command(sim, tmp_path):
     proc, reports, client = run_boot(sim, tmp_path, script=[(4, 15)])
     assert proc.returncode == 0 and reports["S3R-2"]["status"] == "PASS", proc.stdout[-1500:]
@@ -98,6 +99,7 @@ def test_boot_download_passes_when_the_marker_follows_the_command(sim, tmp_path)
     assert set(ops) == {"boot.download"}
 
 
+@pytest.mark.slow_integration
 def test_boot_download_without_the_marker_is_a_fail(sim, tmp_path):
     proc, reports, _ = run_boot(sim, tmp_path, script=[(4, 15)], bootloader={"marker": "NEVER-EMITTED", "hold_ms": 100, "marker_timeout_s": 2})
     assert reports["S3R-2"]["status"] == "FAIL" and "marker was not seen" in " ".join(reports["S3R-2"]["incidents"])

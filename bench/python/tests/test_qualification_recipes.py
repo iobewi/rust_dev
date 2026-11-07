@@ -341,6 +341,7 @@ Q2_FLOWS = [("Q2a", "test_q2a_natural_expiry", [[1, 15]], {}),
 
 
 @pytest.mark.parametrize("scenario,test,script,extra", Q2_FLOWS)
+@pytest.mark.slow_integration
 def test_q2_flow_with_scripted_operator_and_simulated_grant_clock(sim, tmp_path, scenario, test, script, extra):
     url, client = sim(script)
     session = {"version": 1, "board_id": "board", "chip": "esp32s3", "flash_size": 4194304, "transport": "unknown",
