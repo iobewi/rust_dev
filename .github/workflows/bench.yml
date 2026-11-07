@@ -1,7 +1,5 @@
 name: Generic hardware bench
 on:
-  push:
-    paths: ['bench/**', '.github/workflows/bench.yml', '.devcontainer/**', 'docker/**', 'AGENTS.md']
   pull_request:
     paths: ['bench/**', '.github/workflows/bench.yml', '.devcontainer/**', 'docker/**', 'AGENTS.md']
 permissions:
