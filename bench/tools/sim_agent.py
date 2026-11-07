@@ -174,6 +174,7 @@ async def serve(session, url, token, device_id, grant, script, chip, sim, connec
                 headers={'X-SHA256': hashlib.sha256(data).hexdigest()}) as r:
                 r.raise_for_status(); return await r.json()
         print(json.dumps({'simulation': True, 'device': device_id, 'connected': True}), flush=True)
+        serial_lost = False
         async for frame in ws:
             if frame.type.name != 'TEXT':
                 break
@@ -183,6 +184,9 @@ async def serve(session, url, token, device_id, grant, script, chip, sim, connec
                 await ws.send_json({'type': 'ready', 'id': m['id']})
             elif m['type'] == 'result_ack':
                 await event('settled', id=m['id'])
+                if serial_lost:
+                    await asyncio.sleep(4)
+                    reenumerate = True
                 if reenumerate:
                     break                                         # the USB device went away: the socket closes, the caller reconnects
             elif m['type'] == 'execute':
@@ -221,6 +225,8 @@ async def serve(session, url, token, device_id, grant, script, chip, sim, connec
                     await ws.send_json({'type': 'result', 'id': op['id'], 'state': 'completed', 'result': result})
                 except Exception as error:
                     await ws.send_json({'type': 'result', 'id': op['id'], 'state': 'failed', 'error': {'code': getattr(error, 'code', 'simulated_failure')}})
+                    if os.environ.get('SIM_SERIAL_FAIL_DURING_READ') == '1' and getattr(error, 'code', '') == 'serial_disconnected':
+                        serial_lost = True                        # the page drops its agent shortly AFTER the result was acknowledged, then re-attaches the board
         gestures.cancel()
         for task in tasks:
             task.cancel()
