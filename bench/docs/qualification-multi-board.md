@@ -35,7 +35,7 @@ réinterprétée comme qualification de cette architecture.
 | M40-7 | Débrancher physiquement A avec accord opérateur | A visible « USB perdu/Reconnexion en attente », B stable | Débranchement physique |
 | M40-8 | Rebrancher A ; vérifier l'identité et la reconnexion de **son port** | Deux agents opérationnels, B non interrompue, aucun rejeu de commande | Rebranchement USB |
 | M40-9 | Demander annulation de reconnexion A, puis vérifier « Déconnectée » | A ne se reconnecte pas spontanément, B inchangée | Aucun attendu |
-| M40-10 | Autoriser puis refuser explicitement un ID non configuré ; tester un port déjà revendiqué | Aucun deuxième propriétaire du même port ou ID ; refus visible | Aucun port supplémentaire ne doit être ouvert |
+| M40-10 | Tenter un ID non autorisé puis un port déjà revendiqué, avec accord opérateur | Aucun deuxième propriétaire du même port ou ID ; refus visible | Aucun port supplémentaire ne doit être ouvert |
 | M40-11 | Avec consentement spécifique, lancer sur A une opération **sans écriture** dont l'exécution est suffisamment longue pour sélectionner B | L'opération conserve ID/génération A et son résultat reste dans l'historique A ; B pilotable indépendamment | Dépend de la commande autorisée |
 | M40-12 | Examiner révocations/grants, réservations, quarantaine et reprise après interruption selon scénario approuvé | Aucune autorité transférée entre A et B, aucun résultat indéterminé déclaré réussi | À autoriser au cas par cas |
 
