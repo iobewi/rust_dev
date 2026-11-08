@@ -218,7 +218,13 @@ test('forget after cancelled physical reconnect closes leftover engine before fr
   manager.lost(ports[0]);
   manager.cancelReconnect('a');
   assert.equal(manager.get('a').status, 'disconnected');
+  const previousAgent = manager.get('a').agent;
+  previousAgent.stopped = true;
+  previousAgent.activity = () => {};
+  previousAgent.awaitingResult = { id: 'late-after-cancel' };
   await manager.forget('a');
+  assert.equal(previousAgent.orphanedOperation, 'late-after-cancel');
+  assert.equal(previousAgent.awaitingResult, null);
   assert.equal(manager.get('a'), null);
   assert.equal(manager.get('b'), b);
   assert.ok(actions.includes('close:a'));
