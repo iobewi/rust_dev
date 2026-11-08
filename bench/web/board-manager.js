@@ -178,4 +178,15 @@ export class BoardManager {
       this.contexts.disconnected(id);
     this.onState(ctx);
   }
+
+  // A cancelled physical reconnect can leave the former engine allocated.
+  // Never free an ID/port for reuse until every owned resource is closed.
+  async forget(id) {
+    const ctx = this.contexts.require(id);
+    if (ctx.status !== 'disconnected') throw new Error('board_not_offline');
+    await this.disconnect(id);
+    const forgotten = this.contexts.forget(id);
+    this.onState(forgotten);
+    return forgotten;
+  }
 }
