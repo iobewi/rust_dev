@@ -1,6 +1,6 @@
 import { HardwareError, diagnostic } from './hardware-errors.js';
 import { WorkWakeLock } from './wake-lock.js';
-import { SerialReconnect } from './serial-reconnect.js';
+import { BoardManager } from './board-manager.js';
 import { AgentJournal } from './agent-journal.js';
 import { Agent } from './agent.js';
 import { EspEngine } from './esp-engine.js';
@@ -10,13 +10,7 @@ import { ConsoleBuffer } from './console-buffer.js';
 import { address, hex, flashPlan } from './ui-model.js';
 
 const $ = id => document.getElementById(id);
-const localCardLabel = value => value.trim() || 'Carte non sélectionnée';
-function syncLocalCardTitle() {
-  const id = localCardLabel($('device-id').value);
-  document.title = id === 'Carte non sélectionnée' ? 'IOBEWI — Banc matériel' : id + ' · IOBEWI';
-}
-$('device-id').addEventListener('change', syncLocalCardTitle);
-syncLocalCardTitle();
+document.title = 'IOBEWI Device Lab';
 const terminal = new Set(['completed', 'failed', 'expired', 'cancelled', 'indeterminate']);
 const safeCommands = new Set(['identify', 'partitions', 'flash.read', 'mark']);
 const actions = { 'try-partition-address': 'partitions', read: 'flash.read', write: 'flash.write', erase: 'flash.erase', send: 'uart.write',
@@ -24,6 +18,9 @@ const actions = { 'try-partition-address': 'partitions', read: 'flash.read', wri
 let operationDevice;
 let usbBusy = false, usbDisconnecting = false;
 let agent, engine, localDevice, portConnected = false, current, working = false;
+let reconnect = { waiting: false, running: false, stop() {}, forget() {} };
+let esptoolDeps;
+const boardBusy = new Map();
 let knownDevices = [], imagePlan = [], artifactList = [], confirmation;
 let format = 'text', paused = false, pausedAt = Infinity, renderPending = false, selectedOperation, lastConsoleKey;
 let streamController, streamGeneration = 0, refreshPromise, sessionOpened = false;
@@ -72,13 +69,68 @@ function logAgent(event) {
 hook('agent-log-clear', () => { if (selected()) journalFor(selected()).rows = []; renderJournal(); });
 hook('agent-log-toggle', () => { const open = $('agent-log').hidden; $('agent-log').hidden = !open; $('agent-log-toggle').textContent = open ? 'Réduire' : 'Développer'; $('agent-log-toggle').setAttribute('aria-expanded', String(open)); });
 const wake = new WorkWakeLock({ wakeLock: navigator.wakeLock, visible: () => document.visibilityState === 'visible', onState: wakeIndicator });
-const activity = () => wake.update(Boolean(portConnected && (engine?.busy || agent?.active || agent?.awaitingResult)));
+const activity = () => wake.update(boards.list().some(ctx => ctx.status === 'connected' &&
+  (ctx.engine?.busy || ctx.agent?.active || ctx.agent?.awaitingResult)));
 document.addEventListener('visibilitychange', () => wake.update(wake.active, true));
-const reconnect = new SerialReconnect({ ports: () => navigator.serial.getPorts(), idle: () => !working && !engine?.busy && !agent?.active && agent?.socket?.readyState !== 1,
-  attach: (port, identity) => attach(port, identity), state: stage => { logAgent({ stage });
-    feedback(stage === 'identity_changed' ? diagnostic('physical_identity_changed') : stage === 'usb_connected' ? 'Carte reconnectée. Aucune opération rejouée.' : 'Reconnexion automatique de la carte…');
+const boards = new BoardManager({
+  allowed: [], ports: () => navigator.serial.getPorts(),
+  createEngine(ctx, port, emit) {
+    const hardware = new EspEngine(port, esptoolDeps, emit,
+      held => localStorage.setItem('bench.v1.hold.' + ctx.id, held ? '1' : '0'));
+    hardware.hold = localStorage.getItem('bench.v1.hold.' + ctx.id) === '1';
+    return hardware;
+  },
+  makeDevice(ctx, identity, hardware) {
+    return { id: ctx.id, ...identity, capabilities: hardware.capabilities(),
+      connected: true, localOnly: true, http_origins: ctx.options.http_origins || [] };
+  },
+  createAgent(ctx, hardware) {
+    return new Agent({ engine: hardware, device: ctx.localDevice, scopedBrowserAgent: true,
+      onLog: event => logAgent({ ...event, device: ctx.id }),
+      onActivity: activity,
+      onState: state => {
+        ctx.generation = ctx.agent?.generation || null;
+        if (selected() === ctx.id) {
+          $('agent-state').textContent = state === 'Agent connected' ? 'Agent connecté' :
+            state.startsWith('Agent disconnected') ? 'Agent déconnecté · aucune commande rejouée' : state;
+          if (!ctx.generation) { confirmation = null; $('program-confirmation').hidden = true; }
+          $('server-state').textContent = ctx.generation ? 'agent connecté' :
+            sessionOpened ? 'client connecté · agent absent' : 'agent non connecté';
+          renderState();
+          if (state === 'Agent connected') closeAccess();
+        }
+        if (state === 'Agent connected' || state === 'Pilotage libéré par l’opérateur')
+          refreshDevices(false).catch(error => feedback(errorText(error)));
+      },
+    });
+  },
+  onEvent(ctx, type, event) {
+    if (type === 'uart') receive(unb64(event.data), ctx.id, event.at);
+    else if (type === 'transport') {
+      append('SYS', event.detail, ctx.id);
+      if (event.detail === 'opening console') logAgent({ stage: 'console', device: ctx.id });
+      if (event.detail === 'opening loader') logAgent({ stage: 'loader', device: ctx.id });
+    } else if (type === 'usb_lost') {
+      append('PERTE', 'Port USB déconnecté', ctx.id);
+      logAgent({ stage: 'usb_lost', device: ctx.id });
+    } else if (type === 'reconnect') {
+      logAgent({ stage: event.stage, device: ctx.id });
+    }
+  },
+  onState(ctx) {
+    if (selected() === ctx.id) syncContext();
+    renderActiveCards();
     renderState();
-  } });
+  },
+});
+function syncContext() {
+  const ctx = boards.get(selected());
+  agent = ctx?.agent || null;
+  engine = ctx?.engine || null;
+  localDevice = ctx?.localDevice || null;
+  portConnected = ctx?.status === 'connected';
+  reconnect = ctx?.reconnect || { waiting: false, running: false, stop() {}, forget() {} };
+}
 
 function renderLocalCardChoices(devices) {
   const select = $('device-id'), previous = select.value;
