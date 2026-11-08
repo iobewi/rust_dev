@@ -69,9 +69,13 @@ export class BoardManager {
       await ctx.engine.close();
       ctx.engine = null;
     }
-    const hardware = this.createEngine(ctx, port, (type, payload) => {
-      // Capture ctx, never refer to the active selection here.
-      ctx.agent?.event(type, payload);
+    // An old engine may deliver a delayed UART/event callback after a
+    // disconnect/reconnect. Never forward it to the new agent or console.
+    let hardware;
+    hardware = this.createEngine(ctx, port, (type, payload) => {
+      if (ctx.engine !== hardware || ctx.status === 'usb_lost' ||
+          ctx.status === 'disconnected') return;
+      if (ctx.status === 'connected') ctx.agent?.event(type, payload);
       this.onEvent(ctx, type, payload);
     });
     ctx.engine = hardware;
