@@ -74,3 +74,21 @@
 .local-card-field select{width:100%;font-family:ui-monospace,SFMono-Regular,Consolas,monospace}
 .local-card-group .hint{margin:5px 0 0}
 .visually-hidden{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+
+/* Device Lab multi-board sidebar: retain original work-area geometry. */
+.app-brand { display:flex; flex-direction:column; gap:0.1rem; min-width:0; }
+.app-brand h1 { margin:0; }
+.app-brand p { margin:0; font-size:0.72rem; color:var(--muted,#8793a4); }
+.active-cards { display:flex; flex-direction:column; gap:0.35rem; min-height:2rem; }
+.active-board { display:flex; align-items:center; gap:0.45rem; border:1px solid var(--border,#46505c); border-radius:0.4rem; padding:0.25rem; }
+.active-board[data-selected="true"] { border-color:var(--accent,#4c9cea); box-shadow:inset 3px 0 0 var(--accent,#4c9cea); }
+.active-board .board-name { flex:1; min-width:0; text-align:left; font-weight:600; overflow-wrap:anywhere; background:transparent; border:0; }
+.active-board .board-chip { font-size:0.7rem; opacity:0.75; }
+.active-board .board-status { font-size:0.72rem; padding:0.3rem 0.45rem; white-space:nowrap; }
+.active-board .board-status[data-state="connected"] { color:var(--ok,#48b78a); }
+.active-board .board-status[data-state="usb_lost"], .active-board .board-status[data-state="reconnecting"] { color:var(--warning,#e5b15e); }
+.active-board .board-status[data-state="disconnected"] { color:var(--muted,#8793a4); }
+.add-card-controls { display:flex; flex-wrap:wrap; gap:0.4rem; align-items:center; margin-top:0.55rem; }
+.add-card-controls select { flex:1; min-width:6rem; }
+.add-card-controls button { flex-shrink:0; }
+@media (max-width: 720px) { .app-brand p { font-size:0.65rem; } }
