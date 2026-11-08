@@ -78,7 +78,8 @@ class UISessions:
             key = secrets.token_urlsafe(32)
             identity = secrets.token_hex(8)
             session = {'client': 'web-' + identity, 'agent': 'browser-' + identity,
-                       'devices': self.devices, 'until': self.clock() + LIFETIME}
+                       'devices': list(self.devices), 'agents': {device: 'browser-' + identity + '-' + secrets.token_hex(8) for device in self.devices},
+                       'until': self.clock() + LIFETIME}
             self.entries[key] = session
         return key, session
 
@@ -86,3 +87,10 @@ class UISessions:
         expired = [session for session in self.entries.values() if session['until'] <= self.clock()]
         self.entries = {key: session for key, session in self.entries.items() if session['until'] > self.clock()}
         return expired
+
+
+def browser_agent(session, device):
+    """Resolve an agent for one authorized board, never from a client-supplied agent ID."""
+    require(isinstance(device, str) and device in session['agents'],
+            'device_forbidden', 'Device not allowed in this browser session', 403)
+    return session['agents'][device]
