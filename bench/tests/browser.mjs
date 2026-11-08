@@ -337,7 +337,11 @@ test(`local browser session and direct control over ${usbJtag?'USB Serial/JTAG':
   assert.equal(await page.locator('#status-permissions').evaluate(node=>node===document.activeElement),true);
   await page.click('#workspace-tab-consoles');
   // Default height follows the viewport; a manual height lasts until Hauteur auto.
+  // Explicitly restore live-follow before resizing: sidebar geometry can shift
+  // the console scroll position without indicating a user-requested history view.
   if (await page.locator('#follow').isVisible()) await page.click('#follow');
+  await page.locator('#uart-log').evaluate(node => { node.scrollTop = node.scrollHeight; });
+  await page.waitForFunction(()=>document.querySelector('#follow').hidden);
   await page.setViewportSize({width:1280,height:1000});
   const tall=await page.locator('#uart-log').evaluate(node=>node.getBoundingClientRect().height);
   await page.setViewportSize({width:1280,height:700});
