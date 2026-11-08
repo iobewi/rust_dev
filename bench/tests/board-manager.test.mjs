@@ -142,3 +142,30 @@ test('physical identity mismatch never substitutes another permitted port', asyn
   assert.equal(manager.get('b').status, 'connected');
   assert.equal(manager.get('b').engine.port, ports[1]);
 });
+
+test('USB loss after a result is pending preserves hold but permits a new generation', async () => {
+  const { manager, ports } = lab();
+  const a = await manager.add('a', ports[0]);
+  await manager.add('b', ports[1]);
+  let activity = 0;
+  a.agent.activity = () => { activity++; };
+  a.agent.awaitingResult = { id: 'old-operation', generation: 'old-generation' };
+  a.engine.persistHold = value => { a.engine.durableHold = value; };
+  a.engine.setHold = value => {
+    a.engine.hold = value;
+    a.engine.persistHold(value);
+  };
+  assert.equal(manager.lost(ports[0]), a);
+  assert.equal(a.engine.hold, true);
+  assert.equal(a.engine.durableHold, true);
+  assert.equal(a.agent.orphanedOperation, 'old-operation');
+  assert.equal(a.agent.awaitingResult, null);
+  assert.equal(activity, 1);
+  assert.equal(a.reconnect.waiting, true);
+  assert.equal(manager.get('b').status, 'connected');
+  await a.reconnect.attempt(a.reconnect.version);
+  assert.equal(a.status, 'connected');
+  assert.equal(a.engine.hold, false); // The fake new engine has no persisted storage.
+  assert.equal(a.engine.port, ports[0]);
+  assert.equal(manager.get('b').engine.port, ports[1]);
+});
