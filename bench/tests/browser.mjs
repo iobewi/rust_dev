@@ -511,6 +511,8 @@ test('one browser window runs two simulated Web Serial contexts and scoped agent
   const errors=[];page.on('pageerror',e=>errors.push(e.message));
   await page.goto(url);
   await page.evaluate(async () => {
+   const session=await fetch('/session/v1/open',{method:'POST'});
+   if(!session.ok)throw Error('browser_session_failed');
    const [{BoardManager},{Agent}]=await Promise.all([import('/board-manager.js'),import('/agent.js')]);
    const ports=[{name:'port-a'}, {name:'port-b'}];
    const manager=new BoardManager({
@@ -583,6 +585,8 @@ test('one browser window runs two simulated Web Serial contexts and scoped agent
   assert.equal(result.resultB.result.board,'board-b');
   assert.equal(result.samePorts,true);
   assert.deepEqual(result.connected,['connected','connected']);
+  await page.waitForFunction(()=>!window.multiLab.manager.get('board').agent.active &&
+    !window.multiLab.manager.get('board').agent.awaitingResult);
   await page.evaluate(async()=>window.multiLab.manager.disconnect('board'));
   await page.waitForFunction(async()=>{
    const devices=(await (await fetch('/api/v1/devices')).json()).devices;
