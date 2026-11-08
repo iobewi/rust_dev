@@ -438,8 +438,10 @@ test(`local browser session and direct control over ${usbJtag?'USB Serial/JTAG':
   await page.locator('#add-device-id').evaluate(node=>{
     const option=document.createElement('option'); option.value='esp32-gehe';option.textContent='esp32-gehe';
     node.append(option);node.value='esp32-gehe';
+    // Execute the malicious selection and click in a single browser task:
+    // periodic inventory refresh must not replace the injected option first.
+    document.querySelector('#add-device').click();
   });
-  await page.click('#add-device');
   await page.waitForFunction(()=>document.querySelector('#client-state').textContent.includes('Identifiant non autorisé'));
   assert.equal(await page.evaluate(()=>window.__chooserCount),chooserBefore);
   assert.equal(await page.locator('[data-device="board"] .board-status').textContent(),'Déconnectée');
