@@ -113,3 +113,32 @@ test('initial invalid ID and duplicate port never create a second engine', async
   await assert.rejects(manager.add('bad', ports[1]), /device_forbidden/);
   assert.deepEqual(actions, before);
 });
+
+test('automatic reconnect only reuses the previously owned port', async () => {
+  const { manager, ports, actions } = lab();
+  await manager.add('a', ports[0]); await manager.add('b', ports[1]);
+  manager.lost(ports[0]);
+  const a = manager.get('a'), b = manager.get('b');
+  // The reconnect scheduler is deliberately bypassed: exercise the same
+  // attempt path with a deterministic version, no physical serial hardware.
+  await a.reconnect.attempt(a.reconnect.version);
+  assert.equal(a.status, 'connected');
+  assert.equal(a.engine.port, ports[0]);
+  assert.equal(b.engine.port, ports[1]);
+  assert.ok(actions.filter(s => s === 'identity:a').length >= 2);
+  assert.equal(actions.filter(s => s === 'identity:b').length, 1);
+  manager.cancelReconnect('a');
+});
+
+test('physical identity mismatch never substitutes another permitted port', async () => {
+  const { manager, ports } = lab();
+  const a = await manager.add('a', ports[0]);
+  await manager.add('b', ports[1]);
+  manager.lost(ports[0]);
+  a.identity.flash_id = 'wrong-card';
+  await a.reconnect.attempt(a.reconnect.version);
+  assert.notEqual(a.status, 'connected');
+  assert.equal(a.reconnect.waiting, false);
+  assert.equal(manager.get('b').status, 'connected');
+  assert.equal(manager.get('b').engine.port, ports[1]);
+});
