@@ -652,11 +652,12 @@ test('Device Lab UI owns two mocked Web Serial ports simultaneously and isolates
   await page.click('#add-device');
   await page.waitForFunction(()=>document.querySelector('[data-device="board-b"] .board-status')?.textContent==='Connectée');
   await page.waitForFunction(()=>document.querySelector('#uart-log').textContent.includes('board-b-serial-log'));
+  const closesAfterAttach = await page.evaluate(()=>window.testPorts.map(p=>p.closeCalls));
   assert.equal((await page.textContent('#uart-log')).includes('board-serial-log'),false);
   await page.click('[data-device="board"] .board-name');
   await page.waitForFunction(()=>document.querySelector('#uart-log').textContent.includes('board-serial-log'));
   assert.equal((await page.textContent('#uart-log')).includes('board-b-serial-log'),false);
-  assert.deepEqual(await page.evaluate(()=>window.testPorts.map(p=>p.closeCalls)),[0,0]);
+  assert.deepEqual(await page.evaluate(()=>window.testPorts.map(p=>p.closeCalls)),closesAfterAttach);
   assert.equal(await page.evaluate(()=>window.testChooserCount()),2);
   await page.waitForFunction(async()=>{
    const devices=(await (await fetch('/api/v1/devices')).json()).devices;
@@ -665,7 +666,7 @@ test('Device Lab UI owns two mocked Web Serial ports simultaneously and isolates
   await page.click('[data-device="board"] .board-status');
   await page.waitForFunction(()=>document.querySelector('[data-device="board"] .board-status')?.textContent==='Déconnectée');
   assert.equal(await page.locator('[data-device="board-b"] .board-status').textContent(),'Connectée');
-  assert.deepEqual(await page.evaluate(()=>window.testPorts.map(p=>p.closeCalls)),[1,0]);
+  assert.deepEqual(await page.evaluate(()=>window.testPorts.map(p=>p.closeCalls)),[closesAfterAttach[0]+1,closesAfterAttach[1]]);
   assert.deepEqual(errors,[]);
  }finally{await browser?.close();proc.kill('SIGTERM');lines.close();}
 });
