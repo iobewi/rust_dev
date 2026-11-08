@@ -186,8 +186,8 @@ function renderActiveCards() {
       const forget = document.createElement('button');
       forget.type = 'button'; forget.className = 'board-forget';
       forget.textContent = 'Retirer'; forget.title = 'Oublier le port dans cette fenêtre sans supprimer les preuves serveur';
-      forget.onclick = safely(() => {
-        boards.contexts.forget(ctx.id);
+      forget.onclick = safely(async () => {
+        await boards.forget(ctx.id);
         renderDevices();
       });
       row.append(forget);
