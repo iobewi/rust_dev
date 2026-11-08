@@ -6,16 +6,18 @@ function lab() {
   const ports = [{ name: 'A' }, { name: 'B' }];
   const actions = [];
   const agents = [];
+  const holds = new Map();
   const manager = new BoardManager({
     allowed: ['a', 'b'], ports: async () => ports,
     createEngine(ctx, port, event) {
       const engine = {
-        port, busy: false, hold: false, mode: 'console',
+        port, busy: false, hold: holds.get(ctx.id) || false, mode: 'console',
         async identity() { actions.push('identity:' + ctx.id); return { chip: 'esp32s3', flash_size: 4194304, flash_id: ctx.id }; },
         async openConsole() { actions.push('open:' + ctx.id); },
         async close() { actions.push('close:' + ctx.id); },
         capabilities() { return ['identify']; },
-        setHold(value) { this.hold = value; },
+        persistHold(value) { holds.set(ctx.id, value); },
+        setHold(value) { this.hold = value; this.persistHold(value); },
         cancelTrigger() { actions.push('disarm:' + ctx.id); },
         emit: event,
       };
@@ -150,14 +152,9 @@ test('USB loss after a result is pending preserves hold but permits a new genera
   let activity = 0;
   a.agent.activity = () => { activity++; };
   a.agent.awaitingResult = { id: 'old-operation', generation: 'old-generation' };
-  a.engine.persistHold = value => { a.engine.durableHold = value; };
-  a.engine.setHold = value => {
-    a.engine.hold = value;
-    a.engine.persistHold(value);
-  };
+
   assert.equal(manager.lost(ports[0]), a);
   assert.equal(a.engine.hold, true);
-  assert.equal(a.engine.durableHold, true);
   assert.equal(a.agent.orphanedOperation, 'old-operation');
   assert.equal(a.agent.awaitingResult, null);
   assert.equal(activity, 1);
@@ -165,7 +162,7 @@ test('USB loss after a result is pending preserves hold but permits a new genera
   assert.equal(manager.get('b').status, 'connected');
   await a.reconnect.attempt(a.reconnect.version);
   assert.equal(a.status, 'connected');
-  assert.equal(a.engine.hold, false); // The fake new engine has no persisted storage.
+  assert.equal(a.engine.hold, true); // The new engine restores the durable hold.
   assert.equal(a.engine.port, ports[0]);
   assert.equal(manager.get('b').engine.port, ports[1]);
 });
