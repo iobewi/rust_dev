@@ -175,7 +175,18 @@ function renderActiveCards() {
       await refreshDevices(false);
       renderDevices();
     });
-    row.append(name, chip, status); body.append(row);
+    row.append(name, chip, status);
+    if (ctx.status === 'disconnected') {
+      const forget = document.createElement('button');
+      forget.type = 'button'; forget.className = 'board-forget';
+      forget.textContent = 'Retirer'; forget.title = 'Oublier le port dans cette fenêtre sans supprimer les preuves serveur';
+      forget.onclick = safely(() => {
+        boards.contexts.forget(ctx.id);
+        renderDevices();
+      });
+      row.append(forget);
+    }
+    body.append(row);
   }
   if (!body.children.length) {
     const empty = document.createElement('p'); empty.className = 'hint';
