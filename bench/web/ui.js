@@ -47,19 +47,29 @@ const hook = (id, fn) => { $(id).onclick = safely(fn); };
 const json = value => { $('result').textContent = JSON.stringify(value, null, 2); };
 $('server-origin').textContent = location.origin;
 
-const journal = new AgentJournal();
-function logAgent(event) {
-  journal.append(event);
-  const body = $('agent-log'), previousScroll = body.scrollTop, follow = body.scrollHeight - body.clientHeight - body.scrollTop < 30;
+const journals = new Map();
+const journalFor = id => {
+  if (!journals.has(id)) journals.set(id, new AgentJournal());
+  return journals.get(id);
+};
+function renderJournal() {
+  const body = $('agent-log'), previousScroll = body.scrollTop;
+  const follow = body.scrollHeight - body.clientHeight - body.scrollTop < 30;
   body.replaceChildren();
-  for (const row of journal.rows) {
+  for (const row of (journals.get(selected())?.rows || [])) {
     const line = document.createElement('div'); line.className = 'journal-row';
     const time = document.createElement('time'); time.textContent = new Date(row.at).toLocaleTimeString('fr-FR', { hour12: false });
     const text = document.createElement('span'); text.textContent = row.text; line.append(time, text); body.append(line);
   }
   body.scrollTop = follow ? body.scrollHeight : previousScroll;
 }
-hook('agent-log-clear', () => { journal.rows = []; $('agent-log').replaceChildren(); });
+function logAgent(event) {
+  const device = event.device || localDevice?.id || selected();
+  if (!device) return;
+  journalFor(device).append(event);
+  if (device === selected()) renderJournal();
+}
+hook('agent-log-clear', () => { if (selected()) journalFor(selected()).rows = []; renderJournal(); });
 hook('agent-log-toggle', () => { const open = $('agent-log').hidden; $('agent-log').hidden = !open; $('agent-log-toggle').textContent = open ? 'Réduire' : 'Développer'; $('agent-log-toggle').setAttribute('aria-expanded', String(open)); });
 const wake = new WorkWakeLock({ wakeLock: navigator.wakeLock, visible: () => document.visibilityState === 'visible', onState: wakeIndicator });
 const activity = () => wake.update(Boolean(portConnected && (engine?.busy || agent?.active || agent?.awaitingResult)));
@@ -348,7 +358,7 @@ $('devices').onchange = () => {
   if (working && operationDevice) { $('devices').value = operationDevice; return; }
   confirmation = null; $('program-confirmation').hidden = true; $('download').replaceChildren(); $('hex-dump').textContent = 'Aucune donnée lue pour cette carte.';
   if (paused) pausedAt = capture(selected()).sequence;
-  renderState(); renderPartitions(); renderConsole(); startStream();
+  renderState(); renderPartitions(); renderConsole(); renderJournal(); startStream();
 };
 async function refreshDevices(publish = true) {
   if (!session) return;
