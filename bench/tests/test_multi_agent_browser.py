@@ -71,10 +71,11 @@ class MultiAgentBrowserTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_wrong_board_and_duplicate_agent_are_refused(self):
         a, _ = await self.connect('board')
-        b, _ = await self.connect('board', register=False)
-        await b.send_json({'type': 'register', 'device': {
-            'id': 'board-b', 'chip': 'esp32s3', 'flash_size': 4194304,
-            'capabilities': ['identify']}})
+        # Duplicate scoped agent identity must be rejected during auth,
+        # before the client could send a register message.
+        b = await self.client.ws_connect('/agent/v1/ws', headers=self.headers)
+        self.sockets.append(b)
+        await b.send_json({'type': 'auth', 'version': 1, 'device': 'board'})
         frame = await b.receive(timeout=2)
         self.assertNotEqual(frame.type.name, 'TEXT')
         self.assertTrue(self.app[BROKER].devices['board']['connected'])
