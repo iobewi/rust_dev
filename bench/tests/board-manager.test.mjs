@@ -186,3 +186,27 @@ test('stale callbacks from replaced engine cannot forward UART to new agent', as
   assert.equal(actions.filter(x => x === 'event:a:uart').length, oldEventCount + 1);
   assert.equal(manager.get('b').status, 'connected');
 });
+
+test('late result after physical loss cannot deadlock reconnection or lose hold', async () => {
+  const { manager, ports } = lab();
+  const a = await manager.add('a', ports[0]);
+  await manager.add('b', ports[1]);
+  const previousAgent = a.agent;
+  previousAgent.activity = () => {};
+  previousAgent.disconnect = () => { previousAgent.stopped = true; };
+  previousAgent.active = { id: 'executing-when-unplugged' };
+  manager.lost(ports[0]);
+  assert.equal(a.engine.hold, true);
+  assert.equal(a.reconnect.waiting, true);
+  // Completion is delivered after the USB loss, but cannot be acknowledged on
+  // the disconnected generation. The new generation must start in hold.
+  previousAgent.active = null;
+  previousAgent.awaitingResult = { id: 'late-result', generation: 'old' };
+  a.engine.busy = false;
+  await a.reconnect.attempt(a.reconnect.version);
+  assert.equal(previousAgent.orphanedOperation, 'late-result');
+  assert.equal(previousAgent.awaitingResult, null);
+  assert.equal(a.status, 'connected');
+  assert.equal(a.engine.hold, true);
+  assert.equal(manager.get('b').status, 'connected');
+});
