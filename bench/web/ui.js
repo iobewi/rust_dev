@@ -132,19 +132,77 @@ function syncContext() {
   reconnect = ctx?.reconnect || { waiting: false, running: false, stop() {}, forget() {} };
 }
 
+function renderActiveCards() {
+  const body = $('active-cards'), previous = $('add-device-id').value;
+  body.replaceChildren();
+  for (const ctx of boards.list()) {
+    const row = document.createElement('div');
+    row.className = 'active-board';
+    row.dataset.device = ctx.id;
+    row.dataset.selected = String(selected() === ctx.id);
+    const name = document.createElement('button');
+    name.type = 'button'; name.className = 'board-name'; name.textContent = ctx.id;
+    name.setAttribute('aria-pressed', String(selected() === ctx.id));
+    name.title = 'Afficher cette carte, sans action matérielle';
+    name.onclick = () => {
+      $('devices').value = ctx.id;
+      boards.select(ctx.id);
+      $('devices').onchange?.();
+    };
+    const chip = document.createElement('span');
+    chip.className = 'board-chip'; chip.textContent = ctx.identity?.chip || 'MCU inconnu';
+    const status = document.createElement('button');
+    status.type = 'button'; status.className = 'board-status';
+    status.dataset.state = ctx.status;
+    status.textContent = ({ connected: 'Connectée', connecting: 'Connexion…',
+      usb_lost: ctx.reconnect?.waiting ? 'Reconnexion en attente' : 'USB perdu',
+      reconnecting: 'Reconnexion…', disconnected: 'Déconnectée' })[ctx.status] || 'Indisponible';
+    status.title = ctx.status === 'connected' ? 'Déconnecter uniquement ce port USB' :
+      ctx.reconnect?.waiting ? 'Annuler la reconnexion de cette carte' :
+      'Reconnecter cette carte à son port précédemment sélectionné';
+    status.disabled = ctx.disconnecting || ctx.busy || ctx.engine?.busy || ctx.agent?.active ||
+      ctx.agent?.awaitingResult || ctx.reconnect?.running || ctx.status === 'connecting';
+    status.onclick = safely(async () => {
+      if (ctx.status === 'connected') {
+        if (ctx.agent?.active || ctx.agent?.awaitingResult || ctx.engine?.busy) throw new Error('Opération en cours');
+        await boards.disconnect(ctx.id);
+      } else if (ctx.reconnect?.waiting) {
+        boards.cancelReconnect(ctx.id);
+      } else {
+        await boards.reconnect(ctx.id);
+      }
+      await refreshDevices(false);
+      renderDevices();
+    });
+    row.append(name, chip, status); body.append(row);
+  }
+  if (!body.children.length) {
+    const empty = document.createElement('p'); empty.className = 'hint';
+    empty.textContent = 'Aucune carte connectée dans cette fenêtre.'; body.append(empty);
+  }
+  const free = (session?.devices || []).filter(id => !boards.get(id));
+  const select = $('add-device-id');
+  select.replaceChildren();
+  for (const id of free) {
+    const opt = document.createElement('option'); opt.value = id; opt.textContent = id;
+    select.append(opt);
+  }
+  if (free.includes(previous)) select.value = previous;
+  if (!free.length) {
+    const option = document.createElement('option'); option.textContent = 'Aucun ID libre'; option.value = ''; select.append(option);
+  }
+  select.disabled = !free.length;
+  $('add-device').disabled = !free.length || usbBusy;
+}
 function renderLocalCardChoices(devices) {
-  const select = $('device-id'), previous = select.value;
+  boards.contexts.setAllowed(devices);
+  const select = $('device-id');
   select.replaceChildren();
   for (const id of devices) {
     const option = document.createElement('option'); option.value = id; option.textContent = id;
     select.append(option);
   }
-  if (devices.includes(previous)) select.value = previous;
-  else if (!devices.length) {
-    const option = document.createElement('option'); option.value = ''; option.textContent = 'Aucune carte autorisée';
-    select.append(option);
-  }
-  syncLocalCardTitle();
+  renderActiveCards();
   renderState();
 }
 
