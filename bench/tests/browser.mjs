@@ -107,12 +107,13 @@ test(`local browser session and direct control over ${usbJtag?'USB Serial/JTAG':
   await page.goto(url);assert.equal(await page.locator('#access-panel').isVisible(),false);
   await page.waitForFunction(()=>document.querySelector('#device-id').value==='board');
   assert.equal(await page.title(),'board · IOBEWI');
-  assert.equal(await page.textContent('#local-card-title'),'· board');
   assert.equal(await page.locator('#device-id').isVisible(),true);
+  assert.equal(await page.locator('.local-card-group #device-id').count(),1);
+  assert.equal(await page.locator('header h1').textContent(),'IOBEWI — Banc matériel');
+  assert.ok(await page.locator('.local-card-group').evaluate(node=>node.getBoundingClientRect().bottom<=document.querySelector('.usb-group').getBoundingClientRect().top));
   assert.equal(await page.locator('#device-id').isEnabled(),true);
   await page.locator('#device-id').fill('esp32-zero');
   assert.equal(await page.title(),'esp32-zero · IOBEWI');
-  assert.equal(await page.textContent('#local-card-title'),'· esp32-zero');
   assert.equal(await page.locator('#access-panel #device-id').count(),0);
   await page.locator('#device-id').fill('board');
   assert.equal(await page.title(),'board · IOBEWI');
