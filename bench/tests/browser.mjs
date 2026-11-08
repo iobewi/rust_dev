@@ -418,29 +418,25 @@ test(`local browser session and direct control over ${usbJtag?'USB Serial/JTAG':
     Object.defineProperty(event,'port',{value:port});
     window.__serial.dispatchEvent(event);
   });
-  await page.waitForFunction(()=>document.querySelector('#usb-toggle').textContent==='Annuler la reconnexion');
-  assert.equal(await page.locator('#device-id').isDisabled(),true);
-  await page.click('#usb-toggle');
-  await page.waitForFunction(()=>document.querySelector('#usb-toggle').textContent==='Connecter');
-  assert.equal(await page.locator('#device-id').isEnabled(),true);
-  await page.locator('#device-id').selectOption('board-b');
-  assert.equal(await page.title(),'board-b · IOBEWI');
-  await page.locator('#device-id').selectOption('board');
-  assert.equal(await page.title(),'board · IOBEWI');
-  // Tampering with the DOM cannot extend session permissions or open an unauthorized port.
+  await page.waitForFunction(()=>document.querySelector('[data-device="board"] .board-status')?.textContent==='Reconnexion en attente');
+  assert.equal(await page.locator('[data-device="board"]').count(),1);
+  await page.click('[data-device="board"] .board-status');
+  await page.waitForFunction(()=>document.querySelector('[data-device="board"] .board-status')?.textContent==='Déconnectée');
+  // The free-ID picker only exposes unused IDs. The disconnected board still owns its port.
+  assert.deepEqual(await page.locator('#add-device-id option').allTextContents(),['board-b']);
+  assert.equal(await page.title(),'IOBEWI Device Lab');
+  // Tampering with the DOM cannot extend session permissions or open unauthorized hardware.
   const chooserBefore=await page.evaluate(()=>window.__chooserCount);
-  await page.locator('#device-id').evaluate(node=>{
+  await page.locator('#add-device-id').evaluate(node=>{
     const option=document.createElement('option'); option.value='esp32-gehe';option.textContent='esp32-gehe';
-    node.append(option);node.value='esp32-gehe';node.dispatchEvent(new Event('change',{bubbles:true}));
+    node.append(option);node.value='esp32-gehe';
   });
-  await page.click('#usb-toggle');
-  await page.waitForFunction(()=>document.querySelector('#client-state').textContent.includes('Identifiant de carte non autorisé'));
+  await page.click('#add-device');
+  await page.waitForFunction(()=>document.querySelector('#client-state').textContent.includes('Identifiant non autorisé'));
   assert.equal(await page.evaluate(()=>window.__chooserCount),chooserBefore);
-  await page.locator('#device-id').selectOption('board');
-  assert.equal(await page.title(),'board · IOBEWI');
-  assert.equal(await page.textContent('#usb-state'),'non connecté');
+  assert.equal(await page.locator('[data-device="board"] .board-status').textContent(),'Déconnectée');
   await page.waitForTimeout(1700);
-  assert.equal(await page.textContent('#usb-state'),'non connecté');
+  assert.equal(await page.locator('[data-device="board"] .board-status').textContent(),'Déconnectée');
   assert.deepEqual(errors,[]);
  } finally {await browser?.close();proc.kill('SIGTERM');lines.close();}
 });
