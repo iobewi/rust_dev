@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from aiohttp import CookieJar
+from aiohttp import CookieJar, ClientSession
 from aiohttp.test_utils import TestClient, TestServer
 from server.bench_server import create_app, BROKER, SESSIONS
 from test_http import TOKENS, ALICE
@@ -122,13 +122,11 @@ class MultiAgentBrowserTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_other_browser_session_cannot_claim_agent_identity(self):
         await self.connect('board')
-        other = TestClient(TestServer(self.app), cookie_jar=CookieJar(unsafe=True))
-        await other.start_server()
-        try:
-            origin = str(other.make_url('/')).rstrip('/')
-            r = await other.post('/session/v1/open', headers={'Origin': origin})
+        async with ClientSession(cookie_jar=CookieJar(unsafe=True)) as other:
+            origin = self.headers['Origin']
+            r = await other.post(origin + '/session/v1/open', headers=self.headers)
             self.assertEqual(r.status, 200)
-            ws = await other.ws_connect('/agent/v1/ws', headers={'Origin': origin})
+            ws = await other.ws_connect(origin.replace('http:', 'ws:') + '/agent/v1/ws', headers=self.headers)
             await ws.send_json({'type': 'auth', 'version': 1, 'device': 'board'})
             self.assertEqual((await ws.receive_json())['type'], 'welcome')
             await ws.send_json({'type': 'register', 'device': {
@@ -137,8 +135,6 @@ class MultiAgentBrowserTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual((await ws.receive_json())['error']['code'], 'device_connected')
             await ws.close()
             self.assertTrue(self.app[BROKER].devices['board']['connected'])
-        finally:
-            await other.close()
 
     async def test_expiration_closes_all_browser_agents(self):
         await self.connect('board')
