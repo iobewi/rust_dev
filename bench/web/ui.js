@@ -398,16 +398,25 @@ hook('export-events', () => { if (!selected()) throw new Error('Aucune carte sé
   events: buffer.events.map(({ bytes, ...rest }) => ({ ...rest, data: b64(bytes) })) }, null, 2)], { type: 'application/json' }), 'hardware-events.json'); });
 
 function renderDevices() {
-  const previous = operationDevice || selected();
+  const previous = selected();
   const devices = [...knownDevices];
-  if (localDevice && !devices.some(d => d.id === localDevice.id)) devices.push({ ...localDevice, connected: portConnected, localOnly: true });
+  for (const ctx of boards.list()) {
+    if (!devices.some(d => d.id === ctx.id)) devices.push({ ...ctx.localDevice,
+      id: ctx.id, chip: ctx.identity?.chip || 'inconnu', connected: ctx.status === 'connected', localOnly: true });
+  }
   $('devices').replaceChildren();
-  for (const d of devices) { const option = document.createElement('option'); option.value = d.id; option.textContent = `${d.id} · ${d.chip}${d.connected ? '' : ' · absent'}`; $('devices').append(option); }
+  for (const d of devices) {
+    const option = document.createElement('option'); option.value = d.id;
+    option.textContent = `${d.id} · ${d.chip}${d.connected ? '' : ' · absent'}`;
+    $('devices').append(option);
+  }
   $('devices').value = previous;
-  if (!selected() && devices.length) $('devices').value = localDevice?.id || devices[0].id;
-  renderState(); renderPartitions(); renderConsole(); renderJournal();
+  if (!selected() && devices.length) $('devices').value = boards.list()[0]?.id || devices[0].id;
+  syncContext();
+  renderActiveCards(); renderState(); renderPartitions(); renderConsole(); renderJournal();
 }
 function renderState() {
+  syncContext();
   const d = info() || (localDevice?.id === selected() ? localDevice : null);
   const local = localDevice && selected() === localDevice.id;
   const blocked = d?.quarantined || local && engine?.hold;
