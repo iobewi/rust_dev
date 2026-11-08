@@ -422,7 +422,7 @@ function renderState() {
   const d = info() || (localDevice?.id === selected() ? localDevice : null);
   const local = localDevice && selected() === localDevice.id;
   const blocked = d?.quarantined || local && engine?.hold;
-  $('card-details').hidden = !(portConnected || !local && d?.connected);
+  $('card-details').hidden = !(boards.get(selected()) || d?.connected);
   const ownBusy = local && (engine?.busy || agent?.active || agent?.awaitingResult);
   const capability = new Set(d?.capabilities || []);
   const otherOwner = d?.reservation && d.reservation.owner !== session?.client;
@@ -518,7 +518,8 @@ async function startStream() {
       for (const event of batch.events) {
         if (event.kind === 'uart') {
           if (event.source_lost) append('PERTE', `${event.source_lost} chunks perdus à la source`, id, event.at * 1000);
-          if (!(portConnected && localDevice?.id === id && agent?.generation)) receive(unb64(event.data), id, event.agent_at || event.at * 1000);
+          if (!(boards.get(id)?.status === 'connected' && boards.get(id)?.agent?.generation))
+            receive(unb64(event.data), id, event.agent_at || event.at * 1000);
         } else if (event.kind === 'mark') append('REP', event.detail, id, event.at * 1000);
         else if (['connected', 'disconnected', 'quarantined', 'recovered'].includes(event.kind)) append('SYS', event.kind, id, event.at * 1000);
       }
@@ -610,13 +611,20 @@ async function submit(command, args = {}, destructive = false) {
     if (op.state !== 'completed') {
       const suggest = command === 'partitions' && args.address === 0x8000 && op.error?.code === 'partition_table_invalid';
       if (suggest) partitionSuggestions.set(target.device, target.generation);
-      feedback(`Opération ${op.state} : ${diagnostic(op.error?.code || 'inspectez le résultat')}`);
-      tab(suggest ? 'partitions' : 'operations'); return op;
+      if (selected() === target.device) {
+        feedback(`Opération ${op.state} : ${diagnostic(op.error?.code || 'inspectez le résultat')}`);
+        tab(suggest ? 'partitions' : 'operations');
+      }
+      return op;
     }
-    feedback(`${command} : terminé sur ${target.device}`);
-    if (command === 'partitions' && op.result?.partitions) { partitionCache.set(target.device, op.result.partitions); renderPartitions(); }
+    if (selected() === target.device) feedback(`${command} : terminé sur ${target.device}`);
+    if (command === 'partitions' && op.result?.partitions) {
+      partitionCache.set(target.device, op.result.partitions);
+      if (selected() === target.device) renderPartitions();
+    }
     if (command === 'identify' && op.result?.chip) { const d = info(target.device); if (d) Object.assign(d, op.result); renderState(); }
-    if (command === 'flash.read' && op.result?.artifact) await showDump(op.result.artifact, args.address, client);
+    if (command === 'flash.read' && op.result?.artifact && selected() === target.device)
+      await showDump(op.result.artifact, args.address, client);
     return op;
   } finally {
     if (inFlight.get(target.device) === ticket) inFlight.delete(target.device);
@@ -631,7 +639,15 @@ hook('try-partition-address', () => {
   $('partition-address').value = '0x10000';
   return submit('partitions', { address: 0x10000 });
 });
-hook('cancel', async () => { const op = await api().request('operations/' + current, { method: 'DELETE' }); json(op); feedback(op.cancel_requested ? 'Annulation demandée ; interruption matérielle non confirmée.' : 'Commande annulée avant exécution.'); });
+hook('cancel', async () => {
+  const device = selected(), id = inFlight.get(device)?.id;
+  if (!id) throw new Error('Aucune opération à annuler sur cette carte');
+  const op = await api().request('operations/' + id, { method: 'DELETE' });
+  if (selected() === device) {
+    json(op);
+    feedback(op.cancel_requested ? 'Annulation demandée ; interruption matérielle non confirmée.' : 'Commande annulée avant exécution.');
+  }
+});
 
 function renderPartitions() {
   const rows = partitionCache.get(selected()) || [], body = $('partitions-body'); body.replaceChildren();
