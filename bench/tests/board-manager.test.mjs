@@ -166,3 +166,23 @@ test('USB loss after a result is pending preserves hold but permits a new genera
   assert.equal(a.engine.port, ports[0]);
   assert.equal(manager.get('b').engine.port, ports[1]);
 });
+
+test('stale callbacks from replaced engine cannot forward UART to new agent', async () => {
+  const { manager, ports, actions } = lab();
+  const a = await manager.add('a', ports[0]);
+  await manager.add('b', ports[1]);
+  const oldEngine = a.engine;
+  const oldAgent = a.agent;
+  manager.lost(ports[0]);
+  const oldEventCount = actions.filter(x => x === 'event:a:uart').length;
+  oldEngine.emit('uart', { data: 'stale-after-loss' });
+  assert.equal(actions.filter(x => x === 'event:a:uart').length, oldEventCount);
+  await a.reconnect.attempt(a.reconnect.version);
+  assert.notStrictEqual(a.engine, oldEngine);
+  assert.notStrictEqual(a.agent, oldAgent);
+  oldEngine.emit('uart', { data: 'stale-after-reconnect' });
+  assert.equal(actions.filter(x => x === 'event:a:uart').length, oldEventCount);
+  a.engine.emit('uart', { data: 'fresh' });
+  assert.equal(actions.filter(x => x === 'event:a:uart').length, oldEventCount + 1);
+  assert.equal(manager.get('b').status, 'connected');
+});
