@@ -67,3 +67,10 @@
 .usb-state-line{display:flex;align-items:center;gap:8px}.usb-state-line[data-tone=positive] .status-icon{color:var(--positive)}.usb-state-line[data-tone=active] .status-icon{color:var(--accent)}
 
 .usb-group{padding:12px;border-top:0;border-bottom:1px solid var(--line)}
+
+/* Local logical card configuration is visible above USB; remote "Carte active" is separate. */
+.local-card-group{padding:12px;border-bottom:1px solid var(--line)}
+.local-card-field{display:block}
+.local-card-field input{width:100%;font-family:ui-monospace,SFMono-Regular,Consolas,monospace}
+.local-card-group .hint{margin:5px 0 0}
+.visually-hidden{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}

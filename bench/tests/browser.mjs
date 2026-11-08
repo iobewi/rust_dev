@@ -107,11 +107,14 @@ test(`local browser session and direct control over ${usbJtag?'USB Serial/JTAG':
   await page.goto(url);assert.equal(await page.locator('#access-panel').isVisible(),false);
   await page.waitForFunction(()=>document.querySelector('#device-id').value==='board');
   assert.equal(await page.title(),'board · IOBEWI');
-  assert.equal(await page.textContent('#local-card-title'),'· board');
-  await openStatus(page,'agent');await page.click('#access-toggle');
+  assert.equal(await page.locator('#device-id').isVisible(),true);
+  assert.equal(await page.locator('.local-card-group #device-id').count(),1);
+  assert.equal(await page.locator('header h1').textContent(),'IOBEWI — Banc matériel');
+  assert.ok(await page.locator('.local-card-group').evaluate(node=>node.getBoundingClientRect().bottom<=document.querySelector('.usb-group').getBoundingClientRect().top));
+  assert.equal(await page.locator('#device-id').isEnabled(),true);
   await page.locator('#device-id').fill('esp32-zero');
   assert.equal(await page.title(),'esp32-zero · IOBEWI');
-  assert.equal(await page.textContent('#local-card-title'),'· esp32-zero');
+  assert.equal(await page.locator('#access-panel #device-id').count(),0);
   await page.locator('#device-id').fill('board');
   assert.equal(await page.title(),'board · IOBEWI');
   await closeStatus(page);
@@ -120,6 +123,7 @@ test(`local browser session and direct control over ${usbJtag?'USB Serial/JTAG':
   assert.equal(await page.locator('.device-panel #usb-toggle').isVisible(),true);
   await page.click('#usb-toggle');await page.waitForFunction(()=>document.querySelector('#usb-state').textContent==='connecté'||!document.querySelector('#client-state').textContent.startsWith('Connectez un port série'));
   assert.equal(await page.textContent('#usb-state'),'connecté',JSON.stringify({feedback:await page.textContent('#client-state'),errors}));
+  assert.equal(await page.locator('#device-id').isDisabled(),true);
   assert.equal(await page.title(),'board · IOBEWI');
   assert.equal(await page.locator('#card-details').isVisible(),true);
   const usbTop=await page.locator('.usb-group').evaluate(node=>node.getBoundingClientRect().top), cardTop=await page.locator('#status-card').evaluate(node=>node.getBoundingClientRect().top);
@@ -333,7 +337,11 @@ test(`local browser session and direct control over ${usbJtag?'USB Serial/JTAG':
   assert.equal(await page.locator('#status-permissions').evaluate(node=>node===document.activeElement),true);
   await page.click('#workspace-tab-consoles');
   // Default height follows the viewport; a manual height lasts until Hauteur auto.
+  // Explicitly restore live-follow before resizing: sidebar geometry can shift
+  // the console scroll position without indicating a user-requested history view.
   if (await page.locator('#follow').isVisible()) await page.click('#follow');
+  await page.locator('#uart-log').evaluate(node => { node.scrollTop = node.scrollHeight; });
+  await page.waitForFunction(()=>document.querySelector('#follow').hidden);
   await page.setViewportSize({width:1280,height:1000});
   const tall=await page.locator('#uart-log').evaluate(node=>node.getBoundingClientRect().height);
   await page.setViewportSize({width:1280,height:700});
@@ -350,6 +358,7 @@ test(`local browser session and direct control over ${usbJtag?'USB Serial/JTAG':
   const closesBefore=await page.evaluate(()=>window.__serialPort.closeCalls||0);
   await page.click('#usb-toggle');
   await page.waitForFunction(()=>document.querySelector('#usb-state').textContent==='non connecté'&&document.querySelector('#usb-toggle').textContent==='Connecter');
+  assert.equal(await page.locator('#device-id').isEnabled(),true);
   assert.equal(await page.title(),'board · IOBEWI');
   assert.equal(await page.locator('#card-details').isVisible(),false);
   assert.equal(await page.locator('#status-label-card').isVisible(),false);
