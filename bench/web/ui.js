@@ -165,7 +165,13 @@ function renderActiveCards() {
       ctx.agent?.awaitingResult || ctx.reconnect?.running || ctx.status === 'connecting';
     status.onclick = safely(async () => {
       if (ctx.status === 'connected') {
-        if (ctx.agent?.active || ctx.agent?.awaitingResult || ctx.engine?.busy) throw new Error('Opération en cours');
+        if (ctx.agent?.active || ctx.agent?.awaitingResult || ctx.engine?.busy || inFlight.has(ctx.id))
+          throw new Error('Opération en cours');
+        const reserved = info(ctx.id)?.reservation;
+        const privileged = ctx.agent?.grantUntil > performance.now();
+        if ((reserved || privileged || ctx.engine?.hold) &&
+            !confirm('Déconnecter ' + ctx.id + ' malgré son état de sécurité ou sa réservation ? La déconnexion ne lève pas la quarantaine.'))
+          return;
         await boards.disconnect(ctx.id);
       } else if (ctx.reconnect?.waiting) {
         boards.cancelReconnect(ctx.id);
