@@ -14,6 +14,9 @@ async function openStatus(page, name) {
 async function closeStatus(page) {
  await page.keyboard.press('Escape');
 }
+async function selectRemoteDevice(page,id) {
+ await page.locator('#devices').evaluate((element,value)=>{element.value=value;element.dispatchEvent(new Event('change',{bubbles:true}));},id);
+}
 
 test('automatic manual operations and independent API share exclusion across two browser agents',async()=>{
  const proc=spawn('python3',['tests/browser_fixture.py'],{cwd:new URL('..',import.meta.url),stdio:['ignore','pipe','pipe']});
