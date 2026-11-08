@@ -57,8 +57,15 @@ test('automatic manual operations and independent API share exclusion across two
   await page.evaluate(()=>document.querySelector('#refresh').click());
   await page.waitForFunction(()=>document.querySelector('#devices').value==='board-b');
   await page.evaluate(()=>{window.releaseIdentify();window.blockIdentify=false;});
-  await page.waitForFunction(()=>JSON.parse(document.querySelector('#result').textContent).state==='completed');
+  await page.waitForFunction(async()=>{
+   const devices=(await (await fetch('/api/v1/devices')).json()).devices;
+   return devices.find(d=>d.id==='board')?.reservation===null;
+  });
+  await selectRemoteDevice(page,'board');
+  await page.waitForFunction(()=>document.querySelector('#operations-body').textContent.includes('completed'));
+  await page.evaluate(()=>document.querySelector('#operations-body button').click());
   assert.equal(JSON.parse(await page.textContent('#result')).device,'board');
+  assert.equal(JSON.parse(await page.textContent('#result')).state,'completed');
   await page.waitForFunction(async()=>{const r=await fetch('/api/v1/devices');return (await r.json()).devices.find(d=>d.id==='board').reservation===null;});
   await page.waitForFunction(()=>!document.querySelector('#devices').disabled);
   await selectRemoteDevice(page,'board-b');await page.click('[data-command="reset"]');
