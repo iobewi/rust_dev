@@ -140,7 +140,16 @@ export class BoardManager {
   async disconnect(id) {
     const ctx = this.contexts.require(id);
     if (ctx.busy || ctx.disconnecting || ctx.engine?.busy || ctx.agent?.active ||
-        ctx.agent?.awaitingResult || ctx.reconnect?.running) throw new Error('board_not_idle');
+        (ctx.agent?.awaitingResult && !ctx.agent?.stopped) ||
+        ctx.reconnect?.running) throw new Error('board_not_idle');
+    // An old stopped agent may still report a result after the unplug event.
+    // Its generation can no longer settle it; preserve hold before cleanup.
+    if (ctx.agent?.awaitingResult && ctx.agent.stopped) {
+      ctx.engine?.setHold(true);
+      ctx.agent.orphanedOperation = ctx.agent.awaitingResult.id;
+      ctx.agent.awaitingResult = null;
+      ctx.agent.activity();
+    }
     ctx.disconnecting = true;
     this.onState(ctx);
     try {
