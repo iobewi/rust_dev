@@ -380,7 +380,8 @@ test(`local browser session and direct control over ${usbJtag?'USB Serial/JTAG':
   assert.equal(await page.locator('[data-device="board"] .board-status').textContent(),'Déconnectée');
   // Explicitly forgetting the offline association frees the logical ID.
   await page.click('[data-device="board"] .board-forget');
-  await page.waitForFunction(()=>document.querySelector('#add-device-id').value==='board');
+  await page.waitForFunction(()=>[...document.querySelector('#add-device-id').options].some(o=>o.value==='board'));
+  await page.selectOption('#add-device-id','board');
   // Cancelling the chooser leaves the UI ready; no previously permitted port reopens.
   await page.evaluate(()=>{window.__rejectChooser=true;});
   await page.click('#add-device');
