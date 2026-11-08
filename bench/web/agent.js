@@ -1,4 +1,19 @@
 import { HardwareError, hardwareError } from './hardware-errors.js';
+
+// Browser agents in one window must not mint competing cookies when a session
+// expires and multiple WebSockets reconnect at the same time.
+let refreshSessionPromise;
+function refreshBrowserSession() {
+  if (!refreshSessionPromise) {
+    refreshSessionPromise = fetch('/session/v1/open', { method: 'POST', credentials: 'same-origin' })
+      .then(response => {
+        if (!response.ok) throw new Error('browser_session_refresh_failed');
+        return response;
+      })
+      .finally(() => { refreshSessionPromise = null; });
+  }
+  return refreshSessionPromise;
+}
 // Authenticated WebSocket executor; it owns no UI and never replays a hardware operation.
 export class Agent {
   constructor({ engine, device, token, scopedBrowserAgent = false, onState = () => {}, onLog = () => {}, onActivity = () => {}, socketFactory = url => new WebSocket(url), now = () => performance.now(), reconnect = typeof window !== "undefined", schedule = (fn, ms) => setTimeout(fn, ms), cancel = id => clearTimeout(id) }) {
@@ -43,8 +58,8 @@ export class Agent {
     this.socket.onopen = async () => {
       try {
         if (!this.token && this.reconnectAttempt) {
-          const response = await fetch("/session/v1/open", { method: "POST" });
-          if (!response.ok) { socket.close(); return; }
+          try { await refreshBrowserSession(); }
+          catch { socket.close(); return; }
         }
       } catch { socket.close(); return; }
       if (this.socket !== socket || this.stopped) return;
