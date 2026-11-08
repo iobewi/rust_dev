@@ -13,7 +13,6 @@ const $ = id => document.getElementById(id);
 const localCardLabel = value => value.trim() || 'Carte non sélectionnée';
 function syncLocalCardTitle() {
   const id = localCardLabel($('device-id').value);
-  $('local-card-title').textContent = '· ' + id;
   document.title = id === 'Carte non sélectionnée' ? 'IOBEWI — Banc matériel' : id + ' · IOBEWI';
 }
 $('device-id').addEventListener('input', syncLocalCardTitle);
