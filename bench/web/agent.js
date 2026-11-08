@@ -1,8 +1,8 @@
 import { HardwareError, hardwareError } from './hardware-errors.js';
 // Authenticated WebSocket executor; it owns no UI and never replays a hardware operation.
 export class Agent {
-  constructor({ engine, device, token, onState = () => {}, onLog = () => {}, onActivity = () => {}, socketFactory = url => new WebSocket(url), now = () => performance.now(), reconnect = typeof window !== "undefined", schedule = (fn, ms) => setTimeout(fn, ms), cancel = id => clearTimeout(id) }) {
-    Object.assign(this, { engine, device, token, onState, onLog, onActivity, socketFactory, now, reconnect, schedule, cancel });
+  constructor({ engine, device, token, scopedBrowserAgent = false, onState = () => {}, onLog = () => {}, onActivity = () => {}, socketFactory = url => new WebSocket(url), now = () => performance.now(), reconnect = typeof window !== "undefined", schedule = (fn, ms) => setTimeout(fn, ms), cancel = id => clearTimeout(id) }) {
+    Object.assign(this, { engine, device, token, scopedBrowserAgent, onState, onLog, onActivity, socketFactory, now, reconnect, schedule, cancel });
     this.seq = 0; this.seen = new Set(); this.grantUntil = 0; this.pending = null; this.revoked = new Set(); this.awaitingResult = null;
   }
   log(stage, detail = {}) { this.onLog({ at: Date.now(), device: this.device.id, stage, ...detail }); }
@@ -48,7 +48,7 @@ export class Agent {
         }
       } catch { socket.close(); return; }
       if (this.socket !== socket || this.stopped) return;
-      this.authSent = this.now(); this.send({ type: 'auth', version: 1, ...(this.token ? { token: this.token } : {}) }); };
+      this.authSent = this.now(); this.send({ type: 'auth', version: 1, ...(this.token ? { token: this.token } : this.scopedBrowserAgent ? { device: this.device.id } : {}) }); };
     this.socket.onmessage = e => {
       if (this.socket !== socket || this.stopped) return;
       this.message(JSON.parse(e.data)).catch(() => this.onState('agent error'));
@@ -95,7 +95,7 @@ export class Agent {
     try {
       const response = await fetch('/api/v1/artifacts' + (id ? '/' + id : ''), {
         method: id ? 'GET' : 'POST', headers: { ...(this.token ? { Authorization: 'Bearer ' + this.token } : {}),
-          ...(bytes ? { 'X-SHA256': await sha256(bytes), 'X-Bench-Artifact-Role': 'agent' } : {}) }, ...(bytes ? { body: bytes } : {}),
+          ...(bytes ? { 'X-SHA256': await sha256(bytes), 'X-Bench-Artifact-Role': 'agent', ...(this.scopedBrowserAgent && !this.token ? { 'X-Bench-Device': this.device.id } : {}) } : {}) }, ...(bytes ? { body: bytes } : {}),
       });
       if (!response.ok) {
         // Keep only a known code; never include arbitrary response text.
