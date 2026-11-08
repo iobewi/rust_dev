@@ -149,7 +149,7 @@ test(`local browser session and direct control over ${usbJtag?'USB Serial/JTAG':
   assert.equal(resetResult.method,usbJtag?'usb_serial_jtag':'en');assert.equal(resetResult.boot_verified,false);
 
   await closeStatus(page);
-  assert.equal(await page.textContent('#usb-toggle'),'Déconnecter');
+  assert.equal(await page.locator('[data-device="board"] .board-status').textContent(),'Connectée');
   assert.equal(await page.locator('#connect,#disconnect,#reconnect,[data-status=usb]').count(),0);
   assert.equal(await page.evaluate(()=>window.__chooserCount),1);
   await page.waitForFunction(()=>document.querySelector('#status-label-agent').textContent==='Agent connecté');
@@ -284,7 +284,7 @@ test(`local browser session and direct control over ${usbJtag?'USB Serial/JTAG':
   const generation=await page.evaluate(async()=>{const r=await fetch('/api/v1/devices',{headers:{Authorization:'Bearer client-alice-123456789'}});return (await r.json()).devices[0].generation;});
   await page.evaluate(async()=>{const port=window.__serialPort;port.controller.error(new DOMException('Unplugged','NetworkError'));await Promise.resolve();await port.close();const event=new Event('disconnect');Object.defineProperty(event,'port',{value:port});window.__serial.dispatchEvent(event);});
   await page.waitForFunction(()=>document.querySelector('#usb-state').textContent==='non connecté');
-  assert.equal(await page.locator('#card-details').isVisible(),false);
+  assert.equal(await page.locator('#card-details').isVisible(),true);
   await page.waitForFunction(async old=>{const r=await fetch('/api/v1/devices',{headers:{Authorization:'Bearer client-alice-123456789'}});const d=(await r.json()).devices[0];return d.connected&&d.generation!==old;},generation);
   try { await page.waitForFunction(()=>document.querySelector('#usb-state').textContent==='connecté'); }
   catch(error) { throw new Error(JSON.stringify({feedback:await page.textContent('#client-state'),journal:await page.textContent('#agent-log'),errors}),{cause:error}); }
@@ -315,7 +315,7 @@ test(`local browser session and direct control over ${usbJtag?'USB Serial/JTAG':
   await page.keyboard.press('Escape');assert.equal(await page.locator('#status-help-agent').isVisible(),false);
   await page.locator('#status-agent').hover();
   assert.equal(await page.locator('#status-help-agent').isVisible(),true);
-  assert.equal(await page.locator('.device-panel #usb-toggle').isVisible(),true);
+  assert.equal(await page.locator('[data-device="board"] .board-status').isVisible(),true);
   for (const name of ['agent','control','permissions','wake']) {
     await openStatus(page,name);
     assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
