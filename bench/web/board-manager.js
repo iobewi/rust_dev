@@ -35,7 +35,7 @@ export class BoardManager {
     ctx.reconnect = this.makeReconnect({
       ports: () => this.ports(),
       idle: () => !ctx.busy && !ctx.disconnecting && !ctx.engine?.busy &&
-        !ctx.agent?.active && !ctx.agent?.awaitingResult,
+        !ctx.agent?.active && (!ctx.agent?.awaitingResult || ctx.agent?.stopped),
       attach: (exactPort, identity) => this.attach(ctx, exactPort, identity),
       state: stage => {
         if (stage === 'reconnecting') ctx.status = 'reconnecting';
@@ -60,8 +60,14 @@ export class BoardManager {
   async attach(ctx, port, expectedIdentity = null) {
     if (ctx.port !== port || this.contexts.ports.get(port) !== ctx.id) throw new Error('serial_port_mismatch');
     if (ctx.busy || ctx.disconnecting || ctx.engine?.busy || ctx.agent?.active ||
-        ctx.agent?.awaitingResult) throw new Error('board_not_idle');
+        (ctx.agent?.awaitingResult && !ctx.agent?.stopped)) throw new Error('board_not_idle');
     if (ctx.agent) {
+      if (ctx.agent.awaitingResult) {
+        ctx.engine?.setHold(true);
+        ctx.agent.orphanedOperation = ctx.agent.awaitingResult.id;
+        ctx.agent.awaitingResult = null;
+        ctx.agent.activity();
+      }
       ctx.agent.disconnect();
       ctx.agent = null;
     }
