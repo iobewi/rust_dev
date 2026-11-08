@@ -232,7 +232,8 @@ async function openSession() {
 }
 function selectedTarget() {
   const d = info();
-  if (!session || !d?.connected) throw new Error('Connectez une carte au banc');
+  if (!session || !d?.connected || boards.get(d.id) && boards.get(d.id).status !== 'connected')
+    throw new Error('Connectez une carte au banc');
   return { device: d.id, chip: d.chip, flash_size: d.flash_size, generation: d.generation };
 }
 function selectTabs(attribute, name, panelSelector, panelPrefix) {
@@ -437,7 +438,8 @@ function renderState() {
   const ownBusy = local && (engine?.busy || agent?.active || agent?.awaitingResult);
   const capability = new Set(d?.capabilities || []);
   const otherOwner = d?.reservation && d.reservation.owner !== session?.client;
-  const base = Boolean(session && info()?.connected && !isWorking() && !ownBusy && !usbBusy && !reconnect.running && !otherOwner);
+  const base = Boolean(session && info()?.connected && (!local || portConnected && agent?.generation && agent.socket?.readyState === 1) &&
+    !isWorking() && !ownBusy && !usbBusy && !reconnect.running && !otherOwner);
   document.querySelectorAll('[data-hardware]').forEach(button => {
     const command = button.dataset.command || actions[button.id];
     button.disabled = !base || !capability.has(command) || Boolean(blocked && !safeCommands.has(command)) ||
@@ -462,7 +464,7 @@ function renderState() {
   resetButton.title = usbReset ? 'Redémarre via le contrôleur USB Serial/JTAG, sans piloter EN ou IO0.' : 'Redémarre par EN, en mode console avec un pont UART externe.';
 
   $('control-state').textContent = isWorking() ? 'Opération manuelle en cours' : d?.reservation ? (otherOwner ? 'Pilotée par : ' + d.reservation.owner : 'Déclencheur ou opération en cours') : d?.connected && !d?.localOnly ? 'Disponible · commandes directes' : 'Local · observation';
-  $('grant').disabled = !local || !agent?.generation; $('revoke').disabled = $('grant').disabled;
+  $('grant').disabled = !local || !portConnected || !agent?.generation; $('revoke').disabled = $('grant').disabled;
   $('grant-state').textContent = local && agent?.grantUntil > performance.now() ? `Opérations distantes autorisées : ${Math.ceil((agent.grantUntil - performance.now()) / 1000)} s` : 'À la demande · aucune autorisation distante active.';
   $('revoke').hidden = !(local && agent?.grantUntil > performance.now());
   $('release-control').disabled = !local || !agent?.generation || Boolean(ownBusy || isWorking()) || !d?.reservation;
@@ -470,7 +472,7 @@ function renderState() {
   $('safety-state').textContent = local && agent?.awaitingResult ? 'Attente de l’accusé serveur' : blocked ? 'Blocage : récupération opérateur requise' : d ? 'Aucun blocage signalé' : 'Aucun état matériel connu';
   $('safety-state').classList.toggle('danger', Boolean(blocked));
   $('recover').hidden = !blocked; $('recovery-help').hidden = !blocked;
-  $('recover').disabled = !local || !agent?.generation || Boolean(ownBusy) || !blocked;
+  $('recover').disabled = !local || !portConnected || !agent?.generation || Boolean(ownBusy) || !blocked;
   const usbAction = usbBusy ? usbDisconnecting ? 'Déconnexion…' : 'Connexion…' : portConnected ? 'Déconnecter' : reconnect.running ? 'Reconnexion…' : reconnect.waiting ? 'Annuler la reconnexion' : 'Connecter';
   $('usb-toggle').textContent = usbAction;
   $('usb-toggle').disabled = !session || !session.devices.length || usbBusy || isWorking() || Boolean(ownBusy || reconnect.running);
