@@ -210,3 +210,18 @@ test('late result after physical loss cannot deadlock reconnection or lose hold'
   assert.equal(a.engine.hold, true);
   assert.equal(manager.get('b').status, 'connected');
 });
+
+test('forget after cancelled physical reconnect closes leftover engine before freeing port', async () => {
+  const { manager, ports, actions } = lab();
+  await manager.add('a', ports[0]);
+  const b = await manager.add('b', ports[1]);
+  manager.lost(ports[0]);
+  manager.cancelReconnect('a');
+  assert.equal(manager.get('a').status, 'disconnected');
+  await manager.forget('a');
+  assert.equal(manager.get('a'), null);
+  assert.equal(manager.get('b'), b);
+  assert.ok(actions.includes('close:a'));
+  assert.equal(actions.includes('close:b'), false);
+  await manager.add('a', ports[0]);
+});
