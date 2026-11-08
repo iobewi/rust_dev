@@ -432,7 +432,7 @@ function renderState() {
       command === 'reset' && local && engine?.mode !== 'console';
   });
   $('partition-suggestion').hidden = partitionSuggestions.get(selected()) !== d?.generation || !d?.generation || Number($('partition-address').value) !== 0x8000;
-  $('devices').disabled = working || usbBusy || Boolean(reconnect.running);
+  $('devices').disabled = false;
   // A logical ID cannot change while its port is connected or automatic reconnection owns it.
   $('device-id').disabled = Boolean(!session || !session.devices.length || portConnected || usbBusy || reconnect.waiting || reconnect.running);
   $('cancel').disabled = !working || !current;
@@ -474,10 +474,10 @@ function renderState() {
   $('footer-target').textContent = selected() ? `${selected()} · ${$('control-state').textContent}` : 'Aucune carte sélectionnée';
 }
 $('devices').onchange = () => {
-  if (working && operationDevice) { $('devices').value = operationDevice; return; }
   confirmation = null; $('program-confirmation').hidden = true; $('download').replaceChildren(); $('hex-dump').textContent = 'Aucune donnée lue pour cette carte.';
   if (paused) pausedAt = capture(selected()).sequence;
   selectedOperation = null;
+  syncContext(); renderActiveCards();
   renderOperations(); json({});
   renderState(); renderPartitions(); renderConsole(); renderJournal(); startStream();
 };
@@ -733,22 +733,24 @@ hook('events', async () => { const data = await api().request('devices/' + encod
 
 navigator.serial?.addEventListener('disconnect', event => {
   const port = event.port || event.target;
-  if (usbDisconnecting || !portConnected || port !== engine?.port) return;
-  engine.disconnected = true;
-  if (agent?.active || agent?.awaitingResult) engine.setHold(true);
-  engine.cancelTrigger(); engine.transport?.abort('closed', 'USB disconnected'); agent?.disconnect();
-  portConnected = false; confirmation = null; $('program-confirmation').hidden = true;
-  reconnect.disconnected(port);
-  renderState(); append('PERTE', 'Port USB déconnecté', localDevice.id); logAgent({ stage: 'usb_lost' });
-  feedback('USB déconnecté. Reconnexion automatique de la même carte à son retour ; aucune opération rejouée.');
+  const ctx = boards.lost(port);
+  if (!ctx) return;
+  ctx.engine.disconnected = true;
+  feedback('USB perdu sur ' + ctx.id + ' ; aucune opération rejouée.');
+  renderDevices();
 });
+
 let refreshTimer;
 async function backgroundRefresh() {
   if (sessionOpened) await refreshDevices(false).catch(async error => { $('server-state').textContent = 'liaison interrompue'; feedback(errorText(error)); if (error.message === 'unauthenticated') { session = null; await openSession().catch(() => {}); } });
   refreshTimer = setTimeout(backgroundRefresh, 4000);
 }
 setInterval(renderState, 1000); backgroundRefresh();
-window.addEventListener('pagehide', () => { streamController?.abort(); clearTimeout(refreshTimer); reconnect.stop(); wake.update(false); });
+window.addEventListener('pagehide', () => {
+  streamController?.abort(); clearTimeout(refreshTimer);
+  for (const ctx of boards.list()) ctx.reconnect?.stop();
+  wake.update(false);
+});
 renderState(); renderConsole();
 
 openSession().then(() => refreshDevices(false)).catch(error => feedback(errorText(error)));
