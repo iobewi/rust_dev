@@ -499,3 +499,95 @@ test('real WebSocket reconnect quarantines interrupted work without replay or re
   const next=await fetch(url+'/api/v1/leases',{method:'POST',headers,body:JSON.stringify({device:'board',ttl:60})});assert.equal(next.status,201);
  } finally {if(browser)await browser.close();proc.kill();}
 });
+
+test('one browser window runs two simulated Web Serial contexts and scoped agents concurrently', async () => {
+ const proc=spawn('python3',['tests/browser_fixture.py'],{cwd:new URL('..',import.meta.url),stdio:['ignore','pipe','pipe']});
+ let stderr='';proc.stderr.on('data',b=>stderr+=b);
+ const lines=createInterface({input:proc.stdout});let browser;
+ try {
+  const url=await new Promise((resolve,reject)=>{lines.once('line',s=>resolve(JSON.parse(s).url));proc.once('exit',()=>reject(new Error(stderr)));});
+  browser=await chromium.launch({headless:true,executablePath:chromium.executablePath(),args:['--no-sandbox']});
+  const page=await browser.newPage();
+  const errors=[];page.on('pageerror',e=>errors.push(e.message));
+  await page.goto(url);
+  await page.evaluate(async () => {
+   const [{BoardManager},{Agent}]=await Promise.all([import('/board-manager.js'),import('/agent.js')]);
+   const ports=[{name:'port-a'}, {name:'port-b'}];
+   const manager=new BoardManager({
+    allowed:['board','board-b'],ports:async()=>ports,
+    createEngine(context,port,event) {
+     return {
+      port,busy:false,hold:false,mode:'console',async identity() {
+       return {chip:'esp32s3',flash_size:4194304,flash_id:context.id};
+      },
+      async openConsole(){},async close(){},setHold(value){this.hold=value;},
+      persistHold(){},cancelTrigger(){},provenance(){return {};},
+      capabilities(){return ['identify'];},
+      async execute(name) {
+       if(context.id==='board' && window.multiBlockA)
+        await new Promise(resolve=>{window.multiReleaseA=resolve;});
+       return {board:context.id,command:name};
+      },
+     };
+    },
+    createAgent(context,engine) {
+     return new Agent({engine,device:context.localDevice,scopedBrowserAgent:true,
+      onState:()=>{context.generation=context.agent?.generation || null;},
+      reconnect:false});
+    },
+   });
+   window.multiLab={manager,ports};
+   await manager.add('board',ports[0]);
+   await manager.add('board-b',ports[1]);
+  });
+  await page.waitForFunction(()=>window.multiLab?.manager.get('board')?.generation &&
+    window.multiLab?.manager.get('board-b')?.generation);
+  const initial=await page.evaluate(async ()=>(await (await fetch('/api/v1/devices')).json()).devices);
+  assert.equal(initial.filter(d=>['board','board-b'].includes(d.id)&&d.connected).length,2);
+  await page.evaluate(()=>{window.multiBlockA=true;});
+  const result=await page.evaluate(async()=>{
+   const manager=window.multiLab.manager;
+   const a=manager.get('board'),b=manager.get('board-b');
+   const request=async (path,method='GET',data)=> {
+    const response=await fetch('/api/v1/'+path,{method,
+     headers:data?{'Content-Type':'application/json'}:{},body:data?JSON.stringify(data):undefined});
+    if(!response.ok) throw Error(JSON.stringify(await response.json()));
+    return response.json();
+   };
+   const wait=async id=>{
+    for(let i=0;i<150;i++){
+     const op=await request('operations/'+id);
+     if(['completed','failed','indeterminate','cancelled'].includes(op.state))return op;
+     await new Promise(r=>setTimeout(r,20));
+    }
+    throw Error('operation_timeout');
+   };
+   manager.select('board');
+   const opA=await request('manual-operations','POST',{device:'board',generation:a.generation,command:'identify'});
+   manager.select('board-b');
+   const opB=await request('manual-operations','POST',{device:'board-b',generation:b.generation,command:'identify'});
+   const resultB=await wait(opB.id);
+   manager.select('board');
+   // A is deliberately released only after B has finished.
+   for(let i=0;i<100&&!window.multiReleaseA;i++)await new Promise(r=>setTimeout(r,10));
+   if(!window.multiReleaseA)throw Error('missing_A_start');
+   window.multiReleaseA();window.multiBlockA=false;
+   const resultA=await wait(opA.id);
+   return {resultA,resultB,
+    samePorts:a.port===window.multiLab.ports[0]&&b.port===window.multiLab.ports[1],
+    connected:[a.status,b.status]};
+  });
+  assert.equal(result.resultA.state,'completed');
+  assert.equal(result.resultA.result.board,'board');
+  assert.equal(result.resultB.state,'completed');
+  assert.equal(result.resultB.result.board,'board-b');
+  assert.equal(result.samePorts,true);
+  assert.deepEqual(result.connected,['connected','connected']);
+  await page.evaluate(async()=>window.multiLab.manager.disconnect('board'));
+  await page.waitForFunction(async()=>{
+   const devices=(await (await fetch('/api/v1/devices')).json()).devices;
+   return !devices.find(d=>d.id==='board')?.connected && devices.find(d=>d.id==='board-b')?.connected;
+  });
+  assert.deepEqual(errors,[]);
+ }finally{await browser?.close();proc.kill('SIGTERM');lines.close();}
+});
