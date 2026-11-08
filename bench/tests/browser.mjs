@@ -112,10 +112,13 @@ test(`local browser session and direct control over ${usbJtag?'USB Serial/JTAG':
   assert.equal(await page.locator('header h1').textContent(),'IOBEWI — Banc matériel');
   assert.ok(await page.locator('.local-card-group').evaluate(node=>node.getBoundingClientRect().bottom<=document.querySelector('.usb-group').getBoundingClientRect().top));
   assert.equal(await page.locator('#device-id').isEnabled(),true);
-  await page.locator('#device-id').fill('esp32-zero');
-  assert.equal(await page.title(),'esp32-zero · IOBEWI');
+  assert.equal(await page.locator('#device-id').evaluate(node=>node.tagName),'SELECT');
+  assert.deepEqual(await page.locator('#device-id option').allTextContents(),['board','board-b']);
+  assert.equal(await page.locator('#device-id option[value="esp32-gehe"]').count(),0);
+  await page.locator('#device-id').selectOption('board-b');
+  assert.equal(await page.title(),'board-b · IOBEWI');
   assert.equal(await page.locator('#access-panel #device-id').count(),0);
-  await page.locator('#device-id').fill('board');
+  await page.locator('#device-id').selectOption('board');
   assert.equal(await page.title(),'board · IOBEWI');
   await closeStatus(page);
   assert.equal(await page.locator('#card-details').isVisible(),false);
@@ -415,9 +418,20 @@ test(`local browser session and direct control over ${usbJtag?'USB Serial/JTAG':
   await page.click('#usb-toggle');
   await page.waitForFunction(()=>document.querySelector('#usb-toggle').textContent==='Connecter');
   assert.equal(await page.locator('#device-id').isEnabled(),true);
-  await page.locator('#device-id').fill('board-alt');
-  assert.equal(await page.title(),'board-alt · IOBEWI');
-  await page.locator('#device-id').fill('board');
+  await page.locator('#device-id').selectOption('board-b');
+  assert.equal(await page.title(),'board-b · IOBEWI');
+  await page.locator('#device-id').selectOption('board');
+  assert.equal(await page.title(),'board · IOBEWI');
+  // Tampering with the DOM cannot extend session permissions or open an unauthorized port.
+  const chooserBefore=await page.evaluate(()=>window.__chooserCount);
+  await page.locator('#device-id').evaluate(node=>{
+    const option=document.createElement('option'); option.value='esp32-gehe';option.textContent='esp32-gehe';
+    node.append(option);node.value='esp32-gehe';node.dispatchEvent(new Event('change',{bubbles:true}));
+  });
+  await page.click('#usb-toggle');
+  await page.waitForFunction(()=>document.querySelector('#client-state').textContent.includes('Identifiant de carte non autorisé'));
+  assert.equal(await page.evaluate(()=>window.__chooserCount),chooserBefore);
+  await page.locator('#device-id').selectOption('board');
   assert.equal(await page.title(),'board · IOBEWI');
   assert.equal(await page.textContent('#usb-state'),'non connecté');
   await page.waitForTimeout(1700);

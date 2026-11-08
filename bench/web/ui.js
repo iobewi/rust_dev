@@ -15,7 +15,7 @@ function syncLocalCardTitle() {
   const id = localCardLabel($('device-id').value);
   document.title = id === 'Carte non sélectionnée' ? 'IOBEWI — Banc matériel' : id + ' · IOBEWI';
 }
-$('device-id').addEventListener('input', syncLocalCardTitle);
+$('device-id').addEventListener('change', syncLocalCardTitle);
 syncLocalCardTitle();
 const terminal = new Set(['completed', 'failed', 'expired', 'cancelled', 'indeterminate']);
 const safeCommands = new Set(['identify', 'partitions', 'flash.read', 'mark']);
@@ -70,14 +70,29 @@ const reconnect = new SerialReconnect({ ports: () => navigator.serial.getPorts()
     renderState();
   } });
 
+function renderLocalCardChoices(devices) {
+  const select = $('device-id'), previous = select.value;
+  select.replaceChildren();
+  for (const id of devices) {
+    const option = document.createElement('option'); option.value = id; option.textContent = id;
+    select.append(option);
+  }
+  if (devices.includes(previous)) select.value = previous;
+  else if (!devices.length) {
+    const option = document.createElement('option'); option.value = ''; option.textContent = 'Aucune carte autorisée';
+    select.append(option);
+  }
+  syncLocalCardTitle();
+  renderState();
+}
+
 async function openSession() {
   if (session) return session;
   if (!sessionPromise) sessionPromise = (async () => {
     const response = await fetch('/session/v1/open', { method: 'POST', credentials: 'same-origin' });
     if (!response.ok) throw new Error((await response.json()).error?.code || 'Session du banc indisponible');
     session = await response.json();
-    if (!session.devices.includes($('device-id').value)) $('device-id').value = session.devices[0];
-    syncLocalCardTitle();
+    renderLocalCardChoices(session.devices);
     $('server-state').textContent = 'session locale ouverte';
     return session;
   })();
@@ -290,7 +305,7 @@ function renderState() {
   $('partition-suggestion').hidden = partitionSuggestions.get(selected()) !== d?.generation || !d?.generation || Number($('partition-address').value) !== 0x8000;
   $('devices').disabled = working || usbBusy || Boolean(reconnect.running);
   // A logical ID cannot change while its port is connected or automatic reconnection owns it.
-  $('device-id').disabled = Boolean(portConnected || usbBusy || reconnect.waiting || reconnect.running);
+  $('device-id').disabled = Boolean(!session || !session.devices.length || portConnected || usbBusy || reconnect.waiting || reconnect.running);
   $('cancel').disabled = !working || !current;
   $('usb-state').textContent = portConnected ? 'connecté' : 'non connecté';
   $('card-commands').dataset.mode = local ? engine?.mode || 'off' : 'remote';
@@ -316,7 +331,7 @@ function renderState() {
   $('recover').disabled = !local || !agent?.generation || Boolean(ownBusy) || !blocked;
   const usbAction = usbBusy ? usbDisconnecting ? 'Déconnexion…' : 'Connexion…' : portConnected ? 'Déconnecter' : reconnect.running ? 'Reconnexion…' : reconnect.waiting ? 'Annuler la reconnexion' : 'Connecter';
   $('usb-toggle').textContent = usbAction;
-  $('usb-toggle').disabled = usbBusy || working || Boolean(ownBusy || reconnect.running);
+  $('usb-toggle').disabled = !session || !session.devices.length || usbBusy || working || Boolean(ownBusy || reconnect.running);
   $('usb-toggle').title = portConnected ? 'Déconnecter volontairement le port désactive sa reconnexion automatique.' : reconnect.waiting ? 'Attendre la même carte ou annuler la reconnexion pour choisir un autre port.' : 'Choisir le port série à connecter. Son ouverture peut redémarrer la carte.';
   $('usb-indicator').dataset.tone = portConnected ? 'positive' : reconnect.waiting || usbBusy ? 'active' : 'neutral';
   $('usb-indicator').querySelector('use').setAttribute('href', '#icon-' + (portConnected ? 'usb' : reconnect.waiting || usbBusy ? 'busy' : 'unplug'));
@@ -455,8 +470,9 @@ hook('usb-toggle', async () => {
       feedback('Port Web Serial fermé. Reconnexion automatique désactivée.');
     } else {
       // Use the click activation for a chooser, without waiting on network requests first.
+      if (!session?.devices.includes($('device-id').value)) throw new Error('Identifiant de carte non autorisé par la configuration du banc');
       const port = await navigator.serial.requestPort();
-      await openSession(); await attach(port);
+      await attach(port);
     }
   } finally { usbBusy = false; usbDisconnecting = false; renderState(); }
 });
