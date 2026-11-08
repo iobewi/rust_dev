@@ -165,7 +165,7 @@ async def operations(request):
     b.sweep()
     if request.method == 'POST':
         data = await payload(request)
-        result = (b.manual(who, request[IDENTITY]['scopes'], data, local_agent_for(request[IDENTITY], data.get('device'), b))
+        result = (b.manual(who, request[IDENTITY]['scopes'], data, local_agent_for(request[IDENTITY], data.get('device') if isinstance(data, dict) else None, b))
                   if request.path.endswith('/manual-operations') else b.submit(who, request[IDENTITY]['scopes'], data))
         return json_reply(result, 202)
     key = request.match_info['id']
