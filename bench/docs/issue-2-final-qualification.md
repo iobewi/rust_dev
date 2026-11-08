@@ -74,7 +74,7 @@ résolue, quarantaine inattendue, epoch ou génération inattendus ; aucun rejeu
 |---|---|---|---|---|
 | **A — transports et démarrage** | S3R-2 ; NUSB-0/1/2 (S3 natif ; C3 optionnel pour la réénumération) | S3 DevKitC-1 puis S3 Zero (ou C3) | grant local court (S3R-2), reset (NUSB-2), entrée en chargeur (lectures), changement de carte et resélection du port | S3R-2 laisse la carte en mode téléchargement : retour par S3R-1 ou EN avant de continuer |
 | **B — résilience et contrôle** | G9 ; T7 ; R5-RELOAD, R5-UNPLUG, R5-RESTART | S3 DevKitC-1 | T7 : grant 300 s + resets ; R5 : lecture longue interrompue (onglet, câble, signal au lanceur identifié), récupération locale par l'opérateur | R5 : opération indéterminée = carte bloquée jusqu'à récupération locale ; jamais de rejeu |
-| **C — interfaces et exploitation** | U8 ; H10 ; M2 | source UART soutenue ; cible LAN ; deuxième carte | U8 : aucun grant ; H10 : grant 300 s, origine listée dans la page ; M2 : deux onglets, deux cartes | M2/H10/U8 : BLOCKED si la dépendance physique manque, pas FAIL |
+| **C — interfaces et exploitation** | U8 ; H10 ; M2 | source UART soutenue ; cible LAN ; deuxième carte | U8 : aucun grant ; H10 : grant 300 s, origine listée dans la page ; M2 : deux sessions de navigateur indépendantes (navigateur ou profil distinct, ou fenêtre normale + fenêtre privée), deux cartes | M2/H10/U8 : BLOCKED si la dépendance physique manque, pas FAIL |
 
 Aucune région flash n'est écrite dans ces lots. R4 et les régions `0x400000` / `0x410000` ne sont **pas** réautorisées.
 
