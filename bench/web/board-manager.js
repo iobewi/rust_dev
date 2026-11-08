@@ -5,7 +5,11 @@ import { SerialReconnect } from './serial-reconnect.js';
 // SerialPort and one WebSocket agent per logical board. Selection is view-only.
 export class BoardManager {
   constructor({ allowed, ports, createEngine, createAgent, onEvent = () => {},
-                onState = () => {}, makeReconnect = options => new SerialReconnect(options) }) {
+                onState = () => {}, makeReconnect = options => new SerialReconnect(options),
+                makeDevice = (ctx, identity, hardware) => ({
+                  id: ctx.id, ...identity, capabilities: hardware.capabilities(),
+                  connected: true, localOnly: true,
+                }) }) {
     this.contexts = new BoardContexts({ allowed });
     this.ports = ports;
     this.createEngine = createEngine;
@@ -13,6 +17,7 @@ export class BoardManager {
     this.onEvent = onEvent;
     this.onState = onState;
     this.makeReconnect = makeReconnect;
+    this.makeDevice = makeDevice;
   }
 
   select(id) {
@@ -24,8 +29,9 @@ export class BoardManager {
   get(id) { return this.contexts.get(id); }
   list() { return this.contexts.list(); }
 
-  async add(id, port) {
+  async add(id, port, options = {}) {
     const ctx = this.contexts.add(id, port);
+    ctx.options = options;
     ctx.reconnect = this.makeReconnect({
       ports: () => this.ports(),
       idle: () => !ctx.busy && !ctx.disconnecting && !ctx.engine?.busy &&
@@ -78,7 +84,7 @@ export class BoardManager {
       }
       if (!hardware.hold) await hardware.openConsole();
       ctx.identity = identity;
-      ctx.localDevice = { id: ctx.id, ...identity, capabilities: hardware.capabilities(), connected: true, localOnly: true };
+      ctx.localDevice = this.makeDevice(ctx, identity, hardware);
       ctx.status = 'connected';
       // Registration may arrive asynchronously; its generation is assigned
       // by the server, never manufactured by the browser.
