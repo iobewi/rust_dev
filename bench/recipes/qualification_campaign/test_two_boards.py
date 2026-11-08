@@ -1,7 +1,9 @@
 """M2 - two cards of the SAME chip family connected together (issue #2, requirement 9). Needs a second REAL card: never simulated in a campaign.
 
-The operator opens a second browser tab and connects the second card under another logical id (`second_board.board_id` in the private
-session, allowed by the server's token configuration). Loader entry (identify, flash.read) may restart each card (M2 consent). No write.
+The operator opens a second INDEPENDENT browser session (another browser, another profile, or one normal and one private window) and connects
+the second card under another logical id (`second_board.board_id` in the private session, allowed by the server's token configuration), setting
+that id BEFORE connecting the port. Tabs or windows of the same profile share the session cookie, hence the same agent: they interfere with each
+other and both default to `esp32-local` (observed during the first M2 attempt). Loader entry (identify, flash.read) may restart each card (M2 consent). No write.
 
 Criteria, written before any run:
   PASS     both cards are connected, unreserved, unquarantined and of the declared chip; one client reserves BOTH at the same time; each
@@ -31,7 +33,7 @@ def test_m2_two_boards_of_the_same_family(bench_client, qual_session, pytestconf
     if not cfg["readonly"]["reads"]:
         pytest.skip("BLOCKED: no readonly.reads range configured (use a range already qualified as stable)")
     item = cfg["readonly"]["reads"][0]
-    manifest = build_manifest(cfg, "M2", regions=[], steps=["Second card connected in a second tab under its own logical id"])
+    manifest = build_manifest(cfg, "M2", regions=[], steps=["Second card connected in an independent second browser session under its own logical id"])
     case, out = make_campaign(bench_client, cfg, "M2", __file__, pytestconfig, manifest=manifest), Outcome()
     with recorded(case, "M2", out, preconditions=f"{cfg['chip']} x2 ({cfg['board_id']}, {other_id})",
                   limits="Two real cards of one family reserved together; reads of one immutable range; no grant, no write; loader entry may restart "
