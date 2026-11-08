@@ -91,7 +91,7 @@ export class BoardManager {
       ctx.generation = null;
       ctx.agent = this.createAgent(ctx, hardware);
       ctx.agent.connect();
-      if (!expectedIdentity) ctx.reconnect.remember(port, identity);
+      if (!expectedIdentity || !ctx.reconnect.port) ctx.reconnect.remember(port, identity);
       this.onState(ctx);
       return ctx;
     } catch (error) {
