@@ -596,3 +596,68 @@ test('one browser window runs two simulated Web Serial contexts and scoped agent
   assert.deepEqual(errors,[]);
  }finally{await browser?.close();proc.kill('SIGTERM');lines.close();}
 });
+
+test('Device Lab UI owns two mocked Web Serial ports simultaneously and isolates their consoles',async()=>{
+ const proc=spawn('python3',['tests/browser_fixture.py'],{cwd:new URL('..',import.meta.url),stdio:['ignore','pipe','pipe']});
+ let stderr='';proc.stderr.on('data',b=>stderr+=b);const lines=createInterface({input:proc.stdout});
+ let browser;
+ try{
+  const url=await new Promise((resolve,reject)=>{lines.once('line',s=>resolve(JSON.parse(s).url));proc.once('exit',()=>reject(new Error(stderr)));});
+  browser=await chromium.launch({headless:true,executablePath:chromium.executablePath(),args:['--no-sandbox']});
+  const page=await browser.newPage();
+  const errors=[];page.on('pageerror',e=>errors.push(e.message));
+  await page.route('https://unpkg.com/esptool-js@0.7.0/bundle.js',route=>route.fulfill({
+   contentType:'application/javascript',headers:{'Access-Control-Allow-Origin':'*'},
+   path:new URL('serial-loader-fixture.js',import.meta.url).pathname,
+  }));
+  await page.addInitScript(()=>{
+   const serial=new EventTarget();
+   window.testPorts=['board','board-b'].map((id,i)=>({
+    id,readable:null,writable:null,closeCalls:0,getInfo:()=>({usbVendorId:0x1a86,usbProductId:0x7523}),
+    async open(){
+     if(this.readable)throw Error('port_already_open');
+     this.readable=new ReadableStream({start:controller=>{
+      this.controller=controller;
+      controller.enqueue(new TextEncoder().encode(id+'-serial-log\\n'));
+     }});
+     this.writable=new WritableStream();
+    },
+    async close(){
+     if(this.readable?.locked||this.writable?.locked)throw Error('locked_port');
+     this.closeCalls++;try{this.controller?.close();}catch{}
+     this.readable=null;this.writable=null;
+    },
+    async setSignals(){},
+   }));
+   let next=0;window.testChooserCount=()=>next;
+   serial.requestPort=async()=>window.testPorts[next++];
+   serial.getPorts=async()=>window.testPorts.slice(0,next);
+   Object.defineProperty(navigator,'serial',{value:serial,configurable:true});
+  });
+  await page.goto(url);
+  await page.waitForFunction(()=>document.querySelector('#add-device-id').value==='board');
+  await page.click('#add-device');
+  await page.waitForFunction(()=>document.querySelector('[data-device="board"] .board-status')?.textContent==='Connectée');
+  await page.waitForFunction(()=>document.querySelector('[data-device="board"] .board-name')?.getAttribute('aria-pressed')==='true');
+  await page.waitForFunction(()=>document.querySelector('#uart-log').textContent.includes('board-serial-log'));
+  await page.selectOption('#add-device-id','board-b');
+  await page.click('#add-device');
+  await page.waitForFunction(()=>document.querySelector('[data-device="board-b"] .board-status')?.textContent==='Connectée');
+  await page.waitForFunction(()=>document.querySelector('#uart-log').textContent.includes('board-b-serial-log'));
+  assert.equal((await page.textContent('#uart-log')).includes('board-serial-log'),false);
+  await page.click('[data-device="board"] .board-name');
+  await page.waitForFunction(()=>document.querySelector('#uart-log').textContent.includes('board-serial-log'));
+  assert.equal((await page.textContent('#uart-log')).includes('board-b-serial-log'),false);
+  assert.deepEqual(await page.evaluate(()=>window.testPorts.map(p=>p.closeCalls)),[0,0]);
+  assert.equal(await page.evaluate(()=>window.testChooserCount()),2);
+  await page.waitForFunction(async()=>{
+   const devices=(await (await fetch('/api/v1/devices')).json()).devices;
+   return devices.find(d=>d.id==='board')?.connected&&devices.find(d=>d.id==='board-b')?.connected;
+  });
+  await page.click('[data-device="board"] .board-status');
+  await page.waitForFunction(()=>document.querySelector('[data-device="board"] .board-status')?.textContent==='Déconnectée');
+  assert.equal(await page.locator('[data-device="board-b"] .board-status').textContent(),'Connectée');
+  assert.deepEqual(await page.evaluate(()=>window.testPorts.map(p=>p.closeCalls)),[1,0]);
+  assert.deepEqual(errors,[]);
+ }finally{await browser?.close();proc.kill('SIGTERM');lines.close();}
+});
