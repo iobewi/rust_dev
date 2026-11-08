@@ -111,6 +111,14 @@ export class BoardManager {
     ctx.engine?.cancelTrigger();
     ctx.engine?.transport?.abort('closed', 'USB disconnected');
     ctx.agent?.disconnect();
+    // An acknowledged or unacknowledged result belongs to the old generation.
+    // It cannot be settled by the new agent. Keep the durable hold and let the
+    // broker mark the interrupted operation for reconciliation; never replay it.
+    if (ctx.agent?.awaitingResult) {
+      ctx.agent.orphanedOperation = ctx.agent.awaitingResult.id;
+      ctx.agent.awaitingResult = null;
+      ctx.agent.activity();
+    }
     ctx.reconnect.disconnected(port);
     this.onEvent(ctx, 'usb_lost', {});
     this.onState(ctx);
