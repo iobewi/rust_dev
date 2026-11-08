@@ -401,6 +401,27 @@ test(`local browser session and direct control over ${usbJtag?'USB Serial/JTAG':
   assert.equal(await page.textContent('#status-label-permissions'),'Autorisations');
   await openStatus(page,'card');assert.equal(await page.locator('#recover').isVisible(),true);
   assert.equal(await page.locator('[data-command=console]').isDisabled(),true);
+  // A physical unplug keeps the logical ID locked while reconnection is pending.
+  await page.evaluate(async()=>{
+    const port=window.__serialPort;
+    port.controller.error(new DOMException('Unplugged','NetworkError'));
+    await Promise.resolve();await port.close();
+    const event=new Event('disconnect');
+    Object.defineProperty(event,'port',{value:port});
+    window.__serial.dispatchEvent(event);
+  });
+  await page.waitForFunction(()=>document.querySelector('#usb-toggle').textContent==='Annuler la reconnexion');
+  assert.equal(await page.locator('#device-id').isDisabled(),true);
+  await page.click('#usb-toggle');
+  await page.waitForFunction(()=>document.querySelector('#usb-toggle').textContent==='Connecter');
+  assert.equal(await page.locator('#device-id').isEnabled(),true);
+  await page.locator('#device-id').fill('board-alt');
+  assert.equal(await page.title(),'board-alt · IOBEWI');
+  await page.locator('#device-id').fill('board');
+  assert.equal(await page.title(),'board · IOBEWI');
+  assert.equal(await page.textContent('#usb-state'),'non connecté');
+  await page.waitForTimeout(1700);
+  assert.equal(await page.textContent('#usb-state'),'non connecté');
   assert.deepEqual(errors,[]);
  } finally {await browser?.close();proc.kill('SIGTERM');lines.close();}
 });

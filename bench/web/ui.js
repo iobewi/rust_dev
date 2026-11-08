@@ -289,6 +289,8 @@ function renderState() {
   });
   $('partition-suggestion').hidden = partitionSuggestions.get(selected()) !== d?.generation || !d?.generation || Number($('partition-address').value) !== 0x8000;
   $('devices').disabled = working || usbBusy || Boolean(reconnect.running);
+  // A logical ID cannot change while its port is connected or automatic reconnection owns it.
+  $('device-id').disabled = Boolean(portConnected || usbBusy || reconnect.waiting || reconnect.running);
   $('cancel').disabled = !working || !current;
   $('usb-state').textContent = portConnected ? 'connecté' : 'non connecté';
   $('card-commands').dataset.mode = local ? engine?.mode || 'off' : 'remote';
@@ -406,7 +408,7 @@ async function attach(port, expectedIdentity = null) {
     localDevice = { id: logicalId, ...identity, capabilities: hardware.capabilities(), connected: true, localOnly: true,
       http_origins: $('http-origins').value.split(',').map(s => s.trim()).filter(Boolean).map(s => new URL(s).origin) };
     if (!held) await hardware.openConsole();
-    portConnected = true; $('device-id').disabled = true; renderDevices(); $('devices').value = logicalId;
+    portConnected = true; renderDevices(); $('devices').value = logicalId;
     renderState(); renderConsole(); feedback('Carte connectée. Les commandes sont disponibles directement ; aucune prise de main préalable.');
     if (!expectedIdentity) reconnect.remember(port, identity);
     logAgent({ stage: 'usb_connected' });
@@ -449,7 +451,7 @@ hook('usb-toggle', async () => {
       await engine.close();
       if (engine.port.readable || engine.port.writable) throw new Error('Le port Web Serial n’est pas complètement fermé');
       portConnected = false; confirmation = null; $('program-confirmation').hidden = true;
-      $('device-id').disabled = false; append('SYS', 'Port Web Serial fermé par l’opérateur', localDevice.id);
+      append('SYS', 'Port Web Serial fermé par l’opérateur', localDevice.id);
       feedback('Port Web Serial fermé. Reconnexion automatique désactivée.');
     } else {
       // Use the click activation for a chooser, without waiting on network requests first.
@@ -633,9 +635,9 @@ navigator.serial?.addEventListener('disconnect', event => {
   if (agent?.active || agent?.awaitingResult) engine.setHold(true);
   engine.cancelTrigger(); engine.transport?.abort('closed', 'USB disconnected'); agent?.disconnect();
   portConnected = false; confirmation = null; $('program-confirmation').hidden = true;
+  reconnect.disconnected(port);
   renderState(); append('PERTE', 'Port USB déconnecté', localDevice.id); logAgent({ stage: 'usb_lost' });
   feedback('USB déconnecté. Reconnexion automatique de la même carte à son retour ; aucune opération rejouée.');
-  reconnect.disconnected(port); renderState();
 });
 let refreshTimer;
 async function backgroundRefresh() {
