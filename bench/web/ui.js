@@ -527,86 +527,39 @@ async function startStream() {
   }
 }
 
-async function attach(port, expectedIdentity = null) {
-  if (working || agent?.active || engine?.busy || agent?.socket?.readyState === 1) throw new Error('Terminez le pilotage actif avant de changer de port');
-  if (agent?.awaitingResult) engine.setHold(true);
-  if (agent?.socket) { agent.socket.onclose = null; agent.disconnect(); }
-  agent = null;
-  if (engine) { try { await engine.close(); } finally { engine = null; } }
-  const logicalId = $('device-id').value.trim();
-  if (!logicalId) throw new Error('Identifiant de carte vide');
-  if (session && !session.devices.includes(logicalId)) throw new Error('Identifiant de carte non autorisé par la configuration du banc');
-  const held = localStorage.getItem('bench.v1.hold.' + logicalId) === '1';
-  const deps = await import('https://unpkg.com/esptool-js@0.7.0/bundle.js');
-  const hardware = new EspEngine(port, deps, (type, event) => {
-    agent?.event(type, event);
-    if (type === 'uart') receive(unb64(event.data), logicalId, event.at);
-    else if (type === 'transport') {
-      append('SYS', event.detail, logicalId);
-      if (event.detail === 'opening console') logAgent({ stage: 'console' });
-      if (event.detail === 'opening loader') logAgent({ stage: 'loader' });
-    }
-  }, hold => localStorage.setItem('bench.v1.hold.' + logicalId, hold ? '1' : '0'));
-  hardware.hold = held; engine = hardware;
-  try {
-    const identity = await hardware.identity();
-    if (expectedIdentity && ['chip', 'flash_size', 'flash_id', 'mac'].some(key => identity[key] !== expectedIdentity[key])) throw new HardwareError('physical_identity_changed');
-    localDevice = { id: logicalId, ...identity, capabilities: hardware.capabilities(), connected: true, localOnly: true,
-      http_origins: $('http-origins').value.split(',').map(s => s.trim()).filter(Boolean).map(s => new URL(s).origin) };
-    if (!held) await hardware.openConsole();
-    portConnected = true; renderDevices(); $('devices').value = logicalId;
-    renderState(); renderConsole(); feedback('Carte connectée. Les commandes sont disponibles directement ; aucune prise de main préalable.');
-    if (!expectedIdentity) reconnect.remember(port, identity);
-    logAgent({ stage: 'usb_connected' });
-    if (session) connectAgent();
-  } catch (error) {
-    try { await hardware.close(); } catch { /* The failed port remains offline. */ }
-    engine = null; localDevice = null; portConnected = false; renderState(); throw error;
-  }
-}
-function connectAgent() {
-  if (!engine || !localDevice || !portConnected) throw new Error('Connectez d’abord un port Web Serial');
-  if (!session) throw new Error('Session locale du banc indisponible');
-  if (agent) { agent.reconnectNow(); return; }
-  if (engine.busy || agent?.active || [0, 1, 2].includes(agent?.socket?.readyState)) throw new Error('Agent déjà connecté ou matériel occupé');
-  if (agent?.awaitingResult) engine.setHold(true);
-  agent = new Agent({ engine, device: localDevice, onLog: logAgent, onActivity: activity, onState: state => {
-    $('agent-state').textContent = state === 'Agent connected' ? 'Agent connecté' : state.startsWith('Agent disconnected') ? 'Agent déconnecté · aucune commande rejouée' : state;
-    if (!agent?.generation) { confirmation = null; $('program-confirmation').hidden = true; }
-    $('server-state').textContent = agent?.generation ? 'agent connecté' : sessionOpened ? 'client connecté · agent absent' : 'agent non connecté';
-    renderState();
-    if (state === 'Agent connected') closeAccess();
-    if (state === 'Pilotage libéré par l’opérateur') { refreshDevices(false).catch(error => feedback(errorText(error))); }
-    if (state === 'Agent connected' && session) {
-      (async () => { await refreshDevices(false); if (!info(localDevice.id)) await refreshDevices(false); })().catch(error => feedback(errorText(error)));
-    }
-  } });
-  agent.connect();
-}
-hook('usb-toggle', async () => {
-  if (usbBusy || working || engine?.busy || agent?.active || agent?.awaitingResult || reconnect.running) throw new Error('Terminez l’opération en cours avant de modifier la connexion USB');
-  if (reconnect.waiting && !portConnected) {
-    reconnect.stop(); renderState(); feedback('Reconnexion automatique annulée. Vous pouvez connecter un port.'); return;
-  }
+async function addCard(id) {
   if (!navigator.serial) throw new Error('Web Serial indisponible dans ce navigateur ou ce contexte');
-  usbBusy = true; renderState();
+  if (!session?.devices.includes(id)) throw new Error('Identifiant non autorisé');
+  if (boards.get(id)) throw new Error('Carte déjà ajoutée dans cette fenêtre');
+  if (usbBusy) throw new Error('Sélection USB déjà en cours');
+  // requestPort must be called directly from the click activation, before any await.
+  const port = await navigator.serial.requestPort();
+  usbBusy = true; renderActiveCards();
   try {
-    if (portConnected) {
-      usbDisconnecting = true; reconnect.forget(); renderState();
-      agent?.cancelTrigger(); agent?.grant(0); agent?.disconnect();
-      await engine.close();
-      if (engine.port.readable || engine.port.writable) throw new Error('Le port Web Serial n’est pas complètement fermé');
-      portConnected = false; confirmation = null; $('program-confirmation').hidden = true;
-      append('SYS', 'Port Web Serial fermé par l’opérateur', localDevice.id);
-      feedback('Port Web Serial fermé. Reconnexion automatique désactivée.');
-    } else {
-      // Use the click activation for a chooser, without waiting on network requests first.
-      if (!session?.devices.includes($('device-id').value)) throw new Error('Identifiant de carte non autorisé par la configuration du banc');
-      const port = await navigator.serial.requestPort();
-      await attach(port);
-    }
-  } finally { usbBusy = false; usbDisconnecting = false; renderState(); }
+    esptoolDeps ||= await import('https://unpkg.com/esptool-js@0.7.0/bundle.js');
+    const http_origins = $('http-origins').value.split(',').map(v => v.trim()).filter(Boolean)
+      .map(v => new URL(v).origin);
+    await boards.add(id, port, { http_origins });
+    renderDevices();
+    $('devices').value = id;
+    boards.select(id);
+    $('devices').onchange?.();
+    feedback('Carte connectée. Les autres ports restent actifs.');
+    await refreshDevices(false);
+  } finally { usbBusy = false; renderActiveCards(); renderState(); }
+}
+hook('add-device', async () => {
+  const id = $('add-device-id').value;
+  if (!id) throw new Error('Choisissez un identifiant libre');
+  await addCard(id);
 });
+function connectAgent() {
+  const ctx = boards.get(selected());
+  if (!ctx?.agent || ctx.status !== 'connected') throw new Error('Connectez d’abord un port Web Serial');
+  if (!session) throw new Error('Session locale du banc indisponible');
+  if (ctx.agent.socket?.readyState === 1) throw new Error('Agent déjà connecté');
+  ctx.agent.reconnectNow();
+}
 hook('agent-connect', connectAgent);
 hook('grant', () => { if (!agent?.generation) throw new Error('Agent local non connecté'); if (confirm(`Autoriser les opérations privilégiées sur ${localDevice.id} pendant ${$('grant-time').selectedOptions[0].textContent} ?`)) { agent.grant(Number($('grant-time').value)); renderState(); } });
 hook('revoke', () => { agent.grant(0); renderState(); });
