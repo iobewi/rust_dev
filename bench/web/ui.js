@@ -15,9 +15,10 @@ const terminal = new Set(['completed', 'failed', 'expired', 'cancelled', 'indete
 const safeCommands = new Set(['identify', 'partitions', 'flash.read', 'mark']);
 const actions = { 'try-partition-address': 'partitions', read: 'flash.read', write: 'flash.write', erase: 'flash.erase', send: 'uart.write',
   configure: 'uart.configure', io0: 'io0', mark: 'mark', trigger: 'trigger', disarm: 'trigger', http: 'http.request' };
-let operationDevice;
 let usbBusy = false, usbDisconnecting = false;
-let agent, engine, localDevice, portConnected = false, current, working = false;
+let agent, engine, localDevice, portConnected = false, current;
+const inFlight = new Map();
+const isWorking = () => inFlight.has(selected());
 let reconnect = { waiting: false, running: false, stop() {}, forget() {} };
 let esptoolDeps;
 const boardBusy = new Map();
@@ -417,6 +418,7 @@ function renderDevices() {
 }
 function renderState() {
   syncContext();
+  current = inFlight.get(selected())?.id || null;
   const d = info() || (localDevice?.id === selected() ? localDevice : null);
   const local = localDevice && selected() === localDevice.id;
   const blocked = d?.quarantined || local && engine?.hold;
@@ -424,7 +426,7 @@ function renderState() {
   const ownBusy = local && (engine?.busy || agent?.active || agent?.awaitingResult);
   const capability = new Set(d?.capabilities || []);
   const otherOwner = d?.reservation && d.reservation.owner !== session?.client;
-  const base = Boolean(session && info()?.connected && !working && !ownBusy && !usbBusy && !reconnect.running && !otherOwner);
+  const base = Boolean(session && info()?.connected && !isWorking() && !ownBusy && !usbBusy && !reconnect.running && !otherOwner);
   document.querySelectorAll('[data-hardware]').forEach(button => {
     const command = button.dataset.command || actions[button.id];
     button.disabled = !base || !capability.has(command) || Boolean(blocked && !safeCommands.has(command)) ||
@@ -435,7 +437,7 @@ function renderState() {
   $('devices').disabled = false;
   // A logical ID cannot change while its port is connected or automatic reconnection owns it.
   $('device-id').disabled = Boolean(!session || !session.devices.length || portConnected || usbBusy || reconnect.waiting || reconnect.running);
-  $('cancel').disabled = !working || !current;
+  $('cancel').disabled = !isWorking() || !current;
   $('usb-state').textContent = portConnected ? 'connecté' : 'non connecté';
   $('card-commands').dataset.mode = local ? engine?.mode || 'off' : 'remote';
   $('chip-info').textContent = d?.chip || '—'; $('flash-info').textContent = d?.flash_size ? `${hex(d.flash_size)} · ${d.flash_size} octets` : '—';
@@ -448,11 +450,11 @@ function renderState() {
   resetButton.textContent = usbReset ? 'Reset USB' : local ? 'Reset EN' : 'Redémarrer';
   resetButton.title = usbReset ? 'Redémarre via le contrôleur USB Serial/JTAG, sans piloter EN ou IO0.' : 'Redémarre par EN, en mode console avec un pont UART externe.';
 
-  $('control-state').textContent = working ? 'Opération manuelle en cours' : d?.reservation ? (otherOwner ? 'Pilotée par : ' + d.reservation.owner : 'Déclencheur ou opération en cours') : d?.connected && !d?.localOnly ? 'Disponible · commandes directes' : 'Local · observation';
+  $('control-state').textContent = isWorking() ? 'Opération manuelle en cours' : d?.reservation ? (otherOwner ? 'Pilotée par : ' + d.reservation.owner : 'Déclencheur ou opération en cours') : d?.connected && !d?.localOnly ? 'Disponible · commandes directes' : 'Local · observation';
   $('grant').disabled = !local || !agent?.generation; $('revoke').disabled = $('grant').disabled;
   $('grant-state').textContent = local && agent?.grantUntil > performance.now() ? `Opérations distantes autorisées : ${Math.ceil((agent.grantUntil - performance.now()) / 1000)} s` : 'À la demande · aucune autorisation distante active.';
   $('revoke').hidden = !(local && agent?.grantUntil > performance.now());
-  $('release-control').disabled = !local || !agent?.generation || Boolean(ownBusy || working) || !d?.reservation;
+  $('release-control').disabled = !local || !agent?.generation || Boolean(ownBusy || isWorking()) || !d?.reservation;
   activity();
   $('safety-state').textContent = local && agent?.awaitingResult ? 'Attente de l’accusé serveur' : blocked ? 'Blocage : récupération opérateur requise' : d ? 'Aucun blocage signalé' : 'Aucun état matériel connu';
   $('safety-state').classList.toggle('danger', Boolean(blocked));
@@ -460,7 +462,7 @@ function renderState() {
   $('recover').disabled = !local || !agent?.generation || Boolean(ownBusy) || !blocked;
   const usbAction = usbBusy ? usbDisconnecting ? 'Déconnexion…' : 'Connexion…' : portConnected ? 'Déconnecter' : reconnect.running ? 'Reconnexion…' : reconnect.waiting ? 'Annuler la reconnexion' : 'Connecter';
   $('usb-toggle').textContent = usbAction;
-  $('usb-toggle').disabled = !session || !session.devices.length || usbBusy || working || Boolean(ownBusy || reconnect.running);
+  $('usb-toggle').disabled = !session || !session.devices.length || usbBusy || isWorking() || Boolean(ownBusy || reconnect.running);
   $('usb-toggle').title = portConnected ? 'Déconnecter volontairement le port désactive sa reconnexion automatique.' : reconnect.waiting ? 'Attendre la même carte ou annuler la reconnexion pour choisir un autre port.' : 'Choisir le port série à connecter. Son ouverture peut redémarrer la carte.';
   $('usb-indicator').dataset.tone = portConnected ? 'positive' : reconnect.waiting || usbBusy ? 'active' : 'neutral';
   $('usb-indicator').querySelector('use').setAttribute('href', '#icon-' + (portConnected ? 'usb' : reconnect.waiting || usbBusy ? 'busy' : 'unplug'));
@@ -468,7 +470,7 @@ function renderState() {
   const linked = local ? Boolean(agent?.generation && agent?.socket?.readyState === 1) : Boolean(d?.connected);
   const serverLost = $('server-state').textContent === 'liaison interrompue';
   indicator('agent', serverLost ? 'Liaison interrompue' : linked ? 'Agent connecté' : 'Agent hors ligne', linked && !serverLost ? 'link' : 'offline', serverLost ? 'warning' : linked ? 'positive' : 'neutral');
-  indicator('control', otherOwner ? 'Occupée · ' + d.reservation.owner : working || ownBusy || d?.reservation ? 'En cours' : d?.connected ? 'Disponible' : 'En attente', otherOwner ? 'user' : working || ownBusy || d?.reservation ? 'busy' : 'check', otherOwner || working || ownBusy || d?.reservation ? 'active' : 'neutral');
+  indicator('control', otherOwner ? 'Occupée · ' + d.reservation.owner : isWorking() || ownBusy || d?.reservation ? 'En cours' : d?.connected ? 'Disponible' : 'En attente', otherOwner ? 'user' : isWorking() || ownBusy || d?.reservation ? 'busy' : 'check', otherOwner || isWorking() || ownBusy || d?.reservation ? 'active' : 'neutral');
   const granted = local && agent?.grantUntil > performance.now();
   indicator('permissions', granted ? `Distant autorisé · ${Math.ceil((agent.grantUntil - performance.now()) / 1000)} s` : 'Autorisations', granted ? 'unlock' : 'lock', granted ? 'warning' : 'neutral');
   $('footer-target').textContent = selected() ? `${selected()} · ${$('control-state').textContent}` : 'Aucune carte sélectionnée';
@@ -589,13 +591,17 @@ function recordOperation(op, started) {
   }
 }
 async function submit(command, args = {}, destructive = false) {
-  if (working) throw new Error('Une opération manuelle est déjà en cours');
+  if (isWorking()) throw new Error('Une opération manuelle est déjà en cours sur cette carte');
   const target = selectedTarget();
   if (command === 'partitions') { partitionSuggestions.delete(target.device); partitionCache.delete(target.device); renderPartitions(); }
-  operationDevice = target.device; working = true; current = null; renderState(); const started = performance.now(), client = api();
+  const ticket = { id: null };
+  inFlight.set(target.device, ticket);
+  renderState(); const started = performance.now(), client = api();
   try {
     let op = await client.request('manual-operations', { method: 'POST', data: { device: target.device, generation: target.generation, command, args, allow_destructive: destructive, timeout: command === 'flash.read' ? 600 : 120 } });
-    current = op.id; selectedOperation = op.id; recordOperation(op, started); renderState();
+    ticket.id = op.id;
+    if (selected() === target.device) selectedOperation = op.id;
+    recordOperation(op, started); renderState();
     for (;;) {
       if (terminal.has(op.state)) break;
       await new Promise(resolve => setTimeout(resolve, 250));
@@ -613,7 +619,7 @@ async function submit(command, args = {}, destructive = false) {
     if (command === 'flash.read' && op.result?.artifact) await showDump(op.result.artifact, args.address, client);
     return op;
   } finally {
-    working = false; operationDevice = null; current = null;
+    if (inFlight.get(target.device) === ticket) inFlight.delete(target.device);
     await refreshDevices(false).catch(() => {}); renderState();
   }
 }
