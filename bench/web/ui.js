@@ -47,19 +47,29 @@ const hook = (id, fn) => { $(id).onclick = safely(fn); };
 const json = value => { $('result').textContent = JSON.stringify(value, null, 2); };
 $('server-origin').textContent = location.origin;
 
-const journal = new AgentJournal();
-function logAgent(event) {
-  journal.append(event);
-  const body = $('agent-log'), previousScroll = body.scrollTop, follow = body.scrollHeight - body.clientHeight - body.scrollTop < 30;
+const journals = new Map();
+const journalFor = id => {
+  if (!journals.has(id)) journals.set(id, new AgentJournal());
+  return journals.get(id);
+};
+function renderJournal() {
+  const body = $('agent-log'), previousScroll = body.scrollTop;
+  const follow = body.scrollHeight - body.clientHeight - body.scrollTop < 30;
   body.replaceChildren();
-  for (const row of journal.rows) {
+  for (const row of (journals.get(selected())?.rows || [])) {
     const line = document.createElement('div'); line.className = 'journal-row';
     const time = document.createElement('time'); time.textContent = new Date(row.at).toLocaleTimeString('fr-FR', { hour12: false });
     const text = document.createElement('span'); text.textContent = row.text; line.append(time, text); body.append(line);
   }
   body.scrollTop = follow ? body.scrollHeight : previousScroll;
 }
-hook('agent-log-clear', () => { journal.rows = []; $('agent-log').replaceChildren(); });
+function logAgent(event) {
+  const device = event.device || localDevice?.id || selected();
+  if (!device) return;
+  journalFor(device).append(event);
+  if (device === selected()) renderJournal();
+}
+hook('agent-log-clear', () => { if (selected()) journalFor(selected()).rows = []; renderJournal(); });
 hook('agent-log-toggle', () => { const open = $('agent-log').hidden; $('agent-log').hidden = !open; $('agent-log-toggle').textContent = open ? 'Réduire' : 'Développer'; $('agent-log-toggle').setAttribute('aria-expanded', String(open)); });
 const wake = new WorkWakeLock({ wakeLock: navigator.wakeLock, visible: () => document.visibilityState === 'visible', onState: wakeIndicator });
 const activity = () => wake.update(Boolean(portConnected && (engine?.busy || agent?.active || agent?.awaitingResult)));
@@ -285,7 +295,7 @@ function renderDevices() {
   for (const d of devices) { const option = document.createElement('option'); option.value = d.id; option.textContent = `${d.id} · ${d.chip}${d.connected ? '' : ' · absent'}`; $('devices').append(option); }
   $('devices').value = previous;
   if (!selected() && devices.length) $('devices').value = localDevice?.id || devices[0].id;
-  renderState(); renderPartitions(); renderConsole();
+  renderState(); renderPartitions(); renderConsole(); renderJournal();
 }
 function renderState() {
   const d = info() || (localDevice?.id === selected() ? localDevice : null);
@@ -348,7 +358,9 @@ $('devices').onchange = () => {
   if (working && operationDevice) { $('devices').value = operationDevice; return; }
   confirmation = null; $('program-confirmation').hidden = true; $('download').replaceChildren(); $('hex-dump').textContent = 'Aucune donnée lue pour cette carte.';
   if (paused) pausedAt = capture(selected()).sequence;
-  renderState(); renderPartitions(); renderConsole(); startStream();
+  selectedOperation = null;
+  renderOperations(); json({});
+  renderState(); renderPartitions(); renderConsole(); renderJournal(); startStream();
 };
 async function refreshDevices(publish = true) {
   if (!session) return;
@@ -484,7 +496,7 @@ hook('recover', () => { if (confirm(`Après relecture et vérification de ${loca
 
 function renderOperations() {
   const body = $('operations-body'); body.replaceChildren();
-  for (const record of [...operationLog.values()].reverse()) {
+  for (const record of [...operationLog.values()].filter(op => op.device === selected()).reverse()) {
     const row = document.createElement('tr');
     for (const value of [record.id.slice(0, 10), record.device, record.command, record.state, Math.round((record.finished || performance.now()) - record.started) + ' ms']) {
       const cell = document.createElement('td'); cell.textContent = value; cell.className = 'mono'; row.append(cell);
@@ -499,7 +511,10 @@ function recordOperation(op, started) {
   operationLog.set(op.id, { ...previous, id: op.id, device: op.device, command: op.command, state: op.state, snapshot: op,
     started: previous?.started || started, finished: terminal.has(op.state) ? previous?.finished || performance.now() : null });
   while (operationLog.size > 200) operationLog.delete(operationLog.keys().next().value);
-  renderOperations(); if (!selectedOperation || selectedOperation === op.id) json(op);
+  if (op.device === selected()) {
+    renderOperations();
+    if (!selectedOperation || selectedOperation === op.id) json(op);
+  }
 }
 async function submit(command, args = {}, destructive = false) {
   if (working) throw new Error('Une opération manuelle est déjà en cours');
