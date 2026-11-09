@@ -165,7 +165,7 @@ def validate_second_board(section, cfg):
     return dict(section)
 
 
-M40_KEYS = {"read", "avoid", "sample_interval_s"}
+M40_KEYS = {"read", "avoid", "sample_interval_s", "compatible_server_sha256"}
 M40_BLOCK = 1024 * 1024                       # the agent reads in blocks of at most 1 MiB: one block keeps the proof a single transfer
 
 
@@ -174,7 +174,8 @@ def validate_m40(section, cfg):
 
     Never presumed: absent section = the scenario is BLOCKED. `avoid` lists regions the operator declares sensitive
     (configuration, otadata...); the range must not touch them. Ranges are 4-KiB aligned, inside the declared flash and
-    at most one agent block (1 MiB). Reads only: nothing here authorises a write or an erase."""
+    at most one agent block (1 MiB). `compatible_server_sha256` lists server code digests the operator reviewed as compatible
+    when they differ from this checkout's (see m40.assess_server_build). Reads only: nothing here authorises a write or an erase."""
     if not isinstance(section, dict) or section.keys() - M40_KEYS:
         raise SessionError(f"m40 accepts only {sorted(M40_KEYS)}")
     if not section:
@@ -204,7 +205,11 @@ def validate_m40(section, cfg):
     interval = section.get("sample_interval_s", 0.5)
     if type(interval) not in (int, float) or isinstance(interval, bool) or not 0.1 <= interval <= 5:
         raise SessionError("m40.sample_interval_s must be 0.1..5 seconds")
-    return {"read": read, "avoid": avoid, "sample_interval_s": float(interval)}
+    compatible = section.get("compatible_server_sha256", [])
+    if (not isinstance(compatible, list) or len(compatible) > 8 or len(set(compatible)) != len(compatible) or
+            not all(isinstance(x, str) and len(x) == 64 and all(c in "0123456789abcdef" for c in x) for x in compatible)):
+        raise SessionError("m40.compatible_server_sha256: at most 8 distinct lowercase hex SHA-256 of reviewed server code")
+    return {"read": read, "avoid": avoid, "sample_interval_s": float(interval), "compatible_server_sha256": compatible}
 
 
 def validate_lan_http(section):
