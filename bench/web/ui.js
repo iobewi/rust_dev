@@ -1,6 +1,6 @@
 import { HardwareError, diagnostic } from './hardware-errors.js';
 import { WorkWakeLock } from './wake-lock.js';
-import { SerialReconnect } from './serial-reconnect.js';
+import { BoardManager } from './board-manager.js';
 import { AgentJournal } from './agent-journal.js';
 import { Agent } from './agent.js';
 import { EspEngine } from './esp-engine.js';
@@ -10,20 +10,18 @@ import { ConsoleBuffer } from './console-buffer.js';
 import { address, hex, flashPlan } from './ui-model.js';
 
 const $ = id => document.getElementById(id);
-const localCardLabel = value => value.trim() || 'Carte non sélectionnée';
-function syncLocalCardTitle() {
-  const id = localCardLabel($('device-id').value);
-  document.title = id === 'Carte non sélectionnée' ? 'IOBEWI — Banc matériel' : id + ' · IOBEWI';
-}
-$('device-id').addEventListener('change', syncLocalCardTitle);
-syncLocalCardTitle();
+document.title = 'IOBEWI Device Lab';
 const terminal = new Set(['completed', 'failed', 'expired', 'cancelled', 'indeterminate']);
 const safeCommands = new Set(['identify', 'partitions', 'flash.read', 'mark']);
 const actions = { 'try-partition-address': 'partitions', read: 'flash.read', write: 'flash.write', erase: 'flash.erase', send: 'uart.write',
   configure: 'uart.configure', io0: 'io0', mark: 'mark', trigger: 'trigger', disarm: 'trigger', http: 'http.request' };
-let operationDevice;
 let usbBusy = false, usbDisconnecting = false;
-let agent, engine, localDevice, portConnected = false, current, working = false;
+let agent, engine, localDevice, portConnected = false, current;
+const inFlight = new Map();
+const isWorking = () => inFlight.has(selected());
+let reconnect = { waiting: false, running: false, stop() {}, forget() {} };
+let esptoolDeps;
+const boardBusy = new Map();
 let knownDevices = [], imagePlan = [], artifactList = [], confirmation;
 let format = 'text', paused = false, pausedAt = Infinity, renderPending = false, selectedOperation, lastConsoleKey;
 let streamController, streamGeneration = 0, refreshPromise, sessionOpened = false;
@@ -72,27 +70,157 @@ function logAgent(event) {
 hook('agent-log-clear', () => { if (selected()) journalFor(selected()).rows = []; renderJournal(); });
 hook('agent-log-toggle', () => { const open = $('agent-log').hidden; $('agent-log').hidden = !open; $('agent-log-toggle').textContent = open ? 'Réduire' : 'Développer'; $('agent-log-toggle').setAttribute('aria-expanded', String(open)); });
 const wake = new WorkWakeLock({ wakeLock: navigator.wakeLock, visible: () => document.visibilityState === 'visible', onState: wakeIndicator });
-const activity = () => wake.update(Boolean(portConnected && (engine?.busy || agent?.active || agent?.awaitingResult)));
+const activity = () => wake.update(boards.list().some(ctx => ctx.status === 'connected' &&
+  (ctx.engine?.busy || ctx.agent?.active || ctx.agent?.awaitingResult)));
 document.addEventListener('visibilitychange', () => wake.update(wake.active, true));
-const reconnect = new SerialReconnect({ ports: () => navigator.serial.getPorts(), idle: () => !working && !engine?.busy && !agent?.active && agent?.socket?.readyState !== 1,
-  attach: (port, identity) => attach(port, identity), state: stage => { logAgent({ stage });
-    feedback(stage === 'identity_changed' ? diagnostic('physical_identity_changed') : stage === 'usb_connected' ? 'Carte reconnectée. Aucune opération rejouée.' : 'Reconnexion automatique de la carte…');
+const boards = new BoardManager({
+  allowed: [], ports: () => navigator.serial.getPorts(),
+  createEngine(ctx, port, emit) {
+    const hardware = new EspEngine(port, esptoolDeps, emit,
+      held => localStorage.setItem('bench.v1.hold.' + ctx.id, held ? '1' : '0'));
+    hardware.hold = localStorage.getItem('bench.v1.hold.' + ctx.id) === '1';
+    return hardware;
+  },
+  makeDevice(ctx, identity, hardware) {
+    return { id: ctx.id, ...identity, capabilities: hardware.capabilities(),
+      connected: true, localOnly: true, http_origins: ctx.options.http_origins || [] };
+  },
+  createAgent(ctx, hardware) {
+    return new Agent({ engine: hardware, device: ctx.localDevice, scopedBrowserAgent: true,
+      onLog: event => logAgent({ ...event, device: ctx.id }),
+      onActivity: activity,
+      onState: state => {
+        ctx.generation = ctx.agent?.generation || null;
+        if (selected() === ctx.id) {
+          $('agent-state').textContent = state === 'Agent connected' ? 'Agent connecté' :
+            state.startsWith('Agent disconnected') ? 'Agent déconnecté · aucune commande rejouée' : state;
+          if (!ctx.generation) { confirmation = null; $('program-confirmation').hidden = true; }
+          $('server-state').textContent = ctx.generation ? 'agent connecté' :
+            sessionOpened ? 'client connecté · agent absent' : 'agent non connecté';
+          renderState();
+          if (state === 'Agent connected') closeAccess();
+        }
+        if (state === 'Agent connected' || state === 'Pilotage libéré par l’opérateur')
+          refreshDevices(false).catch(error => feedback(errorText(error)));
+      },
+    });
+  },
+  onEvent(ctx, type, event) {
+    if (type === 'uart') receive(unb64(event.data), ctx.id, event.at);
+    else if (type === 'transport') {
+      append('SYS', event.detail, ctx.id);
+      if (event.detail === 'opening console') logAgent({ stage: 'console', device: ctx.id });
+      if (event.detail === 'opening loader') logAgent({ stage: 'loader', device: ctx.id });
+    } else if (type === 'usb_lost') {
+      append('PERTE', 'Port USB déconnecté', ctx.id);
+      logAgent({ stage: 'usb_lost', device: ctx.id });
+    } else if (type === 'reconnect') {
+      logAgent({ stage: event.stage, device: ctx.id });
+    }
+  },
+  onState(ctx) {
+    if (selected() === ctx.id) syncContext();
+    renderActiveCards();
     renderState();
-  } });
+  },
+});
+function syncContext() {
+  const ctx = boards.get(selected());
+  agent = ctx?.agent || null;
+  engine = ctx?.engine || null;
+  localDevice = ctx?.localDevice || null;
+  portConnected = ctx?.status === 'connected';
+  reconnect = ctx?.reconnect || { waiting: false, running: false, stop() {}, forget() {} };
+}
 
+function renderActiveCards() {
+  const body = $('active-cards'), previous = $('add-device-id').value;
+  body.replaceChildren();
+  for (const ctx of boards.list()) {
+    const row = document.createElement('div');
+    row.className = 'active-board';
+    row.dataset.device = ctx.id;
+    row.dataset.selected = String(selected() === ctx.id);
+    const name = document.createElement('button');
+    name.type = 'button'; name.className = 'board-name'; name.textContent = ctx.id;
+    name.setAttribute('aria-pressed', String(selected() === ctx.id));
+    name.title = 'Afficher cette carte, sans action matérielle';
+    name.onclick = () => {
+      $('devices').value = ctx.id;
+      boards.select(ctx.id);
+      $('devices').onchange?.();
+    };
+    const chip = document.createElement('span');
+    chip.className = 'board-chip'; chip.textContent = ctx.identity?.chip || 'MCU inconnu';
+    const status = document.createElement('button');
+    status.type = 'button'; status.className = 'board-status';
+    status.dataset.state = ctx.status;
+    status.textContent = ({ connected: 'Connectée', connecting: 'Connexion…',
+      usb_lost: ctx.reconnect?.waiting ? 'Reconnexion en attente' : 'USB perdu',
+      reconnecting: 'Reconnexion…', disconnected: 'Déconnectée' })[ctx.status] || 'Indisponible';
+    status.title = ctx.status === 'connected' ? 'Déconnecter uniquement ce port USB' :
+      ctx.reconnect?.waiting ? 'Annuler la reconnexion de cette carte' :
+      'Reconnecter cette carte à son port précédemment sélectionné';
+    status.disabled = ctx.disconnecting || ctx.busy || ctx.engine?.busy || ctx.agent?.active ||
+      ctx.agent?.awaitingResult || ctx.reconnect?.running || ctx.status === 'connecting';
+    status.onclick = safely(async () => {
+      if (ctx.status === 'connected') {
+        if (ctx.agent?.active || ctx.agent?.awaitingResult || ctx.engine?.busy || inFlight.has(ctx.id))
+          throw new Error('Opération en cours');
+        const reserved = info(ctx.id)?.reservation;
+        const privileged = ctx.agent?.grantUntil > performance.now();
+        if ((reserved || privileged || ctx.engine?.hold) &&
+            !confirm('Déconnecter ' + ctx.id + ' malgré son état de sécurité ou sa réservation ? La déconnexion ne lève pas la quarantaine.'))
+          return;
+        await boards.disconnect(ctx.id);
+      } else if (ctx.reconnect?.waiting) {
+        boards.cancelReconnect(ctx.id);
+      } else {
+        await boards.reconnect(ctx.id);
+      }
+      await refreshDevices(false);
+      renderDevices();
+    });
+    row.append(name, chip, status);
+    if (ctx.status === 'disconnected') {
+      const forget = document.createElement('button');
+      forget.type = 'button'; forget.className = 'board-forget';
+      forget.textContent = 'Retirer'; forget.title = 'Oublier le port dans cette fenêtre sans supprimer les preuves serveur';
+      forget.onclick = safely(async () => {
+        await boards.forget(ctx.id);
+        renderDevices();
+      });
+      row.append(forget);
+    }
+    body.append(row);
+  }
+  if (!body.children.length) {
+    const empty = document.createElement('p'); empty.className = 'hint';
+    empty.textContent = 'Aucune carte connectée dans cette fenêtre.'; body.append(empty);
+  }
+  const free = (session?.devices || []).filter(id => !boards.get(id));
+  const select = $('add-device-id');
+  select.replaceChildren();
+  for (const id of free) {
+    const opt = document.createElement('option'); opt.value = id; opt.textContent = id;
+    select.append(opt);
+  }
+  if (free.includes(previous)) select.value = previous;
+  if (!free.length) {
+    const option = document.createElement('option'); option.textContent = 'Aucun ID libre'; option.value = ''; select.append(option);
+  }
+  select.disabled = !free.length;
+  $('add-device').disabled = !free.length || usbBusy;
+}
 function renderLocalCardChoices(devices) {
-  const select = $('device-id'), previous = select.value;
+  boards.contexts.setAllowed(devices);
+  const select = $('device-id');
   select.replaceChildren();
   for (const id of devices) {
     const option = document.createElement('option'); option.value = id; option.textContent = id;
     select.append(option);
   }
-  if (devices.includes(previous)) select.value = previous;
-  else if (!devices.length) {
-    const option = document.createElement('option'); option.value = ''; option.textContent = 'Aucune carte autorisée';
-    select.append(option);
-  }
-  syncLocalCardTitle();
+  renderActiveCards();
   renderState();
 }
 
@@ -110,7 +238,8 @@ async function openSession() {
 }
 function selectedTarget() {
   const d = info();
-  if (!session || !d?.connected) throw new Error('Connectez une carte au banc');
+  if (!session || !d?.connected || boards.get(d.id) && boards.get(d.id).status !== 'connected')
+    throw new Error('Connectez une carte au banc');
   return { device: d.id, chip: d.chip, flash_size: d.flash_size, generation: d.generation };
 }
 function selectTabs(attribute, name, panelSelector, panelPrefix) {
@@ -288,24 +417,35 @@ hook('export-events', () => { if (!selected()) throw new Error('Aucune carte sé
   events: buffer.events.map(({ bytes, ...rest }) => ({ ...rest, data: b64(bytes) })) }, null, 2)], { type: 'application/json' }), 'hardware-events.json'); });
 
 function renderDevices() {
-  const previous = operationDevice || selected();
+  const previous = selected();
   const devices = [...knownDevices];
-  if (localDevice && !devices.some(d => d.id === localDevice.id)) devices.push({ ...localDevice, connected: portConnected, localOnly: true });
+  for (const ctx of boards.list()) {
+    if (!devices.some(d => d.id === ctx.id)) devices.push({ ...ctx.localDevice,
+      id: ctx.id, chip: ctx.identity?.chip || 'inconnu', connected: ctx.status === 'connected', localOnly: true });
+  }
   $('devices').replaceChildren();
-  for (const d of devices) { const option = document.createElement('option'); option.value = d.id; option.textContent = `${d.id} · ${d.chip}${d.connected ? '' : ' · absent'}`; $('devices').append(option); }
+  for (const d of devices) {
+    const option = document.createElement('option'); option.value = d.id;
+    option.textContent = `${d.id} · ${d.chip}${d.connected ? '' : ' · absent'}`;
+    $('devices').append(option);
+  }
   $('devices').value = previous;
-  if (!selected() && devices.length) $('devices').value = localDevice?.id || devices[0].id;
-  renderState(); renderPartitions(); renderConsole(); renderJournal();
+  if (!selected() && devices.length) $('devices').value = boards.list()[0]?.id || devices[0].id;
+  syncContext();
+  renderActiveCards(); renderState(); renderPartitions(); renderConsole(); renderJournal();
 }
 function renderState() {
+  syncContext();
+  current = inFlight.get(selected())?.id || null;
   const d = info() || (localDevice?.id === selected() ? localDevice : null);
   const local = localDevice && selected() === localDevice.id;
   const blocked = d?.quarantined || local && engine?.hold;
-  $('card-details').hidden = !(portConnected || !local && d?.connected);
+  $('card-details').hidden = !(boards.get(selected()) || d?.connected);
   const ownBusy = local && (engine?.busy || agent?.active || agent?.awaitingResult);
   const capability = new Set(d?.capabilities || []);
   const otherOwner = d?.reservation && d.reservation.owner !== session?.client;
-  const base = Boolean(session && info()?.connected && !working && !ownBusy && !usbBusy && !reconnect.running && !otherOwner);
+  const base = Boolean(session && info()?.connected && (!local || portConnected && agent?.generation && agent.socket?.readyState === 1) &&
+    !isWorking() && !ownBusy && !usbBusy && !reconnect.running && !otherOwner);
   document.querySelectorAll('[data-hardware]').forEach(button => {
     const command = button.dataset.command || actions[button.id];
     button.disabled = !base || !capability.has(command) || Boolean(blocked && !safeCommands.has(command)) ||
@@ -313,10 +453,10 @@ function renderState() {
       command === 'reset' && local && engine?.mode !== 'console';
   });
   $('partition-suggestion').hidden = partitionSuggestions.get(selected()) !== d?.generation || !d?.generation || Number($('partition-address').value) !== 0x8000;
-  $('devices').disabled = working || usbBusy || Boolean(reconnect.running);
+  $('devices').disabled = false;
   // A logical ID cannot change while its port is connected or automatic reconnection owns it.
   $('device-id').disabled = Boolean(!session || !session.devices.length || portConnected || usbBusy || reconnect.waiting || reconnect.running);
-  $('cancel').disabled = !working || !current;
+  $('cancel').disabled = !isWorking() || !current;
   $('usb-state').textContent = portConnected ? 'connecté' : 'non connecté';
   $('card-commands').dataset.mode = local ? engine?.mode || 'off' : 'remote';
   $('chip-info').textContent = d?.chip || '—'; $('flash-info').textContent = d?.flash_size ? `${hex(d.flash_size)} · ${d.flash_size} octets` : '—';
@@ -329,19 +469,19 @@ function renderState() {
   resetButton.textContent = usbReset ? 'Reset USB' : local ? 'Reset EN' : 'Redémarrer';
   resetButton.title = usbReset ? 'Redémarre via le contrôleur USB Serial/JTAG, sans piloter EN ou IO0.' : 'Redémarre par EN, en mode console avec un pont UART externe.';
 
-  $('control-state').textContent = working ? 'Opération manuelle en cours' : d?.reservation ? (otherOwner ? 'Pilotée par : ' + d.reservation.owner : 'Déclencheur ou opération en cours') : d?.connected && !d?.localOnly ? 'Disponible · commandes directes' : 'Local · observation';
-  $('grant').disabled = !local || !agent?.generation; $('revoke').disabled = $('grant').disabled;
+  $('control-state').textContent = isWorking() ? 'Opération manuelle en cours' : d?.reservation ? (otherOwner ? 'Pilotée par : ' + d.reservation.owner : 'Déclencheur ou opération en cours') : d?.connected && !d?.localOnly ? 'Disponible · commandes directes' : 'Local · observation';
+  $('grant').disabled = !local || !portConnected || !agent?.generation; $('revoke').disabled = $('grant').disabled;
   $('grant-state').textContent = local && agent?.grantUntil > performance.now() ? `Opérations distantes autorisées : ${Math.ceil((agent.grantUntil - performance.now()) / 1000)} s` : 'À la demande · aucune autorisation distante active.';
   $('revoke').hidden = !(local && agent?.grantUntil > performance.now());
-  $('release-control').disabled = !local || !agent?.generation || Boolean(ownBusy || working) || !d?.reservation;
+  $('release-control').disabled = !local || !agent?.generation || Boolean(ownBusy || isWorking()) || !d?.reservation;
   activity();
   $('safety-state').textContent = local && agent?.awaitingResult ? 'Attente de l’accusé serveur' : blocked ? 'Blocage : récupération opérateur requise' : d ? 'Aucun blocage signalé' : 'Aucun état matériel connu';
   $('safety-state').classList.toggle('danger', Boolean(blocked));
   $('recover').hidden = !blocked; $('recovery-help').hidden = !blocked;
-  $('recover').disabled = !local || !agent?.generation || Boolean(ownBusy) || !blocked;
+  $('recover').disabled = !local || !portConnected || !agent?.generation || Boolean(ownBusy) || !blocked;
   const usbAction = usbBusy ? usbDisconnecting ? 'Déconnexion…' : 'Connexion…' : portConnected ? 'Déconnecter' : reconnect.running ? 'Reconnexion…' : reconnect.waiting ? 'Annuler la reconnexion' : 'Connecter';
   $('usb-toggle').textContent = usbAction;
-  $('usb-toggle').disabled = !session || !session.devices.length || usbBusy || working || Boolean(ownBusy || reconnect.running);
+  $('usb-toggle').disabled = !session || !session.devices.length || usbBusy || isWorking() || Boolean(ownBusy || reconnect.running);
   $('usb-toggle').title = portConnected ? 'Déconnecter volontairement le port désactive sa reconnexion automatique.' : reconnect.waiting ? 'Attendre la même carte ou annuler la reconnexion pour choisir un autre port.' : 'Choisir le port série à connecter. Son ouverture peut redémarrer la carte.';
   $('usb-indicator').dataset.tone = portConnected ? 'positive' : reconnect.waiting || usbBusy ? 'active' : 'neutral';
   $('usb-indicator').querySelector('use').setAttribute('href', '#icon-' + (portConnected ? 'usb' : reconnect.waiting || usbBusy ? 'busy' : 'unplug'));
@@ -349,16 +489,16 @@ function renderState() {
   const linked = local ? Boolean(agent?.generation && agent?.socket?.readyState === 1) : Boolean(d?.connected);
   const serverLost = $('server-state').textContent === 'liaison interrompue';
   indicator('agent', serverLost ? 'Liaison interrompue' : linked ? 'Agent connecté' : 'Agent hors ligne', linked && !serverLost ? 'link' : 'offline', serverLost ? 'warning' : linked ? 'positive' : 'neutral');
-  indicator('control', otherOwner ? 'Occupée · ' + d.reservation.owner : working || ownBusy || d?.reservation ? 'En cours' : d?.connected ? 'Disponible' : 'En attente', otherOwner ? 'user' : working || ownBusy || d?.reservation ? 'busy' : 'check', otherOwner || working || ownBusy || d?.reservation ? 'active' : 'neutral');
+  indicator('control', otherOwner ? 'Occupée · ' + d.reservation.owner : isWorking() || ownBusy || d?.reservation ? 'En cours' : d?.connected ? 'Disponible' : 'En attente', otherOwner ? 'user' : isWorking() || ownBusy || d?.reservation ? 'busy' : 'check', otherOwner || isWorking() || ownBusy || d?.reservation ? 'active' : 'neutral');
   const granted = local && agent?.grantUntil > performance.now();
   indicator('permissions', granted ? `Distant autorisé · ${Math.ceil((agent.grantUntil - performance.now()) / 1000)} s` : 'Autorisations', granted ? 'unlock' : 'lock', granted ? 'warning' : 'neutral');
   $('footer-target').textContent = selected() ? `${selected()} · ${$('control-state').textContent}` : 'Aucune carte sélectionnée';
 }
 $('devices').onchange = () => {
-  if (working && operationDevice) { $('devices').value = operationDevice; return; }
   confirmation = null; $('program-confirmation').hidden = true; $('download').replaceChildren(); $('hex-dump').textContent = 'Aucune donnée lue pour cette carte.';
   if (paused) pausedAt = capture(selected()).sequence;
   selectedOperation = null;
+  syncContext(); renderActiveCards();
   renderOperations(); json({});
   renderState(); renderPartitions(); renderConsole(); renderJournal(); startStream();
 };
@@ -397,7 +537,8 @@ async function startStream() {
       for (const event of batch.events) {
         if (event.kind === 'uart') {
           if (event.source_lost) append('PERTE', `${event.source_lost} chunks perdus à la source`, id, event.at * 1000);
-          if (!(portConnected && localDevice?.id === id && agent?.generation)) receive(unb64(event.data), id, event.agent_at || event.at * 1000);
+          if (!(boards.get(id)?.status === 'connected' && boards.get(id)?.agent?.generation))
+            receive(unb64(event.data), id, event.agent_at || event.at * 1000);
         } else if (event.kind === 'mark') append('REP', event.detail, id, event.at * 1000);
         else if (['connected', 'disconnected', 'quarantined', 'recovered'].includes(event.kind)) append('SYS', event.kind, id, event.at * 1000);
       }
@@ -408,86 +549,39 @@ async function startStream() {
   }
 }
 
-async function attach(port, expectedIdentity = null) {
-  if (working || agent?.active || engine?.busy || agent?.socket?.readyState === 1) throw new Error('Terminez le pilotage actif avant de changer de port');
-  if (agent?.awaitingResult) engine.setHold(true);
-  if (agent?.socket) { agent.socket.onclose = null; agent.disconnect(); }
-  agent = null;
-  if (engine) { try { await engine.close(); } finally { engine = null; } }
-  const logicalId = $('device-id').value.trim();
-  if (!logicalId) throw new Error('Identifiant de carte vide');
-  if (session && !session.devices.includes(logicalId)) throw new Error('Identifiant de carte non autorisé par la configuration du banc');
-  const held = localStorage.getItem('bench.v1.hold.' + logicalId) === '1';
-  const deps = await import('https://unpkg.com/esptool-js@0.7.0/bundle.js');
-  const hardware = new EspEngine(port, deps, (type, event) => {
-    agent?.event(type, event);
-    if (type === 'uart') receive(unb64(event.data), logicalId, event.at);
-    else if (type === 'transport') {
-      append('SYS', event.detail, logicalId);
-      if (event.detail === 'opening console') logAgent({ stage: 'console' });
-      if (event.detail === 'opening loader') logAgent({ stage: 'loader' });
-    }
-  }, hold => localStorage.setItem('bench.v1.hold.' + logicalId, hold ? '1' : '0'));
-  hardware.hold = held; engine = hardware;
-  try {
-    const identity = await hardware.identity();
-    if (expectedIdentity && ['chip', 'flash_size', 'flash_id', 'mac'].some(key => identity[key] !== expectedIdentity[key])) throw new HardwareError('physical_identity_changed');
-    localDevice = { id: logicalId, ...identity, capabilities: hardware.capabilities(), connected: true, localOnly: true,
-      http_origins: $('http-origins').value.split(',').map(s => s.trim()).filter(Boolean).map(s => new URL(s).origin) };
-    if (!held) await hardware.openConsole();
-    portConnected = true; renderDevices(); $('devices').value = logicalId;
-    renderState(); renderConsole(); feedback('Carte connectée. Les commandes sont disponibles directement ; aucune prise de main préalable.');
-    if (!expectedIdentity) reconnect.remember(port, identity);
-    logAgent({ stage: 'usb_connected' });
-    if (session) connectAgent();
-  } catch (error) {
-    try { await hardware.close(); } catch { /* The failed port remains offline. */ }
-    engine = null; localDevice = null; portConnected = false; renderState(); throw error;
-  }
-}
-function connectAgent() {
-  if (!engine || !localDevice || !portConnected) throw new Error('Connectez d’abord un port Web Serial');
-  if (!session) throw new Error('Session locale du banc indisponible');
-  if (agent) { agent.reconnectNow(); return; }
-  if (engine.busy || agent?.active || [0, 1, 2].includes(agent?.socket?.readyState)) throw new Error('Agent déjà connecté ou matériel occupé');
-  if (agent?.awaitingResult) engine.setHold(true);
-  agent = new Agent({ engine, device: localDevice, onLog: logAgent, onActivity: activity, onState: state => {
-    $('agent-state').textContent = state === 'Agent connected' ? 'Agent connecté' : state.startsWith('Agent disconnected') ? 'Agent déconnecté · aucune commande rejouée' : state;
-    if (!agent?.generation) { confirmation = null; $('program-confirmation').hidden = true; }
-    $('server-state').textContent = agent?.generation ? 'agent connecté' : sessionOpened ? 'client connecté · agent absent' : 'agent non connecté';
-    renderState();
-    if (state === 'Agent connected') closeAccess();
-    if (state === 'Pilotage libéré par l’opérateur') { refreshDevices(false).catch(error => feedback(errorText(error))); }
-    if (state === 'Agent connected' && session) {
-      (async () => { await refreshDevices(false); if (!info(localDevice.id)) await refreshDevices(false); })().catch(error => feedback(errorText(error)));
-    }
-  } });
-  agent.connect();
-}
-hook('usb-toggle', async () => {
-  if (usbBusy || working || engine?.busy || agent?.active || agent?.awaitingResult || reconnect.running) throw new Error('Terminez l’opération en cours avant de modifier la connexion USB');
-  if (reconnect.waiting && !portConnected) {
-    reconnect.stop(); renderState(); feedback('Reconnexion automatique annulée. Vous pouvez connecter un port.'); return;
-  }
+async function addCard(id) {
   if (!navigator.serial) throw new Error('Web Serial indisponible dans ce navigateur ou ce contexte');
-  usbBusy = true; renderState();
+  if (!session?.devices.includes(id)) throw new Error('Identifiant non autorisé');
+  if (boards.get(id)) throw new Error('Carte déjà ajoutée dans cette fenêtre');
+  if (usbBusy) throw new Error('Sélection USB déjà en cours');
+  // requestPort must be called directly from the click activation, before any await.
+  const port = await navigator.serial.requestPort();
+  usbBusy = true; renderActiveCards();
   try {
-    if (portConnected) {
-      usbDisconnecting = true; reconnect.forget(); renderState();
-      agent?.cancelTrigger(); agent?.grant(0); agent?.disconnect();
-      await engine.close();
-      if (engine.port.readable || engine.port.writable) throw new Error('Le port Web Serial n’est pas complètement fermé');
-      portConnected = false; confirmation = null; $('program-confirmation').hidden = true;
-      append('SYS', 'Port Web Serial fermé par l’opérateur', localDevice.id);
-      feedback('Port Web Serial fermé. Reconnexion automatique désactivée.');
-    } else {
-      // Use the click activation for a chooser, without waiting on network requests first.
-      if (!session?.devices.includes($('device-id').value)) throw new Error('Identifiant de carte non autorisé par la configuration du banc');
-      const port = await navigator.serial.requestPort();
-      await attach(port);
-    }
-  } finally { usbBusy = false; usbDisconnecting = false; renderState(); }
+    esptoolDeps ||= await import('https://unpkg.com/esptool-js@0.7.0/bundle.js');
+    const http_origins = $('http-origins').value.split(',').map(v => v.trim()).filter(Boolean)
+      .map(v => new URL(v).origin);
+    await boards.add(id, port, { http_origins });
+    renderDevices();
+    $('devices').value = id;
+    boards.select(id);
+    $('devices').onchange?.();
+    feedback('Carte connectée. Les autres ports restent actifs.');
+    await refreshDevices(false);
+  } finally { usbBusy = false; renderActiveCards(); renderState(); }
+}
+hook('add-device', async () => {
+  const id = $('add-device-id').value;
+  if (!id) throw new Error('Choisissez un identifiant libre');
+  await addCard(id);
 });
+function connectAgent() {
+  const ctx = boards.get(selected());
+  if (!ctx?.agent || ctx.status !== 'connected') throw new Error('Connectez d’abord un port Web Serial');
+  if (!session) throw new Error('Session locale du banc indisponible');
+  if (ctx.agent.socket?.readyState === 1) throw new Error('Agent déjà connecté');
+  ctx.agent.reconnectNow();
+}
 hook('agent-connect', connectAgent);
 hook('grant', () => { if (!agent?.generation) throw new Error('Agent local non connecté'); if (confirm(`Autoriser les opérations privilégiées sur ${localDevice.id} pendant ${$('grant-time').selectedOptions[0].textContent} ?`)) { agent.grant(Number($('grant-time').value)); renderState(); } });
 hook('revoke', () => { agent.grant(0); renderState(); });
@@ -517,13 +611,17 @@ function recordOperation(op, started) {
   }
 }
 async function submit(command, args = {}, destructive = false) {
-  if (working) throw new Error('Une opération manuelle est déjà en cours');
+  if (isWorking()) throw new Error('Une opération manuelle est déjà en cours sur cette carte');
   const target = selectedTarget();
   if (command === 'partitions') { partitionSuggestions.delete(target.device); partitionCache.delete(target.device); renderPartitions(); }
-  operationDevice = target.device; working = true; current = null; renderState(); const started = performance.now(), client = api();
+  const ticket = { id: null };
+  inFlight.set(target.device, ticket);
+  renderState(); const started = performance.now(), client = api();
   try {
     let op = await client.request('manual-operations', { method: 'POST', data: { device: target.device, generation: target.generation, command, args, allow_destructive: destructive, timeout: command === 'flash.read' ? 600 : 120 } });
-    current = op.id; selectedOperation = op.id; recordOperation(op, started); renderState();
+    ticket.id = op.id;
+    if (selected() === target.device) selectedOperation = op.id;
+    recordOperation(op, started); renderState();
     for (;;) {
       if (terminal.has(op.state)) break;
       await new Promise(resolve => setTimeout(resolve, 250));
@@ -532,16 +630,23 @@ async function submit(command, args = {}, destructive = false) {
     if (op.state !== 'completed') {
       const suggest = command === 'partitions' && args.address === 0x8000 && op.error?.code === 'partition_table_invalid';
       if (suggest) partitionSuggestions.set(target.device, target.generation);
-      feedback(`Opération ${op.state} : ${diagnostic(op.error?.code || 'inspectez le résultat')}`);
-      tab(suggest ? 'partitions' : 'operations'); return op;
+      if (selected() === target.device) {
+        feedback(`Opération ${op.state} : ${diagnostic(op.error?.code || 'inspectez le résultat')}`);
+        tab(suggest ? 'partitions' : 'operations');
+      }
+      return op;
     }
-    feedback(`${command} : terminé sur ${target.device}`);
-    if (command === 'partitions' && op.result?.partitions) { partitionCache.set(target.device, op.result.partitions); renderPartitions(); }
+    if (selected() === target.device) feedback(`${command} : terminé sur ${target.device}`);
+    if (command === 'partitions' && op.result?.partitions) {
+      partitionCache.set(target.device, op.result.partitions);
+      if (selected() === target.device) renderPartitions();
+    }
     if (command === 'identify' && op.result?.chip) { const d = info(target.device); if (d) Object.assign(d, op.result); renderState(); }
-    if (command === 'flash.read' && op.result?.artifact) await showDump(op.result.artifact, args.address, client);
+    if (command === 'flash.read' && op.result?.artifact && selected() === target.device)
+      await showDump(op.result.artifact, args.address, client);
     return op;
   } finally {
-    working = false; operationDevice = null; current = null;
+    if (inFlight.get(target.device) === ticket) inFlight.delete(target.device);
     await refreshDevices(false).catch(() => {}); renderState();
   }
 }
@@ -553,7 +658,15 @@ hook('try-partition-address', () => {
   $('partition-address').value = '0x10000';
   return submit('partitions', { address: 0x10000 });
 });
-hook('cancel', async () => { const op = await api().request('operations/' + current, { method: 'DELETE' }); json(op); feedback(op.cancel_requested ? 'Annulation demandée ; interruption matérielle non confirmée.' : 'Commande annulée avant exécution.'); });
+hook('cancel', async () => {
+  const device = selected(), id = inFlight.get(device)?.id;
+  if (!id) throw new Error('Aucune opération à annuler sur cette carte');
+  const op = await api().request('operations/' + id, { method: 'DELETE' });
+  if (selected() === device) {
+    json(op);
+    feedback(op.cancel_requested ? 'Annulation demandée ; interruption matérielle non confirmée.' : 'Commande annulée avant exécution.');
+  }
+});
 
 function renderPartitions() {
   const rows = partitionCache.get(selected()) || [], body = $('partitions-body'); body.replaceChildren();
@@ -661,22 +774,24 @@ hook('events', async () => { const data = await api().request('devices/' + encod
 
 navigator.serial?.addEventListener('disconnect', event => {
   const port = event.port || event.target;
-  if (usbDisconnecting || !portConnected || port !== engine?.port) return;
-  engine.disconnected = true;
-  if (agent?.active || agent?.awaitingResult) engine.setHold(true);
-  engine.cancelTrigger(); engine.transport?.abort('closed', 'USB disconnected'); agent?.disconnect();
-  portConnected = false; confirmation = null; $('program-confirmation').hidden = true;
-  reconnect.disconnected(port);
-  renderState(); append('PERTE', 'Port USB déconnecté', localDevice.id); logAgent({ stage: 'usb_lost' });
-  feedback('USB déconnecté. Reconnexion automatique de la même carte à son retour ; aucune opération rejouée.');
+  const ctx = boards.lost(port);
+  if (!ctx) return;
+  ctx.engine.disconnected = true;
+  feedback('USB perdu sur ' + ctx.id + ' ; aucune opération rejouée.');
+  renderDevices();
 });
+
 let refreshTimer;
 async function backgroundRefresh() {
   if (sessionOpened) await refreshDevices(false).catch(async error => { $('server-state').textContent = 'liaison interrompue'; feedback(errorText(error)); if (error.message === 'unauthenticated') { session = null; await openSession().catch(() => {}); } });
   refreshTimer = setTimeout(backgroundRefresh, 4000);
 }
 setInterval(renderState, 1000); backgroundRefresh();
-window.addEventListener('pagehide', () => { streamController?.abort(); clearTimeout(refreshTimer); reconnect.stop(); wake.update(false); });
+window.addEventListener('pagehide', () => {
+  streamController?.abort(); clearTimeout(refreshTimer);
+  for (const ctx of boards.list()) ctx.reconnect?.stop();
+  wake.update(false);
+});
 renderState(); renderConsole();
 
 openSession().then(() => refreshDevices(false)).catch(error => feedback(errorText(error)));

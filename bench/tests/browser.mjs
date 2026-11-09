@@ -14,6 +14,9 @@ async function openStatus(page, name) {
 async function closeStatus(page) {
  await page.keyboard.press('Escape');
 }
+async function selectRemoteDevice(page,id) {
+ await page.locator('#devices').evaluate((element,value)=>{element.value=value;element.dispatchEvent(new Event('change',{bubbles:true}));},id);
+}
 
 test('automatic manual operations and independent API share exclusion across two browser agents',async()=>{
  const proc=spawn('python3',['tests/browser_fixture.py'],{cwd:new URL('..',import.meta.url),stdio:['ignore','pipe','pipe']});
@@ -47,17 +50,25 @@ test('automatic manual operations and independent API share exclusion across two
   await page.waitForFunction(()=>window.secondAgent?.generation);
   await page.waitForFunction(()=>document.querySelector('#devices').options.length===2);
   assert.equal(await page.locator('#client-token').count(),0);assert.equal(await page.locator('#reserve').count(),0);
-  await openStatus(page,'card');await page.selectOption('#devices','board');await page.evaluate(()=>{window.blockIdentify=true;});
+  await openStatus(page,'card');await selectRemoteDevice(page,'board');await page.evaluate(()=>{window.blockIdentify=true;});
   await page.click('[data-command="identify"]');await page.waitForFunction(()=>typeof window.releaseIdentify==='function');
-  assert.equal(await page.locator('#devices').isDisabled(),true);
-  await page.evaluate(()=>{document.querySelector('#devices').value='board-b';});await page.click('#refresh');
-  await page.waitForFunction(()=>document.querySelector('#devices').value==='board');
+  assert.equal(await page.locator('#devices').isDisabled(),false);
+  await selectRemoteDevice(page,'board-b');
+  await page.evaluate(()=>document.querySelector('#refresh').click());
+  await page.waitForFunction(()=>document.querySelector('#devices').value==='board-b');
   await page.evaluate(()=>{window.releaseIdentify();window.blockIdentify=false;});
-  await page.waitForFunction(()=>JSON.parse(document.querySelector('#result').textContent).state==='completed');
+  await page.waitForFunction(async()=>{
+   const devices=(await (await fetch('/api/v1/devices')).json()).devices;
+   return devices.find(d=>d.id==='board')?.reservation===null;
+  });
+  await selectRemoteDevice(page,'board');
+  await page.waitForFunction(()=>document.querySelector('#operations-body').textContent.includes('completed'));
+  await page.evaluate(()=>document.querySelector('#operations-body button').click());
   assert.equal(JSON.parse(await page.textContent('#result')).device,'board');
+  assert.equal(JSON.parse(await page.textContent('#result')).state,'completed');
   await page.waitForFunction(async()=>{const r=await fetch('/api/v1/devices');return (await r.json()).devices.find(d=>d.id==='board').reservation===null;});
   await page.waitForFunction(()=>!document.querySelector('#devices').disabled);
-  await page.selectOption('#devices','board-b');await page.click('[data-command="reset"]');
+  await selectRemoteDevice(page,'board-b');await page.click('[data-command="reset"]');
   await page.waitForFunction(()=>{const op=JSON.parse(document.querySelector('#result').textContent);return op.state==='completed'&&op.device==='board-b';});
   assert.equal(JSON.parse(await page.textContent('#result')).result.board,'board-b');
   await page.waitForFunction(async()=>{const r=await fetch('/api/v1/devices');return (await r.json()).devices.find(d=>d.id==='board-b').reservation===null;});
@@ -105,32 +116,29 @@ test(`local browser session and direct control over ${usbJtag?'USB Serial/JTAG':
    Object.defineProperty(navigator,'serial',{value:serial,configurable:true});
   },usbJtag);
   await page.goto(url);assert.equal(await page.locator('#access-panel').isVisible(),false);
-  await page.waitForFunction(()=>document.querySelector('#device-id').value==='board');
-  assert.equal(await page.title(),'board · IOBEWI');
-  assert.equal(await page.locator('#device-id').isVisible(),true);
-  assert.equal(await page.locator('.local-card-group #device-id').count(),1);
-  assert.equal(await page.locator('header h1').textContent(),'IOBEWI — Banc matériel');
-  assert.ok(await page.locator('.local-card-group').evaluate(node=>node.getBoundingClientRect().bottom<=document.querySelector('.usb-group').getBoundingClientRect().top));
-  assert.equal(await page.locator('#device-id').isEnabled(),true);
-  assert.equal(await page.locator('#device-id').evaluate(node=>node.tagName),'SELECT');
-  assert.deepEqual(await page.locator('#device-id option').allTextContents(),['board','board-b']);
-  assert.equal(await page.locator('#device-id option[value="esp32-gehe"]').count(),0);
-  await page.locator('#device-id').selectOption('board-b');
-  assert.equal(await page.title(),'board-b · IOBEWI');
-  assert.equal(await page.locator('#access-panel #device-id').count(),0);
-  await page.locator('#device-id').selectOption('board');
-  assert.equal(await page.title(),'board · IOBEWI');
-  await closeStatus(page);
+  await page.waitForFunction(()=>document.querySelector('#add-device-id').value==='board');
+  assert.equal(await page.title(),'IOBEWI Device Lab');
+  assert.equal(await page.locator('header h1').textContent(),'IOBEWI Device Lab');
+  assert.equal(await page.locator('.app-brand p').textContent(),'Contrôle et qualification de systèmes embarqués');
+  assert.equal(await page.locator('.local-card-group,.usb-group').count(),0);
+  assert.equal(await page.locator('#active-cards').isVisible(),true);
+  assert.equal(await page.locator('#active-cards .active-board').count(),0);
+  assert.deepEqual(await page.locator('#add-device-id option').allTextContents(),['board','board-b']);
+  assert.equal(await page.locator('#add-device-id option[value="esp32-gehe"]').count(),0);
+  await page.locator('#add-device-id').selectOption('board-b');
+  assert.equal(await page.title(),'IOBEWI Device Lab');
+  await page.locator('#add-device-id').selectOption('board');
   assert.equal(await page.locator('#card-details').isVisible(),false);
-  assert.equal(await page.locator('#status-label-card').isVisible(),false);
-  assert.equal(await page.locator('.device-panel #usb-toggle').isVisible(),true);
-  await page.click('#usb-toggle');await page.waitForFunction(()=>document.querySelector('#usb-state').textContent==='connecté'||!document.querySelector('#client-state').textContent.startsWith('Connectez un port série'));
-  assert.equal(await page.textContent('#usb-state'),'connecté',JSON.stringify({feedback:await page.textContent('#client-state'),errors}));
-  assert.equal(await page.locator('#device-id').isDisabled(),true);
-  assert.equal(await page.title(),'board · IOBEWI');
+  await page.click('#add-device');
+  await page.waitForFunction(()=>document.querySelector('[data-device="board"] .board-status')?.textContent==='Connectée');
+  assert.equal(await page.locator('#active-cards .active-board').count(),1);
+  assert.equal(await page.locator('[data-device="board"] .board-name').getAttribute('aria-pressed'),'true');
+  assert.equal(await page.title(),'IOBEWI Device Lab');
   assert.equal(await page.locator('#card-details').isVisible(),true);
-  const usbTop=await page.locator('.usb-group').evaluate(node=>node.getBoundingClientRect().top), cardTop=await page.locator('#status-card').evaluate(node=>node.getBoundingClientRect().top);
-  assert.ok(usbTop<cardTop);
+  const sidebarTop=await page.locator('#active-cards-heading').evaluate(node=>node.getBoundingClientRect().top);
+  const identityTop=await page.locator('#card-identification-title').evaluate(node=>node.getBoundingClientRect().top);
+  const commandsTop=await page.locator('#card-commands-title').evaluate(node=>node.getBoundingClientRect().top);
+  assert.ok(sidebarTop<identityTop&&identityTop<commandsTop);
   await page.waitForFunction(()=>document.querySelector('#uart-log').textContent.includes('READY'));
   await page.waitForFunction(()=>document.querySelector('#agent-state').textContent==='Agent connecté');
   await page.waitForFunction(()=>!document.querySelector('[data-command="reset"]').disabled);
@@ -148,7 +156,7 @@ test(`local browser session and direct control over ${usbJtag?'USB Serial/JTAG':
   assert.equal(resetResult.method,usbJtag?'usb_serial_jtag':'en');assert.equal(resetResult.boot_verified,false);
 
   await closeStatus(page);
-  assert.equal(await page.textContent('#usb-toggle'),'Déconnecter');
+  assert.equal(await page.locator('[data-device="board"] .board-status').textContent(),'Connectée');
   assert.equal(await page.locator('#connect,#disconnect,#reconnect,[data-status=usb]').count(),0);
   assert.equal(await page.evaluate(()=>window.__chooserCount),1);
   await page.waitForFunction(()=>document.querySelector('#status-label-agent').textContent==='Agent connecté');
@@ -283,7 +291,7 @@ test(`local browser session and direct control over ${usbJtag?'USB Serial/JTAG':
   const generation=await page.evaluate(async()=>{const r=await fetch('/api/v1/devices',{headers:{Authorization:'Bearer client-alice-123456789'}});return (await r.json()).devices[0].generation;});
   await page.evaluate(async()=>{const port=window.__serialPort;port.controller.error(new DOMException('Unplugged','NetworkError'));await Promise.resolve();await port.close();const event=new Event('disconnect');Object.defineProperty(event,'port',{value:port});window.__serial.dispatchEvent(event);});
   await page.waitForFunction(()=>document.querySelector('#usb-state').textContent==='non connecté');
-  assert.equal(await page.locator('#card-details').isVisible(),false);
+  assert.equal(await page.locator('#card-details').isVisible(),true);
   await page.waitForFunction(async old=>{const r=await fetch('/api/v1/devices',{headers:{Authorization:'Bearer client-alice-123456789'}});const d=(await r.json()).devices[0];return d.connected&&d.generation!==old;},generation);
   try { await page.waitForFunction(()=>document.querySelector('#usb-state').textContent==='connecté'); }
   catch(error) { throw new Error(JSON.stringify({feedback:await page.textContent('#client-state'),journal:await page.textContent('#agent-log'),errors}),{cause:error}); }
@@ -314,7 +322,7 @@ test(`local browser session and direct control over ${usbJtag?'USB Serial/JTAG':
   await page.keyboard.press('Escape');assert.equal(await page.locator('#status-help-agent').isVisible(),false);
   await page.locator('#status-agent').hover();
   assert.equal(await page.locator('#status-help-agent').isVisible(),true);
-  assert.equal(await page.locator('.device-panel #usb-toggle').isVisible(),true);
+  assert.equal(await page.locator('[data-device="board"] .board-status').isVisible(),true);
   for (const name of ['agent','control','permissions','wake']) {
     await openStatus(page,name);
     assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
@@ -357,35 +365,40 @@ test(`local browser session and direct control over ${usbJtag?'USB Serial/JTAG':
   await page.click('#console-auto-size');
   assert.ok(Math.abs(await page.locator('#uart-log').evaluate(node=>node.getBoundingClientRect().height)-900*.55)<5);
   assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
-  await page.waitForFunction(()=>!document.querySelector('#usb-toggle').disabled);
+  await page.waitForFunction(()=>!document.querySelector('[data-device="board"] .board-status').disabled);
   const closesBefore=await page.evaluate(()=>window.__serialPort.closeCalls||0);
-  await page.click('#usb-toggle');
-  await page.waitForFunction(()=>document.querySelector('#usb-state').textContent==='non connecté'&&document.querySelector('#usb-toggle').textContent==='Connecter');
-  assert.equal(await page.locator('#device-id').isEnabled(),true);
-  assert.equal(await page.title(),'board · IOBEWI');
-  assert.equal(await page.locator('#card-details').isVisible(),false);
-  assert.equal(await page.locator('#status-label-card').isVisible(),false);
+  await page.click('[data-device="board"] .board-status');
+  await page.waitForFunction(()=>document.querySelector('[data-device="board"] .board-status')?.textContent==='Déconnectée');
+  assert.equal(await page.title(),'IOBEWI Device Lab');
+  assert.equal(await page.locator('#card-details').isVisible(),true);
   const closed=await page.evaluate(()=>({readable:window.__serialPort.readable,writable:window.__serialPort.writable,closes:window.__serialPort.closeCalls}));
   assert.equal(closed.readable,null);assert.equal(closed.writable,null);assert.equal(closed.closes,closesBefore+1);
   await page.waitForFunction(async()=>{const response=await fetch('/api/v1/devices');return !(await response.json()).devices.find(d=>d.id==='board').connected;});
-  // A delayed physical-disconnect event must not re-arm a deliberately forgotten port.
+  // A deliberately disconnected board stays listed; delayed USB events never restart it.
   await page.evaluate(()=>{const event=new Event('disconnect');Object.defineProperty(event,'port',{value:window.__serialPort});window.__serial.dispatchEvent(event);});
-  await page.waitForTimeout(1700);assert.equal(await page.textContent('#usb-state'),'non connecté');
-  // Cancelling a manual chooser leaves the UI ready; an authorized old port is not reopened.
-  await page.evaluate(()=>{window.__rejectChooser=true;});await page.click('#usb-toggle');
-  await page.waitForFunction(()=>!document.querySelector('#usb-toggle').disabled&&document.querySelector('#usb-toggle').textContent==='Connecter');
-  assert.equal(await page.textContent('#usb-state'),'non connecté');assert.equal(await page.evaluate(()=>window.__chooserCount),2);
-  // Choose a different physical port, UART -> JTAG or JTAG -> UART, despite the old permission.
+  await page.waitForTimeout(1700);
+  assert.equal(await page.locator('[data-device="board"] .board-status').textContent(),'Déconnectée');
+  // Explicitly forgetting the offline association frees the logical ID.
+  await page.click('[data-device="board"] .board-forget');
+  await page.waitForFunction(()=>[...document.querySelector('#add-device-id').options].some(o=>o.value==='board'));
+  await page.selectOption('#add-device-id','board');
+  // Cancelling the chooser leaves the UI ready; no previously permitted port reopens.
+  await page.evaluate(()=>{window.__rejectChooser=true;});
+  await page.click('#add-device');
+  await page.waitForFunction(()=>!document.querySelector('#add-device').disabled);
+  assert.equal(await page.locator('#active-cards .active-board').count(),0);
+  assert.equal(await page.evaluate(()=>window.__chooserCount),2);
+  // Only an explicit new chooser may replace the physical port.
   await page.evaluate(usbJtag=>{
     window.__rejectChooser=false;
     window.__nextPort={...window.__serialPort,readable:null,writable:null,controller:null,signals:[],
       getInfo:()=>usbJtag?{usbVendorId:0x1a86}:{usbVendorId:0x303a,usbProductId:0x1001}};
     window.__replacementPort=window.__nextPort;
   },usbJtag);
-  await page.click('#usb-toggle');
-  await page.waitForFunction(()=>document.querySelector('#usb-state').textContent==='connecté'&&!document.querySelector('#usb-toggle').disabled);
-  assert.equal(await page.textContent('#usb-toggle'),'Déconnecter');assert.equal(await page.evaluate(()=>window.__chooserCount),3);
-  assert.equal(await page.title(),'board · IOBEWI');
+  await page.click('#add-device');
+  await page.waitForFunction(()=>document.querySelector('[data-device="board"] .board-status')?.textContent==='Connectée');
+  assert.equal(await page.evaluate(()=>window.__chooserCount),3);
+  assert.equal(await page.title(),'IOBEWI Device Lab');
   assert.equal(await page.evaluate(()=>window.__serialPort===window.__replacementPort),true);
   assert.equal(await page.textContent('#interface-info'),usbJtag?'UART externe':'USB Serial/JTAG');
   assert.equal(await page.textContent('#reset-device'),usbJtag?'Reset EN':'Reset USB');
@@ -413,29 +426,27 @@ test(`local browser session and direct control over ${usbJtag?'USB Serial/JTAG':
     Object.defineProperty(event,'port',{value:port});
     window.__serial.dispatchEvent(event);
   });
-  await page.waitForFunction(()=>document.querySelector('#usb-toggle').textContent==='Annuler la reconnexion');
-  assert.equal(await page.locator('#device-id').isDisabled(),true);
-  await page.click('#usb-toggle');
-  await page.waitForFunction(()=>document.querySelector('#usb-toggle').textContent==='Connecter');
-  assert.equal(await page.locator('#device-id').isEnabled(),true);
-  await page.locator('#device-id').selectOption('board-b');
-  assert.equal(await page.title(),'board-b · IOBEWI');
-  await page.locator('#device-id').selectOption('board');
-  assert.equal(await page.title(),'board · IOBEWI');
-  // Tampering with the DOM cannot extend session permissions or open an unauthorized port.
+  await page.waitForFunction(()=>document.querySelector('[data-device="board"] .board-status')?.textContent==='Reconnexion en attente');
+  assert.equal(await page.locator('[data-device="board"]').count(),1);
+  await page.click('[data-device="board"] .board-status');
+  await page.waitForFunction(()=>document.querySelector('[data-device="board"] .board-status')?.textContent==='Déconnectée');
+  // The free-ID picker only exposes unused IDs. The disconnected board still owns its port.
+  assert.deepEqual(await page.locator('#add-device-id option').allTextContents(),['board-b']);
+  assert.equal(await page.title(),'IOBEWI Device Lab');
+  // Tampering with the DOM cannot extend session permissions or open unauthorized hardware.
   const chooserBefore=await page.evaluate(()=>window.__chooserCount);
-  await page.locator('#device-id').evaluate(node=>{
+  await page.locator('#add-device-id').evaluate(node=>{
     const option=document.createElement('option'); option.value='esp32-gehe';option.textContent='esp32-gehe';
-    node.append(option);node.value='esp32-gehe';node.dispatchEvent(new Event('change',{bubbles:true}));
+    node.append(option);node.value='esp32-gehe';
+    // Execute the malicious selection and click in a single browser task:
+    // periodic inventory refresh must not replace the injected option first.
+    document.querySelector('#add-device').click();
   });
-  await page.click('#usb-toggle');
-  await page.waitForFunction(()=>document.querySelector('#client-state').textContent.includes('Identifiant de carte non autorisé'));
+  await page.waitForFunction(()=>document.querySelector('#client-state').textContent.includes('Identifiant non autorisé'));
   assert.equal(await page.evaluate(()=>window.__chooserCount),chooserBefore);
-  await page.locator('#device-id').selectOption('board');
-  assert.equal(await page.title(),'board · IOBEWI');
-  assert.equal(await page.textContent('#usb-state'),'non connecté');
+  assert.equal(await page.locator('[data-device="board"] .board-status').textContent(),'Déconnectée');
   await page.waitForTimeout(1700);
-  assert.equal(await page.textContent('#usb-state'),'non connecté');
+  assert.equal(await page.locator('[data-device="board"] .board-status').textContent(),'Déconnectée');
   assert.deepEqual(errors,[]);
  } finally {await browser?.close();proc.kill('SIGTERM');lines.close();}
 });
@@ -457,7 +468,7 @@ test('automatic browser session and manual API work through a real HTTP and WebS
    window.forwardedAgent.connect();
   });
   await page.waitForFunction(()=>window.forwardedAgent.generation);
-  await openStatus(page,'card');await page.click('#refresh');await page.waitForFunction(()=>!document.querySelector('[data-command="identify"]').disabled);
+  await openStatus(page,'card');await page.evaluate(()=>document.querySelector('#refresh').click());await page.waitForFunction(()=>!document.querySelector('[data-command="identify"]').disabled);
   await page.click('[data-command="identify"]');
   await page.waitForFunction(()=>{const op=JSON.parse(document.querySelector('#result').textContent);return op.state==='completed'&&op.result?.simulated;});
   await page.waitForFunction(async()=>{const r=await fetch('/api/v1/devices');const d=(await r.json()).devices[0];return d.reservation===null;});
@@ -592,6 +603,72 @@ test('one browser window runs two simulated Web Serial contexts and scoped agent
    const devices=(await (await fetch('/api/v1/devices')).json()).devices;
    return !devices.find(d=>d.id==='board')?.connected && devices.find(d=>d.id==='board-b')?.connected;
   });
+  assert.deepEqual(errors,[]);
+ }finally{await browser?.close();proc.kill('SIGTERM');lines.close();}
+});
+
+test('Device Lab UI owns two mocked Web Serial ports simultaneously and isolates their consoles',async()=>{
+ const proc=spawn('python3',['tests/browser_fixture.py'],{cwd:new URL('..',import.meta.url),stdio:['ignore','pipe','pipe']});
+ let stderr='';proc.stderr.on('data',b=>stderr+=b);const lines=createInterface({input:proc.stdout});
+ let browser;
+ try{
+  const url=await new Promise((resolve,reject)=>{lines.once('line',s=>resolve(JSON.parse(s).url));proc.once('exit',()=>reject(new Error(stderr)));});
+  browser=await chromium.launch({headless:true,executablePath:chromium.executablePath(),args:['--no-sandbox']});
+  const page=await browser.newPage();
+  const errors=[];page.on('pageerror',e=>errors.push(e.message));
+  await page.route('https://unpkg.com/esptool-js@0.7.0/bundle.js',route=>route.fulfill({
+   contentType:'application/javascript',headers:{'Access-Control-Allow-Origin':'*'},
+   path:new URL('serial-loader-fixture.js',import.meta.url).pathname,
+  }));
+  await page.addInitScript(()=>{
+   const serial=new EventTarget();
+   window.testPorts=['board','board-b'].map((id,i)=>({
+    id,readable:null,writable:null,closeCalls:0,getInfo:()=>({usbVendorId:0x1a86,usbProductId:0x7523}),
+    async open(){
+     if(this.readable)throw Error('port_already_open');
+     this.readable=new ReadableStream({start:controller=>{
+      this.controller=controller;
+      controller.enqueue(new TextEncoder().encode(id+'-serial-log\\n'));
+     }});
+     this.writable=new WritableStream();
+    },
+    async close(){
+     if(this.readable?.locked||this.writable?.locked)throw Error('locked_port');
+     this.closeCalls++;try{this.controller?.close();}catch{}
+     this.readable=null;this.writable=null;
+    },
+    async setSignals(){},
+   }));
+   let next=0;window.testChooserCount=()=>next;
+   serial.requestPort=async()=>window.testPorts[next++];
+   serial.getPorts=async()=>window.testPorts.slice(0,next);
+   Object.defineProperty(navigator,'serial',{value:serial,configurable:true});
+  });
+  await page.goto(url);
+  await page.waitForFunction(()=>document.querySelector('#add-device-id').value==='board');
+  await page.click('#add-device');
+  await page.waitForFunction(()=>document.querySelector('[data-device="board"] .board-status')?.textContent==='Connectée');
+  await page.waitForFunction(()=>document.querySelector('[data-device="board"] .board-name')?.getAttribute('aria-pressed')==='true');
+  await page.waitForFunction(()=>document.querySelector('#uart-log').textContent.includes('board-serial-log'));
+  await page.selectOption('#add-device-id','board-b');
+  await page.click('#add-device');
+  await page.waitForFunction(()=>document.querySelector('[data-device="board-b"] .board-status')?.textContent==='Connectée');
+  await page.waitForFunction(()=>document.querySelector('#uart-log').textContent.includes('board-b-serial-log'));
+  const closesAfterAttach = await page.evaluate(()=>window.testPorts.map(p=>p.closeCalls));
+  assert.equal((await page.textContent('#uart-log')).includes('board-serial-log'),false);
+  await page.click('[data-device="board"] .board-name');
+  await page.waitForFunction(()=>document.querySelector('#uart-log').textContent.includes('board-serial-log'));
+  assert.equal((await page.textContent('#uart-log')).includes('board-b-serial-log'),false);
+  assert.deepEqual(await page.evaluate(()=>window.testPorts.map(p=>p.closeCalls)),closesAfterAttach);
+  assert.equal(await page.evaluate(()=>window.testChooserCount()),2);
+  await page.waitForFunction(async()=>{
+   const devices=(await (await fetch('/api/v1/devices')).json()).devices;
+   return devices.find(d=>d.id==='board')?.connected&&devices.find(d=>d.id==='board-b')?.connected;
+  });
+  await page.click('[data-device="board"] .board-status');
+  await page.waitForFunction(()=>document.querySelector('[data-device="board"] .board-status')?.textContent==='Déconnectée');
+  assert.equal(await page.locator('[data-device="board-b"] .board-status').textContent(),'Connectée');
+  assert.deepEqual(await page.evaluate(()=>window.testPorts.map(p=>p.closeCalls)),[closesAfterAttach[0]+1,closesAfterAttach[1]]);
   assert.deepEqual(errors,[]);
  }finally{await browser?.close();proc.kill('SIGTERM');lines.close();}
 });
