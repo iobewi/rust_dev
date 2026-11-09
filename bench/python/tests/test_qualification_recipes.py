@@ -254,8 +254,9 @@ def test_watch_flags_a_defective_launcher_that_starts_the_replacement_early(tmp_
 def sim():
     started = []
 
-    def start(script=()):
-        process = subprocess.Popen([sys.executable, str(BENCH / "python/tests/sim_server.py"), "--script", json.dumps(list(script))],
+    def start(script=(), script_start="connect"):
+        process = subprocess.Popen([sys.executable, str(BENCH / "python/tests/sim_server.py"), "--script", json.dumps(list(script)),
+                                    "--script-start", script_start],
                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         started.append(process)
         selector = selectors.DefaultSelector()
@@ -333,6 +334,21 @@ def test_provenance_identifies_reviewed_code_and_blocks_dirty_trees(sim, tmp_pat
 
 
 # --- Q2 operator flow against a simulated, scripted operator (NOT hardware) -------------------------
+def test_the_simulated_operator_script_waits_for_an_explicit_reservation_signal(sim):
+    """No gesture happens before the recipe has reserved the card, however long its startup takes; the delay then counts from that signal."""
+    url, client = sim([[0.5, 60]], script_start="reservation")
+    time.sleep(2.5)                                           # far beyond the 0.5 s delay: a clock started at connection would have granted
+    assert client.device("board")["privileged_seconds"] == 0, "the script clock started before the reservation signal"
+    board = client.reserve("board", ttl=120)
+    try:
+        deadline = time.monotonic() + 5
+        while client.device("board")["privileged_seconds"] <= 0:
+            assert time.monotonic() < deadline, "the gesture never happened after the reservation"
+            time.sleep(0.05)
+    finally:
+        board.close()
+
+
 Q2_FLOWS = [("Q2a", "test_q2a_natural_expiry", [[1, 15]], {}),
             ("Q2b", "test_q2b_local_revocation", [[1, 400], [8, 0]], {}),
             ("Q2c", "test_q2c_new_reservation_cannot_disarm", [[1, 200], [12, 0]], {}),
@@ -343,7 +359,9 @@ Q2_FLOWS = [("Q2a", "test_q2a_natural_expiry", [[1, 15]], {}),
 @pytest.mark.parametrize("scenario,test,script,extra", Q2_FLOWS)
 @pytest.mark.slow_integration
 def test_q2_flow_with_scripted_operator_and_simulated_grant_clock(sim, tmp_path, scenario, test, script, extra):
-    url, client = sim(script)
+    # The operator's script clock starts when the recipe has started and reserved the card (explicit signal), not 1 s after the
+    # agent connected: a fixed delay raced the recipe's startup (git status, imports) and failed on slow file systems.
+    url, client = sim(script, script_start="reservation")
     session = {"version": 1, "board_id": "board", "chip": "esp32s3", "flash_size": 4194304, "transport": "unknown",
                "partition_table_offset": 0x8000, "evidence_root": str(tmp_path / "evidence"), "operator_timeout_s": 40}
     (tmp_path / "session.json").write_text(json.dumps(session))
