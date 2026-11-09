@@ -218,15 +218,84 @@ def test_the_local_digest_matches_the_one_a_real_server_publishes(sim):
     assert m40.assess_server_build(client.health())[:2] == (True, "same-server-code")
 
 
-@pytest.mark.parametrize("compatible", [["A" * 64], ["a" * 63], [1], "x", ["a" * 64, "a" * 64], ["a" * 64] * 9])
+def entry(digest="a" * 64, reason="reviewed: server code identical except comments"):
+    return {"sha256": digest, "reason": reason}
+
+
+@pytest.mark.parametrize("compatible", [
+    [entry("A" * 64)], [entry("a" * 63)], [entry(1)], [entry(None)], "x", {"sha256": "a" * 64},
+    ["a" * 64],                                                # the former bare-digest form: a justification is now mandatory
+    [{"sha256": "a" * 64}], [{"reason": "r"}], [entry(reason="")], [entry(reason="   ")], [entry(reason=None)], [entry(reason=7)],
+    [entry(reason="x" * 501)], [{**entry(), "extra": 1}], [entry(), entry()], [entry("a" * 64, "one"), entry("a" * 64, "two")],
+    [entry(f"{i:064x}") for i in range(9)]])
 def test_invalid_compatible_server_digests_are_refused(compatible):
     with pytest.raises(SessionError):
         validate_session(session(m40={"read": {"address": 0x100000, "size": 0x40000}, "compatible_server_sha256": compatible}))
 
 
-def test_valid_compatible_server_digests_are_kept():
-    cfg = validate_session(session(m40={"read": {"address": 0x100000, "size": 0x40000}, "compatible_server_sha256": ["a" * 64]}))
-    assert cfg["m40"]["compatible_server_sha256"] == ["a" * 64]
+def test_valid_justified_compatible_server_digests_are_kept_trimmed():
+    cfg = validate_session(session(m40={"read": {"address": 0x100000, "size": 0x40000},
+                                        "compatible_server_sha256": [entry("a" * 64, "  reviewed by the operator  "), entry("b" * 64, "x" * 500)]}))
+    assert cfg["m40"]["compatible_server_sha256"][0] == {"sha256": "a" * 64, "reason": "reviewed by the operator"}
+    assert len(cfg["m40"]["compatible_server_sha256"]) == 2
+    assert validate_session(session())["m40"]["compatible_server_sha256"] == [], "no compatible digest is ever implied"
+
+
+def test_the_versioned_example_declares_no_compatible_server_digest():
+    assert validate_session(json.loads(EXAMPLE.read_text()))["m40"]["compatible_server_sha256"] == []
+
+
+# --- write_evidence: private from the first byte ---------------------------------------------------------------------
+def test_evidence_is_created_private_whatever_the_umask(tmp_path):
+    path = tmp_path / "observed.jsonl"
+    old = os.umask(0)
+    try:
+        m40.write_evidence(path, result(events=uart(11), seq=11))
+    finally:
+        os.umask(old)
+    assert (path.stat().st_mode & 0o777) == 0o600 and path.read_text().endswith("\n")
+
+
+def test_a_wider_preexisting_file_is_restricted_before_any_content_is_written(tmp_path, monkeypatch):
+    path = tmp_path / "observed.jsonl"
+    path.write_text("OLD SENSITIVE CONTENT\n")
+    path.chmod(0o644)
+    calls = []
+    real_fchmod, real_ftruncate, real_write = os.fchmod, os.ftruncate, os.write
+    monkeypatch.setattr(m40.os, "fchmod", lambda fd, mode: (calls.append(("fchmod", mode)), real_fchmod(fd, mode))[1])
+    monkeypatch.setattr(m40.os, "ftruncate", lambda fd, size: (calls.append(("ftruncate", size)), real_ftruncate(fd, size))[1])
+    monkeypatch.setattr(m40.os, "write", lambda fd, data: (calls.append(("write", len(data))), real_write(fd, data))[1])
+    m40.write_evidence(path, result())
+    assert calls[0] == ("fchmod", 0o600) and calls[1] == ("ftruncate", 0) and calls[2][0] == "write", calls
+    assert (path.stat().st_mode & 0o777) == 0o600 and "OLD SENSITIVE" not in path.read_text()
+
+
+def test_the_file_is_opened_with_a_private_creation_mode(tmp_path, monkeypatch):
+    seen = []
+    real_open = os.open
+    monkeypatch.setattr(m40.os, "open", lambda p, flags, mode=0o777: (seen.append((flags, mode)), real_open(p, flags, mode))[1])
+    m40.write_evidence(tmp_path / "observed.jsonl", result())
+    assert seen and seen[0][1] == 0o600 and seen[0][0] & os.O_CREAT
+
+
+def test_a_serialisation_error_creates_no_file_and_propagates(tmp_path):
+    outcome = result()
+    outcome.events.append({"seq": 11, "kind": "uart", "generation": object()})        # not JSON serialisable
+    path = tmp_path / "observed.jsonl"
+    with pytest.raises(TypeError):
+        m40.write_evidence(path, outcome)
+    assert not path.exists()
+
+
+def test_an_io_error_propagates_unchanged(tmp_path):
+    with pytest.raises(OSError):
+        m40.write_evidence(tmp_path / "missing-directory" / "observed.jsonl", result())
+    path = tmp_path / "observed.jsonl"
+    path.write_text("kept")
+    path.chmod(0o400)
+    if os.geteuid() != 0:                                      # root can write a 0400 file: only assert where permissions apply
+        with pytest.raises(OSError):
+            m40.write_evidence(path, result())
 
 
 def operation(**change):
@@ -273,6 +342,8 @@ def test_private_dump_verification(tmp_path):
     assert m40.verify_private_dump(tmp_path, address=0x1000, size=len(data), sha256="0" * 64)[1]
     assert m40.verify_private_dump(tmp_path, address=0x1000, size=len(data) + 1, sha256=digest)[1]
     assert m40.verify_private_dump(tmp_path, address=0x2000, size=1, sha256=digest)[0] is None
+
+
 
 
 # --- simulated bench -----------------------------------------------------------------------------------------------
@@ -541,6 +612,30 @@ def test_m40_scenarios_are_blocked_when_the_running_server_code_differs_from_the
         assert not submitted(work / "evidence"), "an incompatible server must receive no reservation or command"
         report = next((work / "evidence").glob("*/m40-server-compat.json"))
         assert json.loads(report.read_text())["compatible"] is False
+
+
+def test_a_justified_declared_server_digest_lets_a_different_server_code_through_and_is_recorded(sim, tmp_path):
+    """The recipe checkout differs from the RUNNING server's code; the operator declared that server's digest WITH a reason: the
+    scenario proceeds, and the evidence names the basis and the justification. Without the declaration it is BLOCKED (test above)."""
+    import shutil
+    url, client = sim()
+    published = client.health()["build"]["server_sha256"]
+    copy = tmp_path / "bench"
+    shutil.copytree(BENCH, copy, ignore=shutil.ignore_patterns("node_modules", "__pycache__", ".bench-runs", ".pytest_cache"))
+    with (copy / "server" / "core.py").open("a") as stream:
+        stream.write("\n# different server code\n")
+    declared = {**session()["m40"], "compatible_server_sha256": [entry(published, "reviewed: only a comment differs from the running server")]}
+    path = tmp_path / "session.json"
+    path.write_text(json.dumps({**session(m40=declared), "evidence_root": str(tmp_path / "evidence")}))
+    env = {**os.environ, "BENCH_CLIENT_TOKEN": TOKEN, "BENCH_URL": url, "BENCH_QUAL_SESSION": str(path)}
+    run = subprocess.run([sys.executable, "-m", "pytest", f"{RECIPE}::test_m40_0_initial_state", "--bench", "--qual-allow-dirty",
+                          "--bench-results", str(tmp_path / "runs"), "-q", "-p", "no:cacheprovider", "--tb=short"],
+                         cwd=copy, env=env, capture_output=True, text=True, timeout=120)
+    assert run.returncode == 0 and "1 passed" in run.stdout, run.stdout[-1200:]
+    compat = json.loads(next((tmp_path / "evidence").glob("*/m40-server-compat.json")).read_text())
+    assert compat["compatible"] and compat["basis"] == "operator-declared"
+    assert compat["operator_justification"] == "reviewed: only a comment differs from the running server"
+    assert compat["server_sha256"] == published != compat["local_server_sha256"]
 
 
 @pytest.mark.parametrize("defect,fragment", [

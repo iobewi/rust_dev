@@ -174,8 +174,8 @@ def validate_m40(section, cfg):
 
     Never presumed: absent section = the scenario is BLOCKED. `avoid` lists regions the operator declares sensitive
     (configuration, otadata...); the range must not touch them. Ranges are 4-KiB aligned, inside the declared flash and
-    at most one agent block (1 MiB). `compatible_server_sha256` lists server code digests the operator reviewed as compatible
-    when they differ from this checkout's (see m40.assess_server_build). Reads only: nothing here authorises a write or an erase."""
+    at most one agent block (1 MiB). `compatible_server_sha256` lists {sha256, reason}: server code digests the operator reviewed as compatible
+    when they differ from this checkout's, each with its written justification, kept in the PRIVATE session (see m40.assess_server_build). Reads only: nothing here authorises a write or an erase."""
     if not isinstance(section, dict) or section.keys() - M40_KEYS:
         raise SessionError(f"m40 accepts only {sorted(M40_KEYS)}")
     if not section:
@@ -206,9 +206,21 @@ def validate_m40(section, cfg):
     if type(interval) not in (int, float) or isinstance(interval, bool) or not 0.1 <= interval <= 5:
         raise SessionError("m40.sample_interval_s must be 0.1..5 seconds")
     compatible = section.get("compatible_server_sha256", [])
-    if (not isinstance(compatible, list) or len(compatible) > 8 or len(set(compatible)) != len(compatible) or
-            not all(isinstance(x, str) and len(x) == 64 and all(c in "0123456789abcdef" for c in x) for x in compatible)):
-        raise SessionError("m40.compatible_server_sha256: at most 8 distinct lowercase hex SHA-256 of reviewed server code")
+    if not isinstance(compatible, list) or len(compatible) > 8:
+        raise SessionError("m40.compatible_server_sha256: a list of at most 8 {sha256, reason} entries")
+    seen = set()
+    for entry in compatible:
+        if not isinstance(entry, dict) or set(entry) != {"sha256", "reason"}:
+            raise SessionError("m40.compatible_server_sha256: each entry is exactly {sha256, reason}")
+        digest, reason = entry["sha256"], entry["reason"]
+        if not (isinstance(digest, str) and len(digest) == 64 and all(c in "0123456789abcdef" for c in digest)):
+            raise SessionError("m40.compatible_server_sha256: sha256 must be 64 lowercase hex characters")
+        if digest in seen:
+            raise SessionError("m40.compatible_server_sha256: duplicate sha256")
+        seen.add(digest)
+        if not isinstance(reason, str) or not reason.strip() or len(reason) > 500:
+            raise SessionError("m40.compatible_server_sha256: every sha256 needs a non-empty written justification (at most 500 characters)")
+    compatible = [{"sha256": e["sha256"], "reason": e["reason"].strip()} for e in compatible]
     return {"read": read, "avoid": avoid, "sample_interval_s": float(interval), "compatible_server_sha256": compatible}
 
 

@@ -22,7 +22,8 @@ M40-11a  one `flash.read` of the configured range (m40.read) on the first card, 
                  events, a collector that did not terminate, no final sample. Nothing is replayed and a server artifact whose
                  private copy is not verified is KEPT.
 Compatibility: the RUNNING server must speak protocol 1 and publish a `server_sha256` equal to the digest recomputed from this
-checkout (the server CODE, not the Git SHA) or listed in `m40.compatible_server_sha256` after operator review; otherwise BLOCKED.
+checkout (the server CODE, not the Git SHA) or listed, with a written justification, in the private session's
+`m40.compatible_server_sha256` ([{"sha256": ..., "reason": ...}]) after operator review; otherwise BLOCKED.
 Replay (same parameters, same criteria; the token is injected into the process environment, never on the command line):
   cp recipes/qualification_campaign/session.m40.example.json <private>/session.m40.json   # then set evidence_root, consent M40-11
   python -m pytest recipes/qualification_campaign/test_m40_multiboard.py --bench --bench-url <url> --bench-device <first card> \
@@ -68,11 +69,13 @@ def _second_card(client, other):
 
 def _server_compat(case, cfg, health):
     """Compatibility of the RUNNING server with this recipe's code (server code digest, never the Git SHA alone)."""
-    compatible, basis, reasons = m40.assess_server_build(health, accepted=cfg["m40"].get("compatible_server_sha256", []))
+    declared = {entry["sha256"]: entry["reason"] for entry in cfg["m40"].get("compatible_server_sha256", [])}
+    compatible, basis, reasons = m40.assess_server_build(health, accepted=declared)
     build = health.get("build") or {}
     case.write("m40-server-compat.json", {"compatible": compatible, "basis": basis, "reasons": reasons, "protocol": health.get("protocol"),
                                           "server_git_sha": build.get("git_sha"), "server_sha256": build.get("server_sha256"),
-                                          "local_server_sha256": m40.local_server_sha256(), "assets_sha256": build.get("assets_sha256")})
+                                          "local_server_sha256": m40.local_server_sha256(), "assets_sha256": build.get("assets_sha256"),
+                                          "operator_justification": declared.get(build.get("server_sha256")) if basis == "operator-declared" else None})
     return compatible, basis, reasons
 
 

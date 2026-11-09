@@ -176,10 +176,21 @@ def evidence_rows(result):
 
 
 def write_evidence(path, result):
-    """Write `evidence_rows` as JSON lines, readable by the owner only."""
-    path = Path(path)
-    path.write_text("".join(json.dumps(row, sort_keys=True) + "\n" for row in evidence_rows(result)))
-    os.chmod(path, 0o600)
+    """Write `evidence_rows` as JSON lines, readable by the owner only - at no moment by anyone else.
+
+    The content is serialised FIRST (a serialisation error creates no file). The file is created with mode 0600 and, whether it is
+    new or pre-existing with wider permissions, restricted with fchmod BEFORE any content is written or the old content truncated.
+    Errors propagate as before (OSError / TypeError); nothing is retried."""
+    data = "".join(json.dumps(row, sort_keys=True) + "\n" for row in evidence_rows(result)).encode()
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT, 0o600)
+    try:
+        os.fchmod(fd, 0o600)
+        os.ftruncate(fd, 0)
+        view = memoryview(data)
+        while view:
+            view = view[os.write(fd, view):]
+    finally:
+        os.close(fd)
 
 
 # --- bench / recipe compatibility ---------------------------------------------------------------------------------
@@ -202,7 +213,7 @@ def assess_server_build(health, *, local=None, accepted=()):
     A different Git SHA is neither accepted blindly nor refused: what matters is the server CODE. Compatible only when
       * the protocol version is the one the recipe speaks, and
       * the server's published `server_sha256` equals the one recomputed from this checkout (same server code, whatever
-        later commits changed elsewhere), or is listed by the operator in `m40.compatible_server_sha256` after review.
+        later commits changed elsewhere), or is listed, WITH a written justification, by the operator in the private session's `m40.compatible_server_sha256` after review.
     Anything else (or a health document without a build digest) is incompatible and the scenario is BLOCKED."""
     local = local or local_server_sha256()
     health = health or {}
