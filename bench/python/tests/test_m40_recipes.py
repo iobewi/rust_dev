@@ -543,6 +543,35 @@ def test_m40_scenarios_are_blocked_when_the_running_server_code_differs_from_the
         assert json.loads(report.read_text())["compatible"] is False
 
 
+@pytest.mark.parametrize("defect,fragment", [
+    ("r.terminated = False", "did not terminate"),
+    ("r.final_sampled = False", "final synchronous sample"),
+    ("r.epoch_changed = True; r.errors.append('server epoch changed on an event page (injected)')", "epoch changed"),
+    ("r.pages[0]['lost'] = 1", "lost"),
+    ("r.events.append({'seq': r.baseline['seq'] + 5, 'kind': 'uart', 'generation': None}); r.pages[-1]['count'] += 1", "gap"),
+])
+def test_an_untrustworthy_observation_of_the_second_card_is_indeterminate_never_a_pass(sim, tmp_path, defect, fragment):
+    """End to end through the recipe: a collector whose result is defective (injected in a COPY of m40.py, the real card/server stay
+    healthy) must yield INDETERMINATE, a non-zero exit and no PASS - the read itself having succeeded."""
+    import shutil
+    url, client = sim()
+    copy = tmp_path / "bench"
+    shutil.copytree(BENCH, copy, ignore=shutil.ignore_patterns("node_modules", "__pycache__", ".bench-runs", ".pytest_cache"))
+    with (copy / "recipes/qualification_campaign/m40.py").open("a") as stream:
+        stream.write(f"\n_real_stop = BoardWatch.stop\n\n\ndef _defective_stop(self):\n    r = _real_stop(self)\n    {defect}\n    return r\n\n\n"
+                     "BoardWatch.stop = _defective_stop\n")
+    path = tmp_path / "session.json"
+    path.write_text(json.dumps({**session(), "evidence_root": str(tmp_path / "evidence")}))
+    env = {**os.environ, "BENCH_CLIENT_TOKEN": TOKEN, "BENCH_URL": url, "BENCH_QUAL_SESSION": str(path)}
+    run = subprocess.run([sys.executable, "-m", "pytest", f"{RECIPE}::test_m40_11a_flash_read_on_first_card_second_card_independent",
+                          "--bench", "--qual-allow-dirty", "--bench-results", str(tmp_path / "runs"), "-q", "-p", "no:cacheprovider", "--tb=short"],
+                         cwd=copy, env=env, capture_output=True, text=True, timeout=180)
+    reports = {i["id"]: i for f in (tmp_path / "evidence").glob("*/report.json") for i in json.loads(f.read_text())["tests"]}
+    assert run.returncode != 0 and "1 passed" not in run.stdout, run.stdout[-1500:]
+    assert reports["M40-11a"]["status"] == "INDETERMINATE", reports["M40-11a"]
+    assert fragment in " ".join(reports["M40-11a"]["incidents"]) + run.stdout
+
+
 @pytest.mark.parametrize("change,fragment", [({"consent": {"scenarios": []}}, "M40-11"), ({"m40": {}}, "m40"),
                                               ({"second_board": {}}, "second_board")])
 def test_m40_11a_is_blocked_before_any_command(sim, tmp_path, change, fragment):
