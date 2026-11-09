@@ -84,8 +84,11 @@ def args_return_console(args):
     return args.get('return_console', True) is True
 
 
-async def run(url, token, device_id, grant=0, stop=None, script=(), chip='esp32s3'):
+async def run(url, token, device_id, grant=0, stop=None, script=(), chip='esp32s3', script_start=None):
     """`script`: simulated operator gestures [(delay_s, grant_seconds)], 0 revokes. Simulation only.
+
+    `script_start` (an asyncio.Event, optional): the script clock starts when it is set - an explicit state signal - instead of when the
+    agent connects, so a gesture never races the start of the recipe under test.
 
     SIM_NATIVE=1 registers a native USB Serial/JTAG card (no io0 / boot.download); SIM_REENUMERATE=1 makes a `reset` re-enumerate the
     USB device (the agent disconnects and registers again with a new generation)."""
@@ -93,7 +96,7 @@ async def run(url, token, device_id, grant=0, stop=None, script=(), chip='esp32s
     async with ClientSession(headers={'Authorization': 'Bearer ' + token}) as session:
         first, connection = True, 0
         while True:
-            again = await serve(session, url, token, device_id, grant if first else 0, script, chip, sim, connection)
+            again = await serve(session, url, token, device_id, grant if first else 0, script, chip, sim, connection, script_start)
             first, connection = False, connection + 1
             if not again:
                 break
@@ -101,7 +104,7 @@ async def run(url, token, device_id, grant=0, stop=None, script=(), chip='esp32s
     return sim
 
 
-async def serve(session, url, token, device_id, grant, script, chip, sim, connection=0):
+async def serve(session, url, token, device_id, grant, script, chip, sim, connection=0, script_start=None):
     """One agent connection. Returns True when the card re-enumerated (the caller reconnects)."""
     reenumerate = False
     async with session.ws_connect(url + '/agent/v1/ws') as ws:
@@ -156,6 +159,8 @@ async def serve(session, url, token, device_id, grant, script, chip, sim, connec
             tasks.append(asyncio.create_task(source()))
 
         async def operator():
+            if script_start is not None and connection == 0:
+                await script_start.wait()                          # explicit signal, not a fixed delay from the agent's connection
             start = time.monotonic()
             for delay, seconds in script:
                 if (seconds == 'recover') != (connection > 0):
