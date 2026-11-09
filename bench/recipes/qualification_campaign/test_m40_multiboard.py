@@ -17,8 +17,12 @@ M40-11a  one `flash.read` of the configured range (m40.read) on the first card, 
                  to an operation);
   FAIL           any of the above is violated, a command lands on the wrong card, or a second operation exists;
   BLOCKED        no M40-11 consent / no m40 or second_board section / a card not ready / a declaration that does not match;
-  INDETERMINATE  an unresolved operation or a lost proof window (epoch / generation / UART continuity, sampling gaps on the
-                 second card). Nothing is replayed and a server artifact whose private copy is not verified is KEPT.
+  INDETERMINATE  an unresolved operation or a lost proof window (epoch / generation / UART continuity) or an observation of the
+                 second card that cannot be trusted: sampling gap, epoch change on an event page, lost / duplicated / missing
+                 events, a collector that did not terminate, no final sample. Nothing is replayed and a server artifact whose
+                 private copy is not verified is KEPT.
+Compatibility: the RUNNING server must speak protocol 1 and publish a `server_sha256` equal to the digest recomputed from this
+checkout (the server CODE, not the Git SHA) or listed in `m40.compatible_server_sha256` after operator review; otherwise BLOCKED.
 Replay (same parameters, same criteria; the token is injected into the process environment, never on the command line):
   cp recipes/qualification_campaign/session.m40.example.json <private>/session.m40.json   # then set evidence_root, consent M40-11
   python -m pytest recipes/qualification_campaign/test_m40_multiboard.py --bench --bench-url <url> --bench-device <first card> \
@@ -62,6 +66,16 @@ def _second_card(client, other):
         raise Blocked(f"the second card {other!r} is unknown to the server (not connected under that logical id)") from error
 
 
+def _server_compat(case, cfg, health):
+    """Compatibility of the RUNNING server with this recipe's code (server code digest, never the Git SHA alone)."""
+    compatible, basis, reasons = m40.assess_server_build(health, accepted=cfg["m40"].get("compatible_server_sha256", []))
+    build = health.get("build") or {}
+    case.write("m40-server-compat.json", {"compatible": compatible, "basis": basis, "reasons": reasons, "protocol": health.get("protocol"),
+                                          "server_git_sha": build.get("git_sha"), "server_sha256": build.get("server_sha256"),
+                                          "local_server_sha256": m40.local_server_sha256(), "assets_sha256": build.get("assets_sha256")})
+    return compatible, basis, reasons
+
+
 def test_m40_0_initial_state(bench_client, qual_session, pytestconfig, record_property):
     cfg = qual_session
     require_target(cfg, TARGET_CHIP)
@@ -77,16 +91,19 @@ def test_m40_0_initial_state(bench_client, qual_session, pytestconfig, record_pr
         if problems:
             raise Blocked("; ".join(problems))
         health, recipe = case.client.health(), source_state()
+        compatible, basis, reasons = _server_compat(case, cfg, health)
         state = {"epoch": health["epoch"], "server": health.get("build"), "recipe_git_sha": recipe["git_sha"],
-                 "recipe_tree_clean": recipe["clean"],
+                 "recipe_tree_clean": recipe["clean"], "server_compatibility": {"compatible": compatible, "basis": basis},
                  "cards": {name: {k: card.get(k) for k in ("id", "agent", "generation", "chip", "flash_size", "provenance", "seq")}
                            for name, card in ((cfg["board_id"], first), (other, second))}}
         case.write("m40-0-state.json", state)
+        if not compatible:
+            raise Blocked("; ".join(reasons))
         server_sha = (health.get("build") or {}).get("git_sha")
         out.evidence.append(f"both cards connected, unquarantined, unreserved, ungranted; agents {first['agent'][-8:]} / {second['agent'][-8:]}; "
                             f"generations {first['generation'][:8]} / {second['generation'][:8]} (distinct)")
-        out.evidence.append(f"server SHA {str(server_sha)[:12]} vs recipe SHA {recipe['git_sha'][:12]}: "
-                            + ("equal" if server_sha == recipe["git_sha"] else "DIFFERENT (reported only; check before any hardware run)"))
+        out.evidence.append(f"server build compatible with the recipe ({basis}); Git SHA {str(server_sha)[:12]} vs recipe {recipe['git_sha'][:12]}: "
+                            + ("equal" if server_sha == recipe["git_sha"] else "different (reported; the server CODE digest decides)"))
         out.evidence.append("shared browser-session prefix of the two agents: "
                             + str(first["agent"].rsplit("-", 1)[0] == second["agent"].rsplit("-", 1)[0]) + " (reported only)")
 
@@ -108,6 +125,10 @@ def test_m40_11a_flash_read_on_first_card_second_card_independent(bench_client, 
                   limits=LIMITS):
         start_or_block(case)
         record_transport(case, bench_client, cfg, out)
+        compatible, basis, reasons = _server_compat(case, cfg, case.client.health())
+        if not compatible:
+            raise Blocked("; ".join(reasons))
+        out.evidence.append(f"server build compatible with the recipe ({basis})")
         second = _second_card(case.client, other)
         problems = m40.check_ready(second, other) + m40.check_distinct(case.client.device(cfg["board_id"]), second)
         if problems:
@@ -124,8 +145,7 @@ def test_m40_11a_flash_read_on_first_card_second_card_independent(bench_client, 
                 operation = dict(board.last_operation or {})
         finally:
             result = watch.stop()
-            case.write("m40-observed-card.json", {"baseline": result.baseline, "samples": len(result.samples), "events": result.events,
-                                                    "errors": result.errors, "spontaneous_uart": m40.spontaneous_uart(result)})
+            m40.write_evidence(case.directory / "m40-observed-card.jsonl", result)      # timestamped samples, pages, events: no payload
         args = {"address": address, "size": size}
         # --- first card: the operation, its artifact, the private dump -------------------------------------------------------
         problems = m40.check_operation(operation, device=cfg["board_id"], generation=generation, command="flash.read", args=args)
