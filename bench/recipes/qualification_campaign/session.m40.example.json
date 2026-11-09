@@ -23,6 +23,7 @@
       {"address": 77824, "size": 8192},
       {"address": 3670016, "size": 524288}
     ],
-    "sample_interval_s": 0.5
+    "sample_interval_s": 0.5,
+    "compatible_server_sha256": []
   }
 }
