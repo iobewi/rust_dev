@@ -231,3 +231,30 @@ test('forget after cancelled physical reconnect closes leftover engine before fr
   assert.equal(actions.includes('close:b'), false);
   await manager.add('a', ports[0]);
 });
+
+test('M40-11b: selecting B during a long operation on A keeps its captured target, events and result on A', async () => {
+  const { manager, ports, actions } = lab();
+  const a = await manager.add('a', ports[0]), b = await manager.add('b', ports[1]);
+  manager.contexts.markConnected('a', a.identity, 'gen-a-1');
+  manager.contexts.markConnected('b', b.identity, 'gen-b-1');
+  manager.select('a');
+  const target = manager.contexts.target();                // captured at submission, as ui.selectedTarget() does
+  a.agent.active = { id: 'long-flash-read' };              // the operation is running on A
+  const before = [...actions];
+  manager.select('b'); manager.select('a'); manager.select('b');
+  assert.deepEqual(actions, before, 'selection never opens, closes or commands anything');
+  assert.equal(manager.contexts.selectedId, 'b');
+  assert.ok(Object.isFrozen(target));
+  assert.equal(target.device, 'a'); assert.equal(target.generation, 'gen-a-1'); assert.strictEqual(target.context, a);
+  a.engine.emit('uart', { data: 'QQ==' });                 // late events of the running operation stay on A
+  assert.ok(actions.includes('event:a:uart')); assert.ok(!actions.includes('event:b:uart'));
+  assert.equal(manager.contexts.target('b').device, 'b');  // B stays operable and is not the target of A's operation
+  assert.equal(manager.contexts.target('b').generation, 'gen-b-1');
+  await assert.rejects(manager.disconnect('a'), /board_not_idle/, 'A cannot be closed under its own operation');
+  assert.equal(a.status, 'connected'); assert.equal(b.status, 'connected');
+  a.agent.active = false;                                  // the operation ends while B is still the selected card
+  assert.equal(manager.contexts.selectedId, 'b');
+  assert.equal(target.device, 'a'); assert.equal(target.generation, 'gen-a-1'); assert.strictEqual(target.context, a);
+  assert.equal(manager.contexts.target('a').generation, 'gen-a-1');
+  assert.deepEqual(actions.filter(x => x.startsWith('close:') || x.startsWith('disconnect:')), []);
+});
