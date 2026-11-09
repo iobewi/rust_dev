@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "board_id": "esp32-local",
+  "chip": "esp32s3",
+  "flash_size": 16777216,
+  "transport": "external_uart",
+  "partition_table_offset": 65536,
+  "approved_regions": [],
+  "evidence_root": "/ABSOLUTE/PRIVATE/PERSISTENT/outside-git",
+  "operation_timeout_s": 120,
+  "operator_timeout_s": 900,
+  "consent": {
+    "scenarios": [],
+    "note": "Template: consent stays EMPTY here. The private copy adds M40-11 only after the operator's explicit, dated consent to loader entry, console return (card restarts) and one flash.read; it authorises no write, no erase and no grant."
+  },
+  "second_board": {
+    "board_id": "esp32-zero"
+  },
+  "m40": {
+    "read": {"address": 3145728, "size": 262144},
+    "avoid": [
+      {"address": 69632, "size": 8192},
+      {"address": 77824, "size": 8192},
+      {"address": 3670016, "size": 524288}
+    ],
+    "sample_interval_s": 0.5
+  }
+}

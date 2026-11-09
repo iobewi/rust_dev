@@ -13,13 +13,14 @@ from iobewi_bench import CampaignManifest
 CHIPS = {"esp32s3", "esp32c3"}
 TRANSPORTS = {"external_uart", "usb_serial_jtag", "native_usb_other", "unknown"}
 SCENARIOS = {"Q1", "Q2", "Q3", "C3R-READ", "C3R-RESET", "S3R-RESET", "S3R-BOOT", "S3R-READ", "R4",
-             "NUSB-READ", "NUSB-RESET", "T7", "R5", "H10", "U8", "M2"}
+             "NUSB-READ", "NUSB-RESET", "T7", "R5", "H10", "U8", "M2", "M40-11"}
 TOP_LEVEL = {"version", "board_id", "chip", "flash_size", "transport", "partition_table_offset",
              "approved_regions", "evidence_root", "operation_timeout_s", "operator_timeout_s",
-             "consent", "q2", "q3", "readonly", "bootloader", "r4", "faults", "second_board", "lan_http", "capture", "accept_unknown_transport"}
+             "consent", "q2", "q3", "readonly", "bootloader", "r4", "faults", "second_board", "lan_http", "capture", "accept_unknown_transport", "m40"}
 DEFAULTS = {"operation_timeout_s": 120, "operator_timeout_s": 900, "approved_regions": [],
             "consent": {"scenarios": [], "note": ""}, "q2": {}, "q3": {},
-            "readonly": {}, "bootloader": {}, "r4": {}, "faults": {}, "second_board": {}, "lan_http": {}, "capture": {}, "accept_unknown_transport": False}
+            "readonly": {}, "bootloader": {}, "r4": {}, "faults": {}, "second_board": {}, "lan_http": {}, "capture": {}, "accept_unknown_transport": False,
+            "m40": {}}
 Q2_DEFAULTS = {"trigger_pattern_b64": "SU9CRVdJLVEyLU5FVkVSLVNUSU1VTEFURUQ=",  # inert, never stimulated
                "expires_ms": 120000, "reservation_ttl_s": 600}
 Q3_DEFAULTS = {"allow_restart": False, "launcher_pid_file": None, "state_dir": None, "launcher_log": None,
@@ -80,6 +81,7 @@ def validate_session(document):
     cfg["r4"] = validate_r4(cfg["r4"], cfg)
     cfg["faults"] = validate_faults(cfg["faults"], cfg)
     cfg["second_board"] = validate_second_board(cfg["second_board"], cfg)
+    cfg["m40"] = validate_m40(cfg["m40"], cfg)
     cfg["lan_http"] = validate_lan_http(cfg["lan_http"])
     cfg["capture"] = validate_capture(cfg["capture"])
     regions = cfg["approved_regions"]
@@ -161,6 +163,48 @@ def validate_second_board(section, cfg):
     if not isinstance(section.get("board_id"), str) or not section["board_id"] or section["board_id"] == cfg["board_id"]:
         raise SessionError("second_board.board_id must be a non-empty logical id different from board_id")
     return dict(section)
+
+
+M40_KEYS = {"read", "avoid", "sample_interval_s"}
+M40_BLOCK = 1024 * 1024                       # the agent reads in blocks of at most 1 MiB: one block keeps the proof a single transfer
+
+
+def validate_m40(section, cfg):
+    """M40-11a (issue #40): one explicit READ range on the first card while the second card is only observed.
+
+    Never presumed: absent section = the scenario is BLOCKED. `avoid` lists regions the operator declares sensitive
+    (configuration, otadata...); the range must not touch them. Ranges are 4-KiB aligned, inside the declared flash and
+    at most one agent block (1 MiB). Reads only: nothing here authorises a write or an erase."""
+    if not isinstance(section, dict) or section.keys() - M40_KEYS:
+        raise SessionError(f"m40 accepts only {sorted(M40_KEYS)}")
+    if not section:
+        return {}
+
+    def region(item, name):
+        if not isinstance(item, dict) or set(item) != {"address", "size"}:
+            raise SessionError(f"m40.{name}: exactly {{address, size}}")
+        address, size = item["address"], item["size"]
+        if (type(address) is not int or type(size) is not int or address < 0 or size <= 0 or address % 4096 or size % 4096
+                or address + size > cfg["flash_size"]):
+            raise SessionError(f"m40.{name}: 4-KiB aligned {{address, size}} inside the declared flash")
+        return {"address": address, "size": size}
+
+    if "read" not in section:
+        raise SessionError("m40.read is required when the m40 section is present")
+    read = region(section["read"], "read")
+    if read["size"] > M40_BLOCK:
+        raise SessionError("m40.read.size is limited to one agent block (1 MiB)")
+    avoid = section.get("avoid", [])
+    if not isinstance(avoid, list) or len(avoid) > 16:
+        raise SessionError("m40.avoid: at most 16 regions")
+    avoid = [region(item, "avoid") for item in avoid]
+    for item in avoid:
+        if read["address"] < item["address"] + item["size"] and item["address"] < read["address"] + read["size"]:
+            raise SessionError("m40.read intersects a region declared sensitive in m40.avoid")
+    interval = section.get("sample_interval_s", 0.5)
+    if type(interval) not in (int, float) or isinstance(interval, bool) or not 0.1 <= interval <= 5:
+        raise SessionError("m40.sample_interval_s must be 0.1..5 seconds")
+    return {"read": read, "avoid": avoid, "sample_interval_s": float(interval)}
 
 
 def validate_lan_http(section):
