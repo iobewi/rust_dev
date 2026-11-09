@@ -513,6 +513,64 @@ def check_uart_isolation(streams, own_markers):
     return problems
 
 
+# --- M40-4 reset_both: concurrent commands and their observation ----------------------------------------------------
+ACTIVE_KINDS = frozenset({"uart", "operation", "transport"})      # events a stimulated (reset) card may legitimately produce
+
+
+@dataclass
+class FireResult:
+    errors: dict = field(default_factory=dict)       # card -> exception raised by its command (never retried)
+    alive: list = field(default_factory=list)        # cards whose command thread was still running after the join deadline
+
+
+def fire_concurrently(boards, command, *, join_timeout, **kwargs):
+    """Submit ONE `command` per Board from one daemon thread each, all started together, then wait up to `join_timeout` seconds in total.
+
+    The threads' termination is checked, not assumed: a card whose thread is still alive is listed in `alive` and its outcome is UNKNOWN
+    (the caller must report INDETERMINATE, keep the reservation and never resubmit). Exceptions raised inside a thread are returned,
+    never swallowed and never retried."""
+    result, threads = FireResult(), {}
+
+    def run(name, board):
+        try:
+            board.command(command, **kwargs)
+        except BaseException as error:              # noqa: BLE001 - returned to the caller, never retried
+            result.errors[name] = error
+    for name, board in boards.items():
+        threads[name] = threading.Thread(target=run, args=(name, board), name=f"fire-{name}", daemon=True)
+    for thread in threads.values():
+        thread.start()
+    deadline = time.monotonic() + join_timeout
+    for thread in threads.values():
+        thread.join(max(0.0, deadline - time.monotonic()))
+    result.alive = [name for name, thread in threads.items() if thread.is_alive()]
+    return result
+
+
+def stimulated_continuity(result):
+    """While a card is stimulated its reservation legitimately appears and disappears, but its agent, generation and connection must not
+    change: a change is a CONTINUITY loss (USB re-enumeration, agent re-registration), reported INDETERMINATE by the caller."""
+    problems, base = [], result.baseline
+    for sample in result.samples:
+        for key in ("agent", "generation", "connected"):
+            if sample[key] != base[key]:
+                problems.append(f"{key} changed on a stimulated card: {base[key]!r} -> {sample[key]!r}")
+    return sorted(set(problems))
+
+
+def stimulated_violations(result):
+    """Violations that are not continuity losses: quarantine or a remote grant appearing, or an event kind a reset must never produce."""
+    problems, base = [], result.baseline
+    for sample in result.samples:
+        for key in ("quarantined", "privileged_seconds"):
+            if sample[key] != base[key]:
+                problems.append(f"{key} changed on a stimulated card: {base[key]!r} -> {sample[key]!r}")
+    foreign = sorted({event["kind"] for event in result.events if event["kind"] not in ACTIVE_KINDS})
+    if foreign:
+        problems.append(f"unexpected event kinds on a stimulated card: {foreign}")
+    return sorted(set(problems))
+
+
 # --- non-intrusive collector --------------------------------------------------------------------------------------
 class BoardWatch:
     """Polls ONE card with GET requests only, from its own client. Never reserves, never submits.

@@ -204,6 +204,8 @@ async def serve(session, url, token, device_id, grant, script, chip, sim, connec
                     continue
                 try:
                     command, args = op['command'], op['args']
+                    if command == os.environ.get('SIM_HANG_COMMAND'):
+                        await asyncio.sleep(3600)                           # SIMULATES a command that never reports a result (lost result / stuck page)
                     if command == 'trigger':
                         sim.trigger_id += 1
                         sim.trigger = None if args.get('action') == 'disarm' else {

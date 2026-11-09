@@ -44,6 +44,15 @@ agents, réservations inchangés. `stimulus: none` : capture passive des logs qu
 est muette). `stimulus: reset_both` : un `reset` par carte, simultané — **jamais implicite** : consentement `M40-4-RESET` ET
 `--qual-allow-reset` ; un changement de génération après le stimulus (réénumération USB) est INDETERMINATE.
 
+### M40-4 : observation passive et active
+Les **deux** cartes sont observées par GET (`BoardWatch`) avant toute action, dans les deux modes, avec la même intégrité d'observation :
+une seule epoch sur chaque page d'événements, ni perte, ni doublon, ni trou, collecteur terminé, échantillon final. Différences :
+- **passif** : aucune modification des cartes n'est tolérée (réservations et événements non-UART compris) ;
+- **actif (`reset_both`)** : les deux réservations et les événements d'opération sont attendus ; un changement d'agent, de génération
+  ou de connexion est une rupture de continuité (INDETERMINATE) ; une quarantaine, un grant ou un type d'événement qu'un reset ne doit
+  pas produire est un FAIL. Si un thread de commande `reset` est encore actif après son délai, le résultat est INDETERMINATE : les
+  réservations sont conservées (jamais libérées de force), aucune commande n'est rejouée.
+
 ## Protocole matériel proposé (ordre de priorité)
 1. **M40-12a** (aucun reset). Consentement à demander : commandes `mark` sur A **et B**.
 2. **M40-11c/d** (un cycle loader sur A). Prérequis : marqueurs déclarés (ROM `ESP-ROM:esp32s3`, 2nd stage `boot:`, ligne applicative

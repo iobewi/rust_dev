@@ -19,6 +19,7 @@ BENCH = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(BENCH / "recipes"))
 from qualification_campaign import m40                                       # noqa: E402
 from qualification_campaign.session import SessionError, validate_session   # noqa: E402
+from test_m40_recipes import result, tamper                                 # noqa: E402,F401  (consistent synthetic observations)
 
 RECIPE = "recipes/qualification_campaign/test_m40_complement.py"
 TOKEN = "pytest-client-test-token"
@@ -534,3 +535,164 @@ def test_m40_4_usb_reenumeration_after_a_reset_is_indeterminate_never_a_pass(sim
     run, reports, _ = run_recipe(tmp_path, url, "test_m40_4_simultaneous_uart", document, extra=("--qual-allow-reset",))
     assert run.returncode != 0 and reports["M40-4"]["status"] == "INDETERMINATE", run.stdout[-1200:]
     assert "PASS" != reports["M40-4"]["status"]
+
+
+# --- M40-4 reset_both: thread termination, abandoned commands, active-mode observation ---------------------------------------------------
+import threading                                                                  # noqa: E402
+
+
+class FakeBoard:
+    """A Board stand-in: records every command it is asked (a replay would show), and can fail or block."""
+
+    def __init__(self, *, error=None, block=None):
+        self.calls, self.error, self.block = [], error, block
+
+    def command(self, name, **kwargs):
+        self.calls.append((name, kwargs))
+        if self.block is not None:
+            self.block.wait(30)
+        if self.error is not None:
+            raise self.error
+
+
+def test_fire_concurrently_starts_every_command_once_and_reports_no_survivor():
+    boards = {"a": FakeBoard(), "b": FakeBoard()}
+    fired = m40.fire_concurrently(boards, "reset", join_timeout=5, timeout=7, start_timeout=9)
+    assert fired.alive == [] and fired.errors == {}
+    assert all(board.calls == [("reset", {"timeout": 7, "start_timeout": 9})] for board in boards.values()), "exactly one submission each"
+
+
+def test_fire_concurrently_returns_errors_without_retrying():
+    err = RuntimeError("boom")
+    boards = {"a": FakeBoard(error=err), "b": FakeBoard()}
+    fired = m40.fire_concurrently(boards, "reset", join_timeout=5)
+    assert fired.errors == {"a": err} and fired.alive == [] and len(boards["a"].calls) == 1 and len(boards["b"].calls) == 1
+
+
+def test_a_thread_still_running_after_the_deadline_is_reported_not_assumed_finished():
+    gate = threading.Event()
+    boards = {"a": FakeBoard(block=gate), "b": FakeBoard()}
+    started = time.monotonic()
+    fired = m40.fire_concurrently(boards, "reset", join_timeout=0.4)
+    elapsed = time.monotonic() - started
+    assert fired.alive == ["a"] and elapsed < 2, "the join is bounded by ONE deadline, not one per thread"
+    assert len(boards["a"].calls) == 1, "the stuck command is never submitted again"
+    assert [t for t in threading.enumerate() if t.name == "fire-a"][0].daemon, "a stuck thread must not keep the process alive"
+    gate.set()                                                                       # release it
+
+
+def test_every_card_gets_the_same_join_deadline():
+    gate = threading.Event()
+    boards = {"a": FakeBoard(block=gate), "b": FakeBoard(block=gate), "c": FakeBoard(block=gate)}
+    started = time.monotonic()
+    fired = m40.fire_concurrently(boards, "reset", join_timeout=0.5)
+    assert sorted(fired.alive) == ["a", "b", "c"] and time.monotonic() - started < 1.5
+    gate.set()
+
+
+def stimulated(**change):
+    outcome = result()
+    for sample in outcome.samples:
+        sample.update(change)
+    return outcome
+
+
+def test_a_stimulated_card_may_be_reserved_but_not_change_identity():
+    assert m40.stimulated_continuity(stimulated(reservation={"owner": "c"})) == [] and m40.stimulated_violations(stimulated(reservation={"owner": "c"})) == []
+    for change in ({"generation": "g9"}, {"agent": "other"}, {"connected": False}):
+        assert m40.stimulated_continuity(stimulated(**change)), change
+    for change in ({"quarantined": True}, {"privileged_seconds": 9}):
+        assert m40.stimulated_violations(stimulated(**change)), change
+        assert not m40.stimulated_continuity(stimulated(**change)), "a quarantine is a violation, not a continuity loss"
+
+
+def test_a_stimulated_card_may_emit_operation_and_transport_events_but_nothing_else():
+    ok = result(events=[ev(11, "operation"), ev(12, "transport"), ev(13, "uart")], seq=13)
+    assert m40.stimulated_violations(ok) == [] and m40.check_complete(ok) == []
+    for kind in ("mark", "trigger", "grant", "hold", "recover", "connected", "disconnected"):
+        assert m40.stimulated_violations(result(events=[ev(11, kind)], seq=11)), kind
+
+
+def test_active_mode_still_suffers_epoch_loss_and_gap_detection_through_the_same_integrity_checks():
+    outcome = result(events=[ev(11, "operation"), ev(13, "uart")], seq=13)
+    outcome.pages[0]["count"] = 2
+    assert any("gap" in p for p in m40.check_complete(outcome))
+    outcome = result(events=[ev(11, "operation")], seq=11)
+    outcome.pages[0]["epoch"] = "epoch-2"
+    assert any("epoch changed" in p for p in m40.check_complete(outcome))
+    outcome = result(events=[ev(11, "operation")], seq=11)
+    outcome.pages[0]["lost"] = 2
+    assert any("lost" in p for p in m40.check_complete(outcome))
+    assert any("did not terminate" in p for p in m40.check_complete(tamper(result(), terminated=False)))
+    assert any("final synchronous" in p for p in m40.check_complete(tamper(result(), final_sampled=False)))
+
+
+RESET_ENV = {"SIM_UART_RATE": "20:16", "SIM_UART_TAG": "1"}
+
+
+def reset_session(**uart_change):
+    document = session(consent={"scenarios": ["M40-4-RESET"]})
+    document["m40"]["uart"] = {**document["m40"]["uart"], "stimulus": "reset_both", **uart_change}
+    return document
+
+
+def test_reset_both_observes_both_cards_from_before_the_stimulus_with_complete_integrity(sim, tmp_path):
+    url, client = sim(RESET_ENV)
+    run, reports, _ = run_recipe(tmp_path, url, "test_m40_4_simultaneous_uart", reset_session(), extra=("--qual-allow-reset",))
+    assert reports["M40-4"]["status"] == "PASS", run.stdout[-1500:]
+    folder = next((tmp_path / "evidence").glob("M40-4-*"))
+    for name in ("m40-observed-a.jsonl", "m40-observed-b.jsonl"):
+        rows = [json.loads(line) for line in (folder / name).read_text().splitlines()]
+        summary = rows[-1]
+        assert summary["terminated"] and summary["final_sampled"] and summary["drained"] and not summary["epoch_changed"], name
+        samples = [r for r in rows if r["type"] == "sample"]
+        assert len(samples) >= 3 and rows[0]["type"] == "baseline" and rows[0]["reservation"] is None, "observation starts BEFORE any reservation"
+        assert all(r["wall"] > 0 for r in samples) and (folder / name).stat().st_mode & 0o777 == 0o600
+    steps = [json.loads(line)["step"] for line in (folder / "m40-4-steps.jsonl").read_text().splitlines()]
+    assert steps == ["initial", "both reserved", "resets settled or abandoned", "both released"]
+
+
+@pytest.mark.parametrize("defect,verdict,fragment", [
+    ("check_complete = _injected\n", "INDETERMINATE", "incomplete"),
+    ("stimulated_continuity = _injected\n", "INDETERMINATE", "injected defect"),
+    ("stimulated_violations = _injected\n", "FAIL", "injected defect"),
+    ("_real_stop = BoardWatch.stop\n\n\ndef _stop(self):\n    r = _real_stop(self)\n    r.epoch_changed = True\n    r.errors.append('server epoch changed on an event page (injected)')\n    return r\n\n\nBoardWatch.stop = _stop\n",
+     "INDETERMINATE", "epoch changed"),
+    ("_real_stop = BoardWatch.stop\n\n\ndef _stop(self):\n    r = _real_stop(self)\n    r.pages[0]['lost'] = 1\n    return r\n\n\nBoardWatch.stop = _stop\n",
+     "INDETERMINATE", "lost")])
+def test_reset_both_wiring_of_the_active_observation(sim, tmp_path, defect, verdict, fragment):
+    url, client = sim(RESET_ENV)
+    run, reports = run_with_defect(tmp_path, url, "test_m40_4_simultaneous_uart", reset_session(), INJECT + defect, extra=("--qual-allow-reset",))
+    assert run.returncode != 0 and reports["M40-4"]["status"] == verdict, (defect[:30], run.stdout[-900:])
+    assert fragment in run.stdout + " ".join(reports["M40-4"]["incidents"])
+
+
+def assert_nothing_released_or_replayed(directory, client):
+    rows = [json.loads(line) for path in directory.glob("*/requests.jsonl") for line in path.read_text().splitlines()]
+    operations = [r for r in rows if r["method"] == "POST" and r["path"] == "/api/v1/operations"]
+    assert len(operations) == 2, f"{len(operations)} operations submitted: a stuck command must never be submitted again"
+    assert not [r for r in rows if r["method"] == "DELETE" and r["path"].startswith("/api/v1/leases/")], "a reservation was released although an operation is unknown"
+    assert all(client.device(name)["reservation"] is not None for name in ("board", "board2")), "the reservations must be retained"
+
+
+def test_a_reset_that_never_reports_is_indeterminate_and_keeps_its_reservations(sim, tmp_path):
+    """The simulated page agent never answers `reset`. The server gives the command up after its short timeout: the threads end with an
+    unresolved outcome, the verdict is INDETERMINATE, nothing is released and nothing is submitted twice."""
+    url, client = sim({**RESET_ENV, "SIM_HANG_COMMAND": "reset"})
+    document = reset_session()
+    document["operation_timeout_s"] = 3
+    run, reports, _ = run_recipe(tmp_path, url, "test_m40_4_simultaneous_uart", document, extra=("--qual-allow-reset",))
+    assert run.returncode != 0 and reports["M40-4"]["status"] == "INDETERMINATE", run.stdout[-1500:]
+    assert "indeterminate hardware outcome" in " ".join(reports["M40-4"]["incidents"]), "the thread's own unresolved outcome must be what is reported"
+    assert_nothing_released_or_replayed(tmp_path / "evidence", client)
+
+
+def test_a_command_thread_still_alive_at_the_join_deadline_is_indeterminate_and_not_released(sim, tmp_path):
+    """The join deadline is forced to 0.5 s while the command is stuck for much longer: the thread is provably still running."""
+    url, client = sim({**RESET_ENV, "SIM_HANG_COMMAND": "reset"})
+    defect = ("\n_real_fire = fire_concurrently\n\n\ndef fire_concurrently(boards, command, *, join_timeout, **kwargs):\n"
+              "    return _real_fire(boards, command, join_timeout=0.5, **kwargs)\n")
+    run, reports = run_with_defect(tmp_path, url, "test_m40_4_simultaneous_uart", reset_session(), defect, extra=("--qual-allow-reset",))
+    assert run.returncode != 0 and reports["M40-4"]["status"] == "INDETERMINATE", run.stdout[-1500:]
+    assert "still running" in run.stdout + " ".join(reports["M40-4"]["incidents"])
+    assert_nothing_released_or_replayed(tmp_path / "evidence", client)

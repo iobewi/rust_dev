@@ -28,7 +28,13 @@ M40-4    simultaneous UART of two cards (m40.uart; stimulus 'none' = passive cap
   PASS           each card's own distinctive markers (disjoint) are received on its stream and none of the other's; at least m40.uart.min_bytes per
                  card; the arrival windows overlap for at least min_overlap_s and the arrival order alternates at least min_interleavings times;
                  per card seq strictly increases, source_seq is contiguous and no source loss is flagged; no generation / agent / connection /
-                 quarantine change and no reservation left;
+                 quarantine change and no reservation left. BOTH cards are observed by GET from before anything happens, in both modes, with the
+                 same observation integrity (one epoch on every event page, no lost / duplicated / missing event, collector terminated, final
+                 sample). What differs: PASSIVE forbids any change of either card (reservations and non-UART events included); ACTIVE
+                 (reset_both) expects the two reservations and the operation events, but an agent / generation / connection change is a loss of
+                 continuity (INDETERMINATE) and a quarantine, a grant or an event kind a reset must not produce is a FAIL;
+  INDETERMINATE  (reset_both) a reset command thread still running after its deadline: the outcome is unknown, the reservations are KEPT
+                 (never released, never resubmitted), as for any unresolved operation;
   BLOCKED        passive capture with a silent card: the bench does not provide the SOURCE (as U8);
   FAIL           mixed streams, missing own marker, no overlap or alternation, a continuity violation; INDETERMINATE: epoch change, lost events,
                  a generation change after a stimulus (USB re-enumeration), an unresolved operation.
@@ -37,13 +43,12 @@ UART payloads are analysed in memory only; the evidence keeps counts, windows, o
 import hashlib
 import json
 import os
-import threading
 import time
 import uuid
 
 import pytest
 
-from iobewi_bench.client import ContinuityError
+from iobewi_bench.client import ContinuityError, PendingOperation
 
 from . import m40
 from .harness import Blocked, Outcome, make_campaign, recorded
@@ -337,31 +342,27 @@ def test_m40_4_simultaneous_uart(bench_client, qual_session, pytestconfig, recor
         watches, steps = {}, []
         _step(steps, case, "initial", first_id, other)
         try:
+            for name in (first_id, other):                     # GET-only observation of BOTH cards from before anything happens, in both modes
+                watches[name] = m40.BoardWatch(case.client.url, token, name, interval=cfg["m40"]["sample_interval_s"])
+                case.write(f"m40-4-baseline-{'a' if name == first_id else 'b'}.json", watches[name].start())
             if spec["stimulus"] == "none":
-                for name in (first_id, other):
-                    watches[name] = m40.BoardWatch(case.client.url, token, name, interval=cfg["m40"]["sample_interval_s"])
-                    case.write(f"m40-4-baseline-{'a' if name == first_id else 'b'}.json", watches[name].start())
                 time.sleep(spec["window_s"])
             else:
-                errors = []
                 a = case.reserve(ttl=300)
-                second_client = case.independent_client(token)
-                b = second_client.reserve(other, ttl=300, output_dir=case.directory / "board-second")
+                b = case.independent_client(token).reserve(other, ttl=300, output_dir=case.directory / "board-second")
                 case.boards.append(b)
                 _step(steps, case, "both reserved", first_id, other)
-
-                def fire(board):
-                    try:
-                        board.command("reset")
-                    except BaseException as error:             # noqa: BLE001 - re-raised below in the main thread, never retried
-                        errors.append(error)
-                threads = [threading.Thread(target=fire, args=(board,)) for board in (a, b)]
-                for thread in threads:
-                    thread.start()
-                for thread in threads:
-                    thread.join(timeout=cfg["operation_timeout_s"] + 30)
-                if errors:
-                    raise errors[0]
+                timeout, start_timeout = cfg["operation_timeout_s"], 30
+                fired = m40.fire_concurrently({first_id: a, other: b}, "reset", timeout=timeout, start_timeout=start_timeout,
+                                              join_timeout=start_timeout + timeout + case.client.request_timeout + 5)
+                _step(steps, case, "resets settled or abandoned", first_id, other)
+                if fired.alive:
+                    # The command may still be running: its outcome is UNKNOWN. No release, no second submission: Campaign.close() keeps the
+                    # reservation of any board whose operation is not settled, and the verdict is INDETERMINATE.
+                    raise PendingOperation(f"reset still running on {fired.alive} after the join deadline: outcome unknown, reservations retained, no replay")
+                for name in (first_id, other):
+                    if name in fired.errors:
+                        raise fired.errors[name]               # PendingOperation / ContinuityError -> INDETERMINATE, anything else -> FAIL
                 time.sleep(spec["window_s"])
                 a.close()
                 b.close()
@@ -386,11 +387,18 @@ def test_m40_4_simultaneous_uart(bench_client, qual_session, pytestconfig, recor
             if silent:
                 raise Blocked(f"no UART source on {silent} during the {spec['window_s']} s window (the bench does not provide the source); "
                               "declare a stimulus or run when the firmwares print")
-            for name, result in watches.items():
-                incomplete = m40.check_complete(result)
-                if incomplete:
-                    raise ContinuityError(f"observation of {name} incomplete: " + "; ".join(incomplete))
+        for name, result in watches.items():
+            incomplete = m40.check_complete(result)             # epoch on every page, lost / duplicate / missing events, thread terminated, final sample
+            if incomplete:
+                raise ContinuityError(f"observation of {name} incomplete: " + "; ".join(incomplete))
+            if spec["stimulus"] == "none":                     # passive: the cards must not change AT ALL (reservations included)
                 problems = m40.check_independent(result)
+                assert not problems, f"{name}: " + "; ".join(problems)
+            else:                                              # active: reservations and operation events are expected, identity must hold
+                continuity = m40.stimulated_continuity(result)
+                if continuity:
+                    raise ContinuityError(f"{name}: " + "; ".join(continuity))
+                problems = m40.stimulated_violations(result)
                 assert not problems, f"{name}: " + "; ".join(problems)
         # --- identity, state, release ----------------------------------------------------------------------------------------
         for name in (first_id, other):
