@@ -672,3 +672,82 @@ test('Device Lab UI owns two mocked Web Serial ports simultaneously and isolates
   assert.deepEqual(errors,[]);
  }finally{await browser?.close();proc.kill('SIGTERM');lines.close();}
 });
+
+test('M40-11b: selecting B while A runs a long read keeps the operation, its result and its history on A',async()=>{
+ const proc=spawn('python3',['tests/browser_fixture.py'],{cwd:new URL('..',import.meta.url),stdio:['ignore','pipe','pipe']});
+ let stderr='';proc.stderr.on('data',b=>stderr+=b);const lines=createInterface({input:proc.stdout});
+ let browser;
+ try{
+  const url=await new Promise((resolve,reject)=>{lines.once('line',s=>resolve(JSON.parse(s).url));proc.once('exit',()=>reject(new Error(stderr)));});
+  browser=await chromium.launch({headless:true,executablePath:chromium.executablePath(),args:['--no-sandbox']});
+  const page=await browser.newPage();
+  const errors=[];page.on('pageerror',e=>errors.push(e.message));
+  await page.route('https://unpkg.com/esptool-js@0.7.0/bundle.js',route=>route.fulfill({
+   contentType:'application/javascript',headers:{'Access-Control-Allow-Origin':'*'},
+   path:new URL('serial-loader-fixture.js',import.meta.url).pathname,
+  }));
+  await page.addInitScript(()=>{
+   const serial=new EventTarget();
+   window.testPorts=['board','board-b'].map(id=>({
+    id,readable:null,writable:null,closeCalls:0,getInfo:()=>({usbVendorId:0x1a86,usbProductId:0x7523}),
+    async open(){
+     if(this.readable)throw Error('port_already_open');
+     this.readable=new ReadableStream({start:controller=>{this.controller=controller;controller.enqueue(new TextEncoder().encode(id+'-serial-log\\n'));}});
+     this.writable=new WritableStream();
+    },
+    async close(){
+     if(this.readable?.locked||this.writable?.locked)throw Error('locked_port');
+     this.closeCalls++;try{this.controller?.close();}catch{}
+     this.readable=null;this.writable=null;
+    },
+    async setSignals(){},
+   }));
+   let next=0;window.testChooserCount=()=>next;
+   serial.requestPort=async()=>window.testPorts[next++];
+   serial.getPorts=async()=>window.testPorts.slice(0,next);
+   Object.defineProperty(navigator,'serial',{value:serial,configurable:true});
+  });
+  await page.goto(url);
+  await page.waitForFunction(()=>document.querySelector('#add-device-id').value==='board');
+  await page.click('#add-device');
+  await page.waitForFunction(()=>document.querySelector('[data-device="board"] .board-status')?.textContent==='Connectée');
+  await page.selectOption('#add-device-id','board-b');
+  await page.click('#add-device');
+  await page.waitForFunction(()=>document.querySelector('[data-device="board-b"] .board-status')?.textContent==='Connectée');
+  const devices=()=>page.evaluate(async()=>(await (await fetch('/api/v1/devices')).json()).devices.map(d=>({id:d.id,generation:d.generation,connected:d.connected,reserved:d.reservation!==null})));
+  await page.waitForFunction(async()=>{const d=(await (await fetch('/api/v1/devices')).json()).devices;return d.find(x=>x.id==='board')?.connected&&d.find(x=>x.id==='board-b')?.connected;});
+  const before=await devices();
+  const closes=await page.evaluate(()=>window.testPorts.map(p=>p.closeCalls));
+  // A is selected and starts a long read held open by the loader fixture; B is then selected DURING the execution.
+  await page.click('[data-device="board"] .board-name');
+  await page.click('#workspace-tab-operations');
+  await page.click('#tab-memory');await page.fill('#address','0x10000');await page.fill('#size','64');
+  await page.waitForFunction(()=>!document.querySelector('#read').disabled);
+  await page.evaluate(()=>{window.__pauseFlashRead=true;});
+  await page.click('#read');
+  await page.waitForFunction(()=>typeof window.__continueFlashRead==='function');
+  assert.equal((await devices()).find(d=>d.id==='board').reserved,true,'the operation runs on A');
+  await page.click('[data-device="board-b"] .board-name');
+  await page.waitForFunction(()=>document.querySelector('[data-device="board-b"] .board-name').getAttribute('aria-pressed')==='true');
+  const during=await devices();
+  assert.equal(during.find(d=>d.id==='board').reserved,true,'A still holds its operation while B is selected');
+  assert.equal(during.find(d=>d.id==='board-b').reserved,false,'selecting B never reserves or commands B');
+  assert.equal(during.find(d=>d.id==='board').generation,before.find(d=>d.id==='board').generation);
+  assert.equal(await page.locator('#control-state').textContent().then(t=>t.includes('Opération manuelle en cours')),false,'B is not the card that is working');
+  // The operation ends while B is still selected: it completes on A, nothing appears in B's history.
+  await page.evaluate(()=>{window.__pauseFlashRead=false;window.__continueFlashRead();});
+  await page.waitForFunction(async()=>(await (await fetch('/api/v1/devices')).json()).devices.find(d=>d.id==='board').reservation===null);
+  assert.equal(await page.locator('#operations-body').textContent().then(t=>t.includes('flash.read')),false,"B's history shows no read");
+  const afterRun=await devices();
+  assert.deepEqual(Object.fromEntries(afterRun.map(d=>[d.id,d.generation])),Object.fromEntries(before.map(d=>[d.id,d.generation])),'no generation changed on either card');
+  const bEvents=await page.evaluate(async()=>(await (await fetch('/api/v1/devices/board-b/events?after=0')).json()).events.map(e=>e.kind));
+  assert.ok(bEvents.every(kind=>kind==='uart'||kind==='connected'),'B received no operation event: '+bEvents.join());
+  await page.click('[data-device="board"] .board-name');
+  await page.waitForFunction(()=>document.querySelector('#operations-body').textContent.includes('flash.read'));
+  const closesAfter=await page.evaluate(()=>window.testPorts.map(p=>p.closeCalls));
+  assert.equal(closesAfter[1],closes[1],"B's port was never closed or reopened: neither the selections nor A's operation touched it");
+  assert.ok(closesAfter[0]>=closes[0],"only A's own loader entry may cycle A's port");
+  assert.equal(await page.evaluate(()=>window.testChooserCount()),2);
+  assert.deepEqual(errors,[]);
+ }finally{await browser?.close();proc.kill('SIGTERM');lines.close();}
+});
