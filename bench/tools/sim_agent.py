@@ -25,6 +25,9 @@ class SimDevice:
     def __init__(self, capacity=4 * 1024 * 1024, chip='esp32s3'):
         self.chip = chip
         self.flash = bytearray(b'\xff') * capacity
+        for item in json.loads(os.environ.get('SIM_FLASH_PRELOAD', '[]')):          # SIMULATION ONLY: known flash content ([{address, hex}, ...])
+            raw = bytes.fromhex(item['hex'])
+            self.flash[item['address']:item['address'] + len(raw)] = raw
         self.writes = 0
         self.trigger, self.trigger_id, self.dropped = None, 0, False
 
@@ -119,6 +122,7 @@ async def serve(session, url, token, device_id, grant, script, chip, sim, connec
         registered = await ws.receive_json()
         generation, seq = registered['generation'], 0
         tasks = []
+        uart_tag = (device_id + '|\r\n').encode() if os.environ.get('SIM_UART_TAG') == '1' else b''   # per-card source identity (SIMULATION ONLY)
 
         async def event(kind, **payload):
             await ws.send_json({'type': kind, 'device': device_id, 'generation': generation, **payload})
@@ -155,7 +159,7 @@ async def serve(session, url, token, device_id, grant, script, chip, sim, connec
                     count += 1
                     if skip and count % skip[0] == 0:
                         seq += 1                                  # a chunk lost on the agent side: the next seq jumps, the server flags it
-                    await emit_uart(b'x' * size)
+                    await emit_uart(uart_tag + b'x' * size)
             tasks.append(asyncio.create_task(source()))
 
         async def operator():
@@ -206,6 +210,9 @@ async def serve(session, url, token, device_id, grant, script, chip, sim, connec
                             'pattern': base64.b64decode(args['data']), 'action': args['action'], 'delay': args.get('delay_ms', 0),
                             'until': time.monotonic() + args['expires_ms'] / 1000, 'id': sim.trigger_id}
                         result = {'armed': sim.trigger is not None, 'simulated': True}
+                    elif command == 'mark':
+                        await event('mark', detail=args['label'])             # as the page agent does: an event, no hardware effect
+                        result = {'label': args['label']}
                     else:
                         result = await sim.execute(command, args, download, upload)
                     if command == 'flash.read' and os.environ.get('SIM_SERIAL_FAIL_DURING_READ') == '1':
@@ -220,7 +227,12 @@ async def serve(session, url, token, device_id, grant, script, chip, sim, connec
                     if command == 'reset' and os.environ.get('SIM_REENUMERATE') == '1':
                         reenumerate = True                        # no banner here: it would appear after the USB device returned
                     elif command == 'reset':
-                        await emit_uart(('SIM boot\r\nESP-ROM:%s-sim\r\n' % chip).encode())
+                        await emit_uart(('SIM boot\r\nESP-ROM:%s-sim\r\n' % chip).encode() + uart_tag)
+                    elif command == 'console' and os.environ.get('SIM_CONSOLE_BOOT'):
+                        await event('transport', detail='console opened; opening a port may reset the MCU')
+                        for line in json.loads(os.environ['SIM_CONSOLE_BOOT']):   # SIMULATES the ROM banner, 2nd stage and application lines
+                            await emit_uart((line + '\r\n').encode() + uart_tag)
+                            await asyncio.sleep(0.05)
                     elif command == 'boot.download':
                         await emit_uart(('SIM download mode\r\nESP-ROM:%s-sim\r\nSIM-DOWNLOAD-MODE\r\n' % chip).encode())
                     elif command == 'uart.write':
