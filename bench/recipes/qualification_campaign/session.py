@@ -13,7 +13,7 @@ from iobewi_bench import CampaignManifest
 CHIPS = {"esp32s3", "esp32c3"}
 TRANSPORTS = {"external_uart", "usb_serial_jtag", "native_usb_other", "unknown"}
 SCENARIOS = {"Q1", "Q2", "Q3", "C3R-READ", "C3R-RESET", "S3R-RESET", "S3R-BOOT", "S3R-READ", "R4",
-             "NUSB-READ", "NUSB-RESET", "T7", "R5", "H10", "U8", "M2", "M40-11"}
+             "NUSB-READ", "NUSB-RESET", "T7", "R5", "H10", "U8", "M2", "M40-11", "M40-12A", "M40-11C", "M40-4-RESET"}
 TOP_LEVEL = {"version", "board_id", "chip", "flash_size", "transport", "partition_table_offset",
              "approved_regions", "evidence_root", "operation_timeout_s", "operator_timeout_s",
              "consent", "q2", "q3", "readonly", "bootloader", "r4", "faults", "second_board", "lan_http", "capture", "accept_unknown_transport", "m40"}
@@ -165,7 +165,7 @@ def validate_second_board(section, cfg):
     return dict(section)
 
 
-M40_KEYS = {"read", "avoid", "sample_interval_s", "compatible_server_sha256"}
+M40_KEYS = {"read", "avoid", "sample_interval_s", "compatible_server_sha256", "known", "uart"}
 M40_BLOCK = 1024 * 1024                       # the agent reads in blocks of at most 1 MiB: one block keeps the proof a single transfer
 
 
@@ -190,10 +190,10 @@ def validate_m40(section, cfg):
             raise SessionError(f"m40.{name}: 4-KiB aligned {{address, size}} inside the declared flash")
         return {"address": address, "size": size}
 
-    if "read" not in section:
-        raise SessionError("m40.read is required when the m40 section is present")
-    read = region(section["read"], "read")
-    if read["size"] > M40_BLOCK:
+    if "avoid" in section and "read" not in section:
+        raise SessionError("m40.avoid only makes sense with m40.read")
+    read = region(section["read"], "read") if "read" in section else None
+    if read and read["size"] > M40_BLOCK:
         raise SessionError("m40.read.size is limited to one agent block (1 MiB)")
     avoid = section.get("avoid", [])
     if not isinstance(avoid, list) or len(avoid) > 16:
@@ -221,7 +221,70 @@ def validate_m40(section, cfg):
         if not isinstance(reason, str) or not reason.strip() or len(reason) > 500:
             raise SessionError("m40.compatible_server_sha256: every sha256 needs a non-empty written justification (at most 500 characters)")
     compatible = [{"sha256": e["sha256"], "reason": e["reason"].strip()} for e in compatible]
-    return {"read": read, "avoid": avoid, "sample_interval_s": float(interval), "compatible_server_sha256": compatible}
+    result = {"sample_interval_s": float(interval), "compatible_server_sha256": compatible}
+    if read:
+        result.update(read=read, avoid=avoid)
+    if "known" in section:
+        result["known"] = validate_m40_known(section["known"], cfg)
+    if "uart" in section:
+        result["uart"] = validate_m40_uart(section["uart"], cfg)
+    return result
+
+
+def _marker(value, name):
+    if not isinstance(value, str) or not 1 <= len(value) <= 128 or not value.isprintable() or value != value.strip():
+        raise SessionError(f"{name}: a printable text of 1..128 characters without leading or trailing space")
+    return value
+
+
+def validate_m40_known(section, cfg):
+    """M40-11c/d: where the partition table is (declared, never guessed) and the three UART markers of a boot, all declared by the operator."""
+    keys = {"table_offset", "rom_marker", "bootloader_marker", "app_marker", "marker_timeout_s"}
+    if not isinstance(section, dict) or set(section) != keys:
+        raise SessionError(f"m40.known requires exactly {sorted(keys)}")
+    offset = section["table_offset"]
+    if type(offset) is not int or offset < 0 or offset % 4096 or offset + 4096 > cfg["flash_size"]:
+        raise SessionError("m40.known.table_offset: a 4-KiB aligned offset inside the declared flash")
+    markers = [_marker(section[k], "m40.known." + k) for k in ("rom_marker", "bootloader_marker", "app_marker")]
+    if len(set(markers)) != 3:
+        raise SessionError("m40.known: the ROM, bootloader and application markers must be three different texts")
+    timeout = section["marker_timeout_s"]
+    if type(timeout) not in (int, float) or isinstance(timeout, bool) or not 5 <= timeout <= 120:
+        raise SessionError("m40.known.marker_timeout_s must be 5..120 seconds")
+    return {**section, "marker_timeout_s": float(timeout)}
+
+
+def validate_m40_uart(section, cfg):
+    """M40-4: capture window, thresholds, each card's DISTINCTIVE markers (disjoint) and the optional stimulus."""
+    keys = {"window_s", "min_bytes", "min_overlap_s", "min_interleavings", "stimulus", "markers"}
+    if not isinstance(section, dict) or set(section) != keys:
+        raise SessionError(f"m40.uart requires exactly {sorted(keys)}")
+    second = cfg["second_board"].get("board_id")
+    if not second:
+        raise SessionError("m40.uart needs second_board.board_id")
+    for key, low, high in (("window_s", 5, 600), ("min_overlap_s", 0.1, 600)):
+        value = section[key]
+        if type(value) not in (int, float) or isinstance(value, bool) or not low <= value <= high:
+            raise SessionError(f"m40.uart.{key} must be {low}..{high}")
+    for key, low, high in (("min_bytes", 1, 1 << 24), ("min_interleavings", 1, 100000)):
+        if type(section[key]) is not int or not low <= section[key] <= high:
+            raise SessionError(f"m40.uart.{key} must be an integer {low}..{high}")
+    if section["stimulus"] not in ("none", "reset_both"):
+        raise SessionError("m40.uart.stimulus must be 'none' (passive capture) or 'reset_both' (needs M40-4-RESET and --qual-allow-reset)")
+    markers = section["markers"]
+    ids = {cfg["board_id"], second}
+    if not isinstance(markers, dict) or set(markers) != ids:
+        raise SessionError("m40.uart.markers: exactly one list per card (board_id and second_board.board_id)")
+    seen = {}
+    for card, items in markers.items():
+        if not isinstance(items, list) or not 1 <= len(items) <= 4:
+            raise SessionError("m40.uart.markers: 1..4 distinctive markers per card")
+        for item in items:
+            _marker(item, "m40.uart.markers")
+            if item in seen:
+                raise SessionError("m40.uart.markers must be distinct across cards and within a card")
+            seen[item] = card
+    return {**section, "window_s": float(section["window_s"]), "min_overlap_s": float(section["min_overlap_s"])}
 
 
 def validate_lan_http(section):

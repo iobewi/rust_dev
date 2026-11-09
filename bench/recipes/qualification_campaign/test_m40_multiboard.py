@@ -115,8 +115,8 @@ def test_m40_11a_flash_read_on_first_card_second_card_independent(bench_client, 
     cfg = qual_session
     require_target(cfg, TARGET_CHIP)
     require_consent(cfg, "M40-11")
-    if not cfg["m40"]:
-        pytest.skip("BLOCKED: no m40 section (m40.read range) in the private session; none is presumed")
+    if not cfg["m40"].get("read"):
+        pytest.skip("BLOCKED: no m40.read range in the private session; none is presumed")
     other, spec = _second_card_id(cfg), cfg["m40"]["read"]
     address, size = spec["address"], spec["size"]
     manifest = build_manifest(cfg, "M40-11a", regions=[], steps=["No operator gesture; the first card restarts on loader entry and console return"])
