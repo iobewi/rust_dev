@@ -14,7 +14,7 @@ from aiohttp import WSMsgType, web
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from protocol import MAX_ARTIFACT, Fault, integer, require
 from server.core import Broker
-from server.ui_sessions import COOKIE, LIFETIME, UISessions, UIAccess
+from server.ui_sessions import COOKIE, LIFETIME, UISessions, UIAccess, browser_agent
 
 TOKENS = web.AppKey('tokens', dict)
 BROKER = web.AppKey('broker', Broker)
@@ -63,7 +63,7 @@ async def errors(request, handler):
             else:
                 session = request.app[SESSIONS].get(request.cookies.get(COOKIE))
                 request.app[UI_ACCESS].check(request, mutation=request.method not in {'GET', 'HEAD'})
-                identity = {'id': session['client'], 'role': 'client', 'scopes': ['read', 'control', 'program'], 'local_agent': session['agent']}
+                identity = {'id': session['client'], 'role': 'client', 'scopes': ['read', 'control', 'program'], 'local_agent': session['agent'], 'local_agents': session['agents']}
             request[IDENTITY] = identity
             if identity['role'] == 'client':
                 scope = 'read' if request.method == 'GET' else 'control'
@@ -147,12 +147,25 @@ async def leases(request):
     return json_reply(lease)
 
 
+def local_agent_for(identity, device, broker):
+    """Resolve local control against the agent actually registered for this board."""
+    if not isinstance(device, str):
+        return None
+    registered = broker.devices.get(device)
+    if not registered:
+        return None
+    agent_id = registered['agent']
+    if agent_id in (identity.get('local_agents', {}).get(device), identity.get('local_agent')):
+        return agent_id
+    return None
+
+
 async def operations(request):
     b, who = request.app[BROKER], request[IDENTITY]['id']
     b.sweep()
     if request.method == 'POST':
         data = await payload(request)
-        result = (b.manual(who, request[IDENTITY]['scopes'], data, request[IDENTITY].get('local_agent'))
+        result = (b.manual(who, request[IDENTITY]['scopes'], data, local_agent_for(request[IDENTITY], data.get('device') if isinstance(data, dict) else None, b))
                   if request.path.endswith('/manual-operations') else b.submit(who, request[IDENTITY]['scopes'], data))
         return json_reply(result, 202)
     key = request.match_info['id']
@@ -200,7 +213,17 @@ async def artifacts(request):
         artifact_role = request.headers.get('X-Bench-Artifact-Role')
         if artifact_role is not None:
             require(artifact_role == 'agent', 'invalid_request', 'Invalid artifact role', 400)
-            agent_id = identity['id'] if identity['role'] == 'agent' else identity.get('local_agent')
+            if identity['role'] == 'agent':
+                agent_id = identity['id']
+            else:
+                device = request.headers.get('X-Bench-Device')
+                if device is None:
+                    # Preserve original single-agent uploads.
+                    agent_id = identity.get('local_agent')
+                else:
+                    require(device in identity.get('local_agents', {}), 'device_forbidden',
+                            'Device not allowed in this browser session', 403)
+                    agent_id = local_agent_for(identity, device, b)
             require(agent_id in b.agents, 'forbidden', 'Connected authenticated agent required', 403)
             owner = 'agent:' + agent_id
         size = request.content_length
@@ -247,7 +270,12 @@ async def websocket(request):
         else:
             request.app[UI_ACCESS].check(request, mutation=True)
             session = request.app[SESSIONS].get(request.cookies.get(COOKIE))
-            identity = {'id': session['agent'], 'role': 'agent', 'devices': session['devices']}
+            device = hello.get('device')
+            if device is None:
+                # Legacy browser agent protocol remains available.
+                identity = {'id': session['agent'], 'role': 'agent', 'devices': session['devices']}
+            else:
+                identity = {'id': browser_agent(session, device), 'role': 'agent', 'devices': [device]}
         b.agent(identity['id'], ws)
         registered = True
         await ws.send_json({'type': 'welcome', 'version': 1, 'epoch': b.epoch, 'server_ms': b.clock() * 1000})
@@ -291,9 +319,10 @@ async def dispatcher(app):
             await asyncio.sleep(0.05)
             b = app[BROKER]; b.sweep()
             for session in app[SESSIONS].sweep():
-                socket = b.agents.get(session['agent'])
-                if socket is not None and not socket.closed:
-                    await socket.close(code=1008, message=b'Browser session expired')
+                for agent_id in (session['agent'], *session['agents'].values()):
+                    socket = b.agents.get(agent_id)
+                    if socket is not None and not socket.closed:
+                        await socket.close(code=1008, message=b'Browser session expired')
                 for lease in list(b.leases.values()):
                     if lease['active'] and lease['owner'] == session['client']:
                         b.release(lease['id'], lease['owner'], 'session_expired')

@@ -1,5 +1,35 @@
 # Contrat API v1
 
+## Agents navigateur multicarte (#40)
+
+Le navigateur conserve sa session locale HttpOnly. Une page peut ouvrir plusieurs WebSockets
+`/agent/v1/ws` au sein de cette session, avec un message initial
+`{"type":"auth","version":1,"device":"board-id"}`. Le serveur vérifie que
+`device` est autorisé par cette session et attribue lui-même une identité d'agent
+stable pendant sa durée de vie. Cette connexion ne peut enregistrer qu'un device
+(`register.device.id`) correspondant à celui du message d'authentification.
+Une autre session navigateur ne récupère pas cette identité. Le broker refuse
+toujours l'enregistrement simultané d'un même device logique.
+
+Pour les opérations manuelles, le serveur détermine les privilèges locaux
+uniquement à partir de l'agent qui détient effectivement le device demandé ;
+le changement de sélection côté UI n'intervient pas dans cette décision.
+
+Lors d'un upload d'artefact depuis une page multicarte, fournir
+`X-Bench-Artifact-Role: agent` et `X-Bench-Device: board-id`. Le serveur
+vérifie l'appartenance de ce device à la session et son agent effectivement
+connecté avant de fixer le propriétaire de l'artefact. L'absence de
+`X-Bench-Device` reste réservée à l'agent navigateur historique mono-carte.
+Les agents distants par token continuent à utiliser leur identité de token,
+sans nouveau header. Le téléchargement d'artefacts reste soumis aux règles
+existantes d'affectation d'opération.
+
+**Compatibilité** : un navigateur historique envoyant `auth` version 1
+sans `device` garde l'identité mono-agent historique. Cette compatibilité
+ne doit pas être utilisée par la nouvelle UI multicarte. Les clients REST
+Bearer et les agents distants ne changent pas.
+
+
 Les clients externes utilisent `Authorization: Bearer TOKEN` pour les routes `/api/v1/*`. La page locale utilise une session navigateur HttpOnly, contrôlée par origine et connexion locale directe ou relais local explicitement déclaré, sans token JavaScript. Un header Authorization présent est toujours vérifié et ne retombe jamais sur le cookie si son token est invalide. Les erreurs ont la forme `{"error":{"code":"...","message":"..."}}`. HTTP 400 : schéma/digest/adresse invalide ; 401 : token absent ou invalide ; 403 : scope, propriétaire ou grant refusé ; 404 : ressource absente/expirée ; 409 : conflit d’état ; 413 : taille excessive ; 503 : stockage borné plein.
 
 `read` permet les GET. `control` permet les mutations et soumissions. `program` s’ajoute pour flash.write/flash.erase. Une identité voulant consulter les résultats de ses commandes possède donc `read` et `control`.
