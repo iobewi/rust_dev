@@ -11,19 +11,53 @@
   "operator_timeout_s": 900,
   "consent": {
     "scenarios": [],
-    "note": "Template: consent stays EMPTY here. The private copy adds M40-11 only after the operator's explicit, dated consent to loader entry, console return (card restarts) and one flash.read; it authorises no write, no erase and no grant."
+    "note": "Template: consent stays EMPTY here. The private copy adds a scenario (M40-11, M40-12A, M40-11C, M40-4-RESET) only after the operator's explicit, dated consent to its effects; none authorises a write, an erase or a grant. M40-4 with stimulus 'reset_both' also needs --qual-allow-reset."
   },
   "second_board": {
     "board_id": "esp32-zero"
   },
   "m40": {
-    "read": {"address": 3145728, "size": 262144},
+    "read": {
+      "address": 3145728,
+      "size": 262144
+    },
     "avoid": [
-      {"address": 69632, "size": 8192},
-      {"address": 77824, "size": 8192},
-      {"address": 3670016, "size": 524288}
+      {
+        "address": 69632,
+        "size": 8192
+      },
+      {
+        "address": 77824,
+        "size": 8192
+      },
+      {
+        "address": 3670016,
+        "size": 524288
+      }
     ],
     "sample_interval_s": 0.5,
-    "compatible_server_sha256": []
+    "compatible_server_sha256": [],
+    "known": {
+      "table_offset": 65536,
+      "rom_marker": "ESP-ROM:esp32s3",
+      "bootloader_marker": "boot:",
+      "app_marker": "REPLACE-with-a-line-the-application-prints-at-every-boot",
+      "marker_timeout_s": 30
+    },
+    "uart": {
+      "window_s": 30,
+      "min_bytes": 200,
+      "min_overlap_s": 5,
+      "min_interleavings": 10,
+      "stimulus": "none",
+      "markers": {
+        "esp32-local": [
+          "REPLACE-a-distinctive-line-of-esp32-local"
+        ],
+        "esp32-zero": [
+          "REPLACE-a-distinctive-line-of-esp32-zero"
+        ]
+      }
+    }
   }
 }
