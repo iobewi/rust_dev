@@ -796,7 +796,7 @@ def test_an_evidence_write_failure_never_replaces_the_error_in_flight(sim, tmp_p
     assert run.returncode != 0 and report["status"] == "FAIL", (report, run.stdout[-900:])
     incidents = " ".join(report["incidents"])
     assert "OperationError" in incidents, "the ORIGINAL error is the one reported"
-    assert "evidence not written (OSError)" in incidents
+    assert "m40-11c-reads.json not written (OSError)" in incidents
     assert "could not be written" not in run.stdout, "the evidence problem must not become the verdict while another error is in flight"
     assert_no_extra_reset_or_replay(tmp_path, commands(tmp_path / "evidence"))
 
@@ -806,7 +806,7 @@ def test_an_evidence_write_failure_on_an_otherwise_clean_run_is_never_a_pass(sim
     run, reports = run_with_defect(tmp_path, url, SELECT_11CD, session(), EVIDENCE_WRITE_FAILS)
     assert run.returncode != 0 and reports["M40-11cd"]["status"] == "FAIL"
     assert "could not be written" in run.stdout + " ".join(reports["M40-11cd"]["incidents"])
-    assert "evidence not written (OSError)" in " ".join(reports["M40-11cd"]["incidents"])
+    assert "m40-11c-reads.json not written (OSError)" in " ".join(reports["M40-11cd"]["incidents"])
     assert_no_extra_reset_or_replay(tmp_path, commands(tmp_path / "evidence"))
 
 
@@ -819,3 +819,93 @@ def test_the_four_verdicts_stay_distinct_and_each_writes_its_evidence(sim, tmp_p
     folder, reads_file, markers_file = evidence_11cd(tmp_path)                       # the evidence exists in EVERY verdict
     assert reads_file["phase"] and "planned" in reads_file
     assert_no_extra_reset_or_replay(tmp_path, commands(tmp_path / "evidence"))
+
+
+STOP_FAILS = ("\n_real_stop = BoardWatch.stop\n\n\ndef _stop(self):\n    _real_stop(self)\n    raise RuntimeError('collector boom (injected)')\n\n\n"
+              "BoardWatch.stop = _stop\n")
+
+
+def write_fails_for(*names):
+    return ("\nimport iobewi_bench.qualification as _q\nimport qualification_campaign.m40 as _m40\n_real_write = _q.Campaign.write\n_real_evidence = _m40.write_evidence\n"
+            f"_names = {list(names)!r}\n\n\ndef _write(self, filename, value):\n    if filename in _names:\n        raise OSError('disk full (injected)')\n"
+            "    return _real_write(self, filename, value)\n\n\ndef _evidence(path, result):\n    if 'm40-observed-card.jsonl' in _names:\n        raise OSError('disk full (injected)')\n"
+            "    return _real_evidence(path, result)\n\n\n_q.Campaign.write = _write\n_m40.write_evidence = _evidence\n")
+
+
+def test_a_collector_error_never_masks_a_read_error_and_the_evidence_is_kept(sim, tmp_path):
+    url, client = sim({**ENV_11CD, "SIM_FAIL_READ_AT": "65536"})
+    run, reports = run_with_defect(tmp_path, url, SELECT_11CD, session(), STOP_FAILS)
+    report = reports["M40-11cd"]
+    assert run.returncode != 0 and report["status"] == "FAIL", (report, run.stdout[-900:])
+    incidents = " ".join(report["incidents"])
+    assert "OperationError" in incidents, "the ORIGINAL read error stays the verdict"
+    assert "collector stop failed (RuntimeError)" in incidents and "collector boom" not in report["status"]
+    folder, reads_file, markers_file = evidence_11cd(tmp_path)                         # both files survive the collector failure
+    assert (reads_file["phase"], reads_file["error"], len(reads_file["reads"])) == ("table", "OperationError", 2)
+    assert (folder / "m40-observed-card.jsonl").is_file(), "the partial observation is still written"
+    names = commands(tmp_path / "evidence")
+    assert names[-1] == "console"
+    assert_no_extra_reset_or_replay(tmp_path, names)
+
+
+def test_a_collector_error_keeps_a_continuity_loss_indeterminate(sim, tmp_path):
+    url, client = sim({**ENV_11CD, "SIM_REENUMERATE_AFTER_CONSOLE": "1"})
+    run, reports = run_with_defect(tmp_path, url, SELECT_11CD, session(), STOP_FAILS)
+    assert reports["M40-11cd"]["status"] == "INDETERMINATE", (reports, run.stdout[-900:])
+    assert "collector stop failed" in " ".join(reports["M40-11cd"]["incidents"])
+    folder, reads_file, markers_file = evidence_11cd(tmp_path)
+    assert reads_file["error"] == "ContinuityError" and len(reads_file["reads"]) == 8
+    assert_no_extra_reset_or_replay(tmp_path, commands(tmp_path / "evidence"))
+
+
+def test_a_collector_error_on_an_otherwise_clean_run_is_an_incomplete_observation_not_a_pass(sim, tmp_path):
+    url, client = sim(ENV_11CD)
+    run, reports = run_with_defect(tmp_path, url, SELECT_11CD, session(), STOP_FAILS)
+    report = reports["M40-11cd"]
+    assert run.returncode != 0 and report["status"] == "INDETERMINATE", (report, run.stdout[-900:])
+    assert "collector stop failed" in " ".join(report["incidents"]) and "incomplete" in run.stdout + " ".join(report["incidents"])
+    folder, reads_file, markers_file = evidence_11cd(tmp_path)                         # the run's own evidence is complete
+    assert reads_file["phase"] == "markers" and len(reads_file["reads"]) == 8 and markers_file["problems"] == []
+
+
+@pytest.mark.parametrize("failing,kept", [
+    (["m40-observed-card.jsonl"], ["m40-11c-reads.json", "m40-11d-markers.json"]),
+    (["m40-11c-reads.json"], ["m40-observed-card.jsonl", "m40-11d-markers.json"]),
+    (["m40-11d-markers.json"], ["m40-observed-card.jsonl", "m40-11c-reads.json"]),
+    (["m40-observed-card.jsonl", "m40-11c-reads.json"], ["m40-11d-markers.json"])])
+def test_each_evidence_file_is_written_independently_of_the_others(sim, tmp_path, failing, kept):
+    """With a read error in flight (so the original error must stay the verdict) the failing writers are reported one by one and every
+    other file is still written."""
+    url, client = sim({**ENV_11CD, "SIM_FAIL_READ_AT": "65536"})
+    run, reports = run_with_defect(tmp_path, url, SELECT_11CD, session(), write_fails_for(*failing))
+    report = reports["M40-11cd"]
+    assert run.returncode != 0 and report["status"] == "FAIL" and "OperationError" in " ".join(report["incidents"]), (report, run.stdout[-900:])
+    folder = next((tmp_path / "evidence").glob("M40-11cd-*"))
+    incidents = " ".join(report["incidents"])
+    for name in failing:
+        assert f"evidence {name} not written (OSError)" in incidents and not (folder / name).exists(), name
+    for name in kept:
+        assert (folder / name).is_file(), f"{name} must survive the failure of {failing}"
+    assert "could not be written" not in run.stdout, "the persistence failure must not become the verdict while an error is in flight"
+    assert_no_extra_reset_or_replay(tmp_path, commands(tmp_path / "evidence"))
+
+
+def test_an_unwritten_file_on_a_clean_run_is_still_never_a_pass_but_the_others_are_kept(sim, tmp_path):
+    url, client = sim(ENV_11CD)
+    run, reports = run_with_defect(tmp_path, url, SELECT_11CD, session(), write_fails_for("m40-observed-card.jsonl"))
+    assert reports["M40-11cd"]["status"] == "FAIL" and "could not be written" in run.stdout + " ".join(reports["M40-11cd"]["incidents"])
+    folder = next((tmp_path / "evidence").glob("M40-11cd-*"))
+    assert (folder / "m40-11c-reads.json").is_file() and (folder / "m40-11d-markers.json").is_file()
+
+
+def test_the_dumps_are_restricted_even_when_every_evidence_file_fails_to_write(sim, tmp_path):
+    """The permission fix of the dumps is its own writer: it must not depend on any evidence file being writable."""
+    url, client = sim({**ENV_11CD, "SIM_FAIL_READ_AT": "65536"})
+    run, reports = run_with_defect(tmp_path, url, SELECT_11CD, session(),
+                                   write_fails_for("m40-observed-card.jsonl", "m40-11c-reads.json", "m40-11d-markers.json"))
+    assert reports["M40-11cd"]["status"] == "FAIL" and "OperationError" in " ".join(reports["M40-11cd"]["incidents"])
+    folder = next((tmp_path / "evidence").glob("M40-11cd-*"))
+    dumps = list((folder / "board-0").glob("flash-*"))
+    assert dumps, "the reads done before the failure left private dumps"
+    assert all((path.stat().st_mode & 0o777) == 0o600 for path in dumps), [oct(p.stat().st_mode & 0o777) for p in dumps]
+    assert not any((folder / name).exists() for name in ("m40-observed-card.jsonl", "m40-11c-reads.json", "m40-11d-markers.json"))

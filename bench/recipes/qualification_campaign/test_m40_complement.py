@@ -84,6 +84,20 @@ def _write_jsonl(path, rows):
     os.chmod(path, 0o600)
 
 
+def _persist(out, writers):
+    """Run EVERY evidence writer independently: one failure is an incident and never stops the others or replaces an error in flight.
+
+    Returns True only when all of them succeeded (the caller refuses a PASS otherwise, but only when no other error is in flight)."""
+    complete = True
+    for name, write in writers:
+        try:
+            write()
+        except Exception as error:                           # noqa: BLE001 - reported, never raised
+            complete = False
+            out.incident("infrastructure", f"evidence {name} not written ({type(error).__name__}); the original outcome is unchanged")
+    return complete
+
+
 def _restrict(directory):
     """Dumps and their JSON sidecars of a reservation directory: owner only (the client writes them with the process umask)."""
     for path in directory.glob("flash-*"):
@@ -285,20 +299,24 @@ def test_m40_11c_11d_known_content_and_application_return(bench_client, qual_ses
                     out.incident("bench", "console command did not complete: no retry, no second console")
                 raise
         finally:
-            # Evidence is written whatever happened, and an evidence problem is an incident, NEVER a replacement of the error in flight.
-            result = watch.stop()
+            # Nothing in this block may raise: the error in flight (if any) stays the verdict, and every piece of evidence still available is kept.
             try:
-                m40.write_evidence(case.directory / "m40-observed-card.jsonl", result)
-                if (case.directory / "board-0").is_dir():
-                    _restrict(case.directory / "board-0")
-                case.write("m40-11c-reads.json", {"phase": state["phase"], "error": state["error"], "reads": reads_log, "header_facts": facts,
-                                                   "problems": c_problems, "planned": [name for name, _ in planned]})
-                case.write("m40-11d-markers.json", {"phase": state["phase"], "error": state["error"], "timeout_s": known["marker_timeout_s"],
-                                                     "markers": [{**item, "at": at_by_seq.get(item["seq"])} for item in located],
-                                                     "transport": transport_details, "problems": d_problems})
-                state["persisted"] = True
-            except Exception as error:                       # noqa: BLE001 - reported below, never raised from a finally
-                out.incident("infrastructure", f"evidence not written ({type(error).__name__}); the original outcome is unchanged")
+                result = watch.stop()
+            except Exception as error:                         # noqa: BLE001 - a collector failure is an incident AND an incomplete observation
+                result = watch.result
+                result.errors.append(f"collector stop failed ({type(error).__name__})")
+                out.incident("infrastructure", f"collector stop failed ({type(error).__name__}); the observation of the second card is incomplete")
+            first_dir = case.directory / "board-0"
+            state["persisted"] = _persist(out, [
+                ("board-0 file permissions", lambda: _restrict(first_dir) if first_dir.is_dir() else None),          # privacy first
+                ("m40-observed-card.jsonl", lambda: m40.write_evidence(case.directory / "m40-observed-card.jsonl", result)),
+                ("m40-11c-reads.json", lambda: case.write("m40-11c-reads.json", {
+                    "phase": state["phase"], "error": state["error"], "reads": reads_log, "header_facts": facts,
+                    "problems": c_problems, "planned": [name for name, _ in planned]})),
+                ("m40-11d-markers.json", lambda: case.write("m40-11d-markers.json", {
+                    "phase": state["phase"], "error": state["error"], "timeout_s": known["marker_timeout_s"],
+                    "markers": [{**item, "at": at_by_seq.get(item["seq"])} for item in located],
+                    "transport": transport_details, "problems": d_problems}))])
         assert state["persisted"], "the evidence of this run could not be written (no error was in flight: the run cannot be a PASS)"
         # --- no replay, release, continuity, second card ------------------------------------------------------------------------
         board.close()
