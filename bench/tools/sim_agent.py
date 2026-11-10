@@ -54,6 +54,8 @@ class SimDevice:
             self.writes += 1
             return {'written': len(images), 'simulated': True}
         if name == 'flash.read':
+            if os.environ.get('SIM_FAIL_READ_AT') == str(args['address']):             # SIMULATES a read that fails definitively at one address
+                raise SimFailure('serial_timeout')
             data = bytes(self.flash[args['address']:args['address']+args['size']])
             return {'artifact': await upload(data), 'simulated': True}
         if name == 'flash.erase':
@@ -204,6 +206,8 @@ async def serve(session, url, token, device_id, grant, script, chip, sim, connec
                     continue
                 try:
                     command, args = op['command'], op['args']
+                    if command == os.environ.get('SIM_FAIL_COMMAND'):
+                        raise SimFailure('serial_timeout')                            # SIMULATES a command that fails definitively
                     if command == os.environ.get('SIM_HANG_COMMAND'):
                         await asyncio.sleep(3600)                           # SIMULATES a command that never reports a result (lost result / stuck page)
                     if command == 'trigger':
@@ -235,6 +239,8 @@ async def serve(session, url, token, device_id, grant, script, chip, sim, connec
                         for line in json.loads(os.environ['SIM_CONSOLE_BOOT']):   # SIMULATES the ROM banner, 2nd stage and application lines
                             await emit_uart((line + '\r\n').encode() + uart_tag)
                             await asyncio.sleep(0.05)
+                        if os.environ.get('SIM_REENUMERATE_AFTER_CONSOLE') == '1':
+                            reenumerate = True                                    # SIMULATES the agent re-registering (new generation) right after the console return
                     elif command == 'boot.download':
                         await emit_uart(('SIM download mode\r\nESP-ROM:%s-sim\r\nSIM-DOWNLOAD-MODE\r\n' % chip).encode())
                     elif command == 'uart.write':
