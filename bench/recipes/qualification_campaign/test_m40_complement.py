@@ -23,6 +23,9 @@ M40-11c/d (consent M40-11C) on the FIRST card only, one loader cycle: known cont
   FAIL           either criterion is violated (e.g. a marker never seen or out of order: the application did not demonstrably restart);
   BLOCKED        consent, section, a placeholder application marker, no valid table at the declared offset; INDETERMINATE as in M40-11a.
   The second card is only observed (GET), exactly as in M40-11a.
+  Evidence (m40-11c-reads.json, m40-11d-markers.json) is written in a `finally`, in EVERY verdict, with the phase reached and the type of the
+  error in flight; an evidence problem is an incident and never replaces that error (on an otherwise clean run it makes the test fail).
+  A failing `console` is never retried; its restoration is UNKNOWN (the card may still be in the loader).
 M40-4    simultaneous UART of two cards (m40.uart; stimulus 'none' = passive capture of what the firmwares already print; 'reset_both' = one `reset`
          per card at the same time, which needs consent M40-4-RESET AND --qual-allow-reset: a reset of the second card is never implied):
   PASS           each card's own distinctive markers (disjoint) are received on its stream and none of the other's; at least m40.uart.min_bytes per
@@ -205,9 +208,11 @@ def test_m40_11c_11d_known_content_and_application_return(bench_client, qual_ses
         case.write("m40-baseline-observed-card.json", watch.start())
         planned, reads_log, c_problems, d_problems, result = [], [], [], [], None
         located, transport_details, issued, facts, valid_headers = [], [], False, {}, 0
+        at_by_seq, state = {}, {"phase": "reserve", "error": None, "persisted": False}
         try:
             board = case.reserve(ttl=600)
             generation = board.generation
+            state["phase"] = "bootloader-header"
             try:
                 with retained_reads(board, out) as reads:
                     def read(address, size):
@@ -225,6 +230,7 @@ def test_m40_11c_11d_known_content_and_application_return(bench_client, qual_ses
                     header = twice(0, 4096)
                     facts, problems = m40.check_image_header(header, cfg["chip"])
                     c_problems += [f"bootloader header at 0: {p}" for p in problems]
+                    state["phase"] = "table"
                     planned.append(("partitions", {"address": known["table_offset"]}))
                     valid, probes = probe_candidates(board, [known["table_offset"]])
                     case.write("m40-11c-table-probe.json", probes)
@@ -234,6 +240,7 @@ def test_m40_11c_11d_known_content_and_application_return(bench_client, qual_ses
                     raw = twice(address, 4096)
                     c_problems += m40.check_table_agreement(rows, decode_table(raw))
                     check_rows(rows, cfg["flash_size"])
+                    state["phase"] = "application-slots"
                     slots = m40.app_partitions(rows)
                     if not slots:
                         c_problems.append("the table has no application partition")
@@ -250,8 +257,10 @@ def test_m40_11c_11d_known_content_and_application_return(bench_client, qual_ses
                     cursor = board.cursor()                        # BEFORE the command that restarts the application
                     planned.append(("console", None))
                     issued = True
+                    state["phase"] = "console"
                     board.console()
-                    chunks, at_by_seq, deadline = [], {}, time.monotonic() + known["marker_timeout_s"]
+                    state["phase"] = "markers"
+                    chunks, deadline = [], time.monotonic() + known["marker_timeout_s"]
                     wanted = [("rom", known["rom_marker"].encode()), ("bootloader", known["bootloader_marker"].encode()),
                               ("application", known["app_marker"].encode())]
                     while True:
@@ -267,17 +276,30 @@ def test_m40_11c_11d_known_content_and_application_return(bench_client, qual_ses
                     if not any("console opened" in detail for detail in transport_details):
                         d_problems.append("no `console opened` transport event after the console command")
             except BaseException as error:
+                state["error"] = type(error).__name__
                 if not issued:
                     _console_after_early_exit(board, out, error)   # the card may still be in the loader
+                elif state["phase"] == "console":
+                    # The console command itself did not complete cleanly: never retried, the card may still be in the loader.
+                    out.restoration = "UNKNOWN: the console return did not complete; the card may be left in the ROM loader - local recovery required"
+                    out.incident("bench", "console command did not complete: no retry, no second console")
                 raise
         finally:
+            # Evidence is written whatever happened, and an evidence problem is an incident, NEVER a replacement of the error in flight.
             result = watch.stop()
-            m40.write_evidence(case.directory / "m40-observed-card.jsonl", result)
-            if (case.directory / "board-0").is_dir():
-                _restrict(case.directory / "board-0")
-        case.write("m40-11c-reads.json", {"reads": reads_log, "header_facts": facts})
-        case.write("m40-11d-markers.json", {"markers": [{**item, "at": at_by_seq.get(item["seq"])} for item in located],
-                                             "transport": transport_details, "timeout_s": known["marker_timeout_s"]})
+            try:
+                m40.write_evidence(case.directory / "m40-observed-card.jsonl", result)
+                if (case.directory / "board-0").is_dir():
+                    _restrict(case.directory / "board-0")
+                case.write("m40-11c-reads.json", {"phase": state["phase"], "error": state["error"], "reads": reads_log, "header_facts": facts,
+                                                   "problems": c_problems, "planned": [name for name, _ in planned]})
+                case.write("m40-11d-markers.json", {"phase": state["phase"], "error": state["error"], "timeout_s": known["marker_timeout_s"],
+                                                     "markers": [{**item, "at": at_by_seq.get(item["seq"])} for item in located],
+                                                     "transport": transport_details, "problems": d_problems})
+                state["persisted"] = True
+            except Exception as error:                       # noqa: BLE001 - reported below, never raised from a finally
+                out.incident("infrastructure", f"evidence not written ({type(error).__name__}); the original outcome is unchanged")
+        assert state["persisted"], "the evidence of this run could not be written (no error was in flight: the run cannot be a PASS)"
         # --- no replay, release, continuity, second card ------------------------------------------------------------------------
         board.close()
         problems = m40.check_commands(m40.read_commands(board.output_dir), planned)

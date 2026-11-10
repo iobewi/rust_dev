@@ -334,6 +334,9 @@ def test_m40_11cd_passes_with_known_content_and_ordered_markers(sim, tmp_path):
         assert (dump.stat().st_mode & 0o777) == 0o600, dump.name
     assert not client.artifacts()["artifacts"] and client.device("board")["reservation"] is None
     assert not [r for r in posts(tmp_path / "evidence") if r["path"] == "/api/v1/operations"][len(names):], "no extra operation"
+    reads_file, markers_file = json.loads((folder / "m40-11c-reads.json").read_text()), json.loads((folder / "m40-11d-markers.json").read_text())
+    assert reads_file["phase"] == "markers" and reads_file["error"] is None and reads_file["problems"] == [] and len(reads_file["reads"]) == 8
+    assert markers_file["phase"] == "markers" and markers_file["error"] is None and markers_file["problems"] == []
 
 
 @pytest.mark.parametrize("boot,fragment", [
@@ -369,6 +372,8 @@ def test_m40_11cd_is_blocked_without_a_valid_table_and_still_returns_the_console
     names = commands(tmp_path / "evidence")
     assert names[-1] == "console" and "flash.read" in names, names                  # the card is not left in the loader
     assert client.device("board")["reservation"] is None
+    reads_file = json.loads(next((tmp_path / "evidence").glob("M40-11cd-*/m40-11c-reads.json")).read_text())
+    assert reads_file["phase"] == "table" and reads_file["error"] == "Blocked" and len(reads_file["reads"]) == 2, "the reads done before the block are kept"
 
 
 @pytest.mark.parametrize("change,fragment", [({"consent": {"scenarios": []}}, "M40-11C"),
@@ -696,3 +701,121 @@ def test_a_command_thread_still_alive_at_the_join_deadline_is_indeterminate_and_
     assert run.returncode != 0 and reports["M40-4"]["status"] == "INDETERMINATE", run.stdout[-1500:]
     assert "still running" in run.stdout + " ".join(reports["M40-4"]["incidents"])
     assert_nothing_released_or_replayed(tmp_path / "evidence", client)
+
+
+# --- M40-11c/d: evidence survives FAIL / INDETERMINATE / BLOCKED, and never masks the error in flight --------------------------------------
+ENV_11CD = {"SIM_FLASH_PRELOAD": json.dumps(PRELOAD), "SIM_CONSOLE_BOOT": json.dumps(BOOT), "SIM_UART_TAG": "1"}
+SELECT_11CD = "test_m40_11c_11d_known_content_and_application_return"
+
+
+def evidence_11cd(tmp_path):
+    folder = next((tmp_path / "evidence").glob("M40-11cd-*"))
+    return folder, json.loads((folder / "m40-11c-reads.json").read_text()), json.loads((folder / "m40-11d-markers.json").read_text())
+
+
+def operations_posted(tmp_path):
+    return [r for r in posts(tmp_path / "evidence") if r["path"] == "/api/v1/operations"]
+
+
+def assert_no_extra_reset_or_replay(tmp_path, names):
+    """Whatever failed: no `reset`, at most ONE console, and exactly one operation POST per command that appears in the log."""
+    assert "reset" not in names and names.count("console") <= 1, names
+    assert len(operations_posted(tmp_path)) == len(names), f"{len(operations_posted(tmp_path))} POSTs for {names}"
+
+
+@pytest.mark.parametrize("address,expected_reads,expected_phase,expected_names", [
+    (0, 0, "bootloader-header", ["flash.read", "console"]),
+    (0x10000, 2, "table", ["flash.read", "flash.read", "partitions", "flash.read", "console"]),
+    (0x120000, 6, "application-slots", None)])
+def test_a_read_error_keeps_the_reads_already_done_and_is_a_fail(sim, tmp_path, address, expected_reads, expected_phase, expected_names):
+    url, client = sim({**ENV_11CD, "SIM_FAIL_READ_AT": str(address)})
+    run, reports, _ = run_recipe(tmp_path, url, SELECT_11CD, session())
+    assert run.returncode != 0 and reports["M40-11cd"]["status"] == "FAIL", (reports, run.stdout[-900:])
+    folder, reads_file, markers_file = evidence_11cd(tmp_path)
+    assert (reads_file["phase"], reads_file["error"], len(reads_file["reads"])) == (expected_phase, "OperationError", expected_reads)
+    assert markers_file["phase"] == expected_phase and markers_file["markers"] == []
+    names = commands(tmp_path / "evidence")
+    if expected_names:
+        assert names == expected_names, names
+    assert names[-1] == "console", "the card was not issued a console return after a failure in the loader phase: it must be"
+    assert_no_extra_reset_or_replay(tmp_path, names)
+    assert (folder / "m40-observed-card.jsonl").is_file() and client.device("board")["reservation"] is None
+
+
+def test_a_continuity_loss_during_the_marker_search_is_indeterminate_and_keeps_everything_observed(sim, tmp_path):
+    url, client = sim({**ENV_11CD, "SIM_REENUMERATE_AFTER_CONSOLE": "1"})
+    run, reports, _ = run_recipe(tmp_path, url, SELECT_11CD, session())
+    assert run.returncode != 0 and reports["M40-11cd"]["status"] == "INDETERMINATE", (reports, run.stdout[-900:])
+    folder, reads_file, markers_file = evidence_11cd(tmp_path)
+    assert reads_file["phase"] in ("console", "markers") and reads_file["error"] == "ContinuityError" and len(reads_file["reads"]) == 8
+    assert markers_file["error"] == "ContinuityError"
+    names = commands(tmp_path / "evidence")
+    assert names.count("console") == 1 and len(names) == 10, "the console was issued once; no second console, no replay"
+    assert_no_extra_reset_or_replay(tmp_path, names)
+
+
+def test_a_console_command_that_fails_is_a_fail_not_retried_and_leaves_an_unknown_restoration(sim, tmp_path):
+    url, client = sim({**ENV_11CD, "SIM_FAIL_COMMAND": "console"})
+    run, reports, _ = run_recipe(tmp_path, url, SELECT_11CD, session())
+    report = reports["M40-11cd"]
+    assert run.returncode != 0 and report["status"] == "FAIL", (report, run.stdout[-900:])
+    assert report["restoration"].startswith("UNKNOWN") and "console command did not complete" in " ".join(report["incidents"])
+    folder, reads_file, markers_file = evidence_11cd(tmp_path)
+    assert reads_file["phase"] == "console" and reads_file["error"] == "OperationError" and len(reads_file["reads"]) == 8
+    names = commands(tmp_path / "evidence")
+    assert names.count("console") == 1 and len(names) == 10, "a failed console is never retried"
+    assert_no_extra_reset_or_replay(tmp_path, names)
+
+
+def test_a_console_command_that_never_answers_is_indeterminate_and_keeps_the_reservation(sim, tmp_path):
+    url, client = sim({**ENV_11CD, "SIM_HANG_COMMAND": "console"})
+    defect = ("\nimport iobewi_bench.client as _client\n_client.Board.console = lambda self: self.command('console', timeout=3, start_timeout=3)\n")
+    run, reports = run_with_defect(tmp_path, url, SELECT_11CD, session(), defect)
+    report = reports["M40-11cd"]
+    assert run.returncode != 0 and report["status"] == "INDETERMINATE", (report, run.stdout[-900:])
+    assert report["restoration"].startswith("UNKNOWN")
+    folder, reads_file, markers_file = evidence_11cd(tmp_path)
+    assert reads_file["phase"] == "console" and reads_file["error"] == "PendingOperation" and len(reads_file["reads"]) == 8
+    names = commands(tmp_path / "evidence")
+    assert names.count("console") == 1 and len(names) == 10
+    assert_no_extra_reset_or_replay(tmp_path, names)
+    rows = [json.loads(line) for path in (tmp_path / "evidence").glob("*/requests.jsonl") for line in path.read_text().splitlines()]
+    assert not [r for r in rows if r["method"] == "DELETE" and r["path"].startswith("/api/v1/leases/")], "no reservation released under an unknown outcome"
+    assert client.device("board")["reservation"] is not None
+
+
+EVIDENCE_WRITE_FAILS = ("\nimport iobewi_bench.qualification as _q\n_real_write = _q.Campaign.write\n\n\n"
+                        "def _write(self, filename, value):\n    if filename == 'm40-11c-reads.json':\n        raise OSError('disk full (injected)')\n"
+                        "    return _real_write(self, filename, value)\n\n\n_q.Campaign.write = _write\n")
+
+
+def test_an_evidence_write_failure_never_replaces_the_error_in_flight(sim, tmp_path):
+    url, client = sim({**ENV_11CD, "SIM_FAIL_READ_AT": "65536"})
+    run, reports = run_with_defect(tmp_path, url, SELECT_11CD, session(), EVIDENCE_WRITE_FAILS)
+    report = reports["M40-11cd"]
+    assert run.returncode != 0 and report["status"] == "FAIL", (report, run.stdout[-900:])
+    incidents = " ".join(report["incidents"])
+    assert "OperationError" in incidents, "the ORIGINAL error is the one reported"
+    assert "evidence not written (OSError)" in incidents
+    assert "could not be written" not in run.stdout, "the evidence problem must not become the verdict while another error is in flight"
+    assert_no_extra_reset_or_replay(tmp_path, commands(tmp_path / "evidence"))
+
+
+def test_an_evidence_write_failure_on_an_otherwise_clean_run_is_never_a_pass(sim, tmp_path):
+    url, client = sim(ENV_11CD)
+    run, reports = run_with_defect(tmp_path, url, SELECT_11CD, session(), EVIDENCE_WRITE_FAILS)
+    assert run.returncode != 0 and reports["M40-11cd"]["status"] == "FAIL"
+    assert "could not be written" in run.stdout + " ".join(reports["M40-11cd"]["incidents"])
+    assert "evidence not written (OSError)" in " ".join(reports["M40-11cd"]["incidents"])
+    assert_no_extra_reset_or_replay(tmp_path, commands(tmp_path / "evidence"))
+
+
+@pytest.mark.parametrize("env,expected", [({}, "PASS"), ({"SIM_FAIL_READ_AT": "0"}, "FAIL"), ({"SIM_REENUMERATE_AFTER_CONSOLE": "1"}, "INDETERMINATE"),
+                                           ({"SIM_FLASH_PRELOAD": "[]"}, "BLOCKED")])
+def test_the_four_verdicts_stay_distinct_and_each_writes_its_evidence(sim, tmp_path, env, expected):
+    url, client = sim({**ENV_11CD, **env})
+    run, reports, _ = run_recipe(tmp_path, url, SELECT_11CD, session())
+    assert reports["M40-11cd"]["status"] == expected, (expected, reports["M40-11cd"]["status"], run.stdout[-600:])
+    folder, reads_file, markers_file = evidence_11cd(tmp_path)                       # the evidence exists in EVERY verdict
+    assert reads_file["phase"] and "planned" in reads_file
+    assert_no_extra_reset_or_replay(tmp_path, commands(tmp_path / "evidence"))
