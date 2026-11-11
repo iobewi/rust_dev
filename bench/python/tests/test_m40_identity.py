@@ -21,7 +21,7 @@ from iobewi_bench import BenchClient
 
 BENCH = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(BENCH / "recipes"))
-from qualification_campaign import identity                                       # noqa: E402
+from qualification_campaign import identity, m40                                  # noqa: E402
 from qualification_campaign.session import SessionError, validate_session        # noqa: E402
 
 RECIPE = "recipes/qualification_campaign/test_m40_identity.py"
@@ -491,7 +491,7 @@ def test_the_first_reference_is_recorded_once_after_a_qualifying_run_then_compar
     code, output, reports, _ = run_id(tmp_path, url, document)
     assert reports["M40-ID"]["status"] == "PASS", output[-1500:]
     reference_path = tmp_path / "private" / "reference.json"
-    assert stat.S_IMODE(reference_path.stat().st_mode) == 0o600 and "recorded ONCE" in " ".join(reports["M40-ID"]["evidence"])
+    assert stat.S_IMODE(reference_path.stat().st_mode) == 0o600 and "becomes the reference only once the campaign has closed with PASS" in " ".join(reports["M40-ID"]["evidence"])
     reference = identity.load_reference(reference_path, ["board", "board2"])
     key = (tmp_path / "private" / "identity.key").read_bytes()
     assert reference["cards"]["board"]["digest"] == identity.fingerprint(result("de:ad:be:ef:00:" + format(hashlib.sha256(b"board").digest()[0], "02x"), size=4194304), key)["digest"]
@@ -703,8 +703,121 @@ def test_a_reference_that_appears_during_the_run_is_never_overwritten(sim, tmp_p
     defect = (f"\n_real_write = write_reference\n\n\ndef write_reference(path, document):\n    import os as _os\n    fd = _os.open({str(planted)!r}, _os.O_WRONLY | _os.O_CREAT | _os.O_EXCL, 0o600)\n"
               "    _os.write(fd, b'planted by another process')\n    _os.close(fd)\n    return _real_write(path, document)\n")
     code, output, reports, _ = run_with_identity_defect(tmp_path, url, SELECT_ID, base_session(tmp_path, consents=("M40-ID", "M40-ID-ENROLL")), defect)
-    assert reports["M40-ID"]["status"] == "FAIL" and "never overwritten" in output + " ".join(reports["M40-ID"]["incidents"])
+    assert code != 0 and "never overwritten" in output, "the test fails at publication (the qualification report says PASS, the publication file says refused)"
     assert planted.read_bytes() == b"planted by another process"
+    assert sorted(p.name for p in (tmp_path / "private").iterdir()) == ["identity.key", "reference.json"], "the candidate is discarded"
+    assert json.loads((campaign(tmp_path, "M40-ID") / "m40-id-publication.json").read_text())["publication"].startswith("refused")
+
+
+# --- publication boundary: the reference exists only after a PASS campaign closed ---------------------------------------------------------------
+def enroll_session(tmp_path):
+    return base_session(tmp_path, consents=("M40-ID", "M40-ID-ENROLL"))
+
+
+CLOSE_PROBE = """
+
+import json as _json
+from iobewi_bench import qualification as _q
+_real_close = _q.Campaign.close
+
+
+def _close(self, *args, **kwargs):
+    ref = os.path.join(os.path.dirname({key!r}), 'reference.json')
+    with open({marker!r}, 'w') as stream:
+        _json.dump({{'reference_at_close': os.path.exists(ref), 'candidate_at_close': os.path.exists(ref + '.candidate')}}, stream)
+    result = _real_close(self, *args, **kwargs)
+    {after}
+    return result
+
+
+_q.Campaign.close = _close
+"""
+
+
+def close_probe(tmp_path, after="pass"):
+    return CLOSE_PROBE.format(key=str(tmp_path / "private" / "identity.key"), marker=str(tmp_path / "close-state.json"), after=after)
+
+
+def test_the_reference_does_not_exist_while_the_campaign_closes_and_appears_only_after_a_pass(sim, tmp_path):
+    url, client, _ = sim(ENV_ID)
+    code, output, reports, _ = run_with_identity_defect(tmp_path, url, SELECT_ID, enroll_session(tmp_path), close_probe(tmp_path))
+    assert reports["M40-ID"]["status"] == "PASS", output[-1500:]
+    state = json.loads((tmp_path / "close-state.json").read_text())
+    assert state == {"reference_at_close": False, "candidate_at_close": True}, "at Campaign.close() time only the candidate exists"
+    reference_path = tmp_path / "private" / "reference.json"
+    assert identity.load_reference(reference_path, ["board", "board2"]) and stat.S_IMODE(reference_path.stat().st_mode) == 0o600
+    assert sorted(p.name for p in (tmp_path / "private").iterdir()) == ["identity.key", "reference.json"], "the candidate is gone"
+    publication = json.loads((campaign(tmp_path, "M40-ID") / "m40-id-publication.json").read_text())
+    assert publication["qualification_verdict"] == "PASS" and publication["publication"] == "published"
+
+
+@pytest.mark.parametrize("after,verdict", [("raise PendingOperation('cleanup left an operation unresolved (injected)')", "INDETERMINATE"),
+                                           ("raise AssertionError('final state check failed (injected)')", "FAIL")])
+def test_a_failure_during_the_final_cleanup_leaves_no_reference_and_no_candidate(sim, tmp_path, after, verdict):
+    url, client, _ = sim(ENV_ID)
+    defect = close_probe(tmp_path, after).replace("from iobewi_bench import qualification as _q", "from iobewi_bench import qualification as _q\nfrom iobewi_bench.client import PendingOperation")
+    code, output, reports, _ = run_with_identity_defect(tmp_path, url, SELECT_ID, enroll_session(tmp_path), defect)
+    assert code != 0 and reports["M40-ID"]["status"] == verdict, (reports, output[-1500:])
+    assert sorted(p.name for p in (tmp_path / "private").iterdir()) == ["identity.key"], "no reference, no candidate, no temporary file"
+    publication = json.loads((campaign(tmp_path, "M40-ID") / "m40-id-publication.json").read_text())
+    assert publication["publication"] == "not published (campaign not PASS)" and publication["candidate_discarded"] is True
+
+
+def test_a_reference_planted_before_the_publication_is_never_overwritten_and_the_candidate_is_discarded(sim, tmp_path):
+    url, client, _ = sim(ENV_ID)
+    planted = tmp_path / "private" / "reference.json"
+    defect = (f"\n_real_promote = promote_reference\n\n\ndef promote_reference(path):\n    fd = os.open({str(planted)!r}, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)\n"
+              "    os.write(fd, b'planted before publication')\n    os.close(fd)\n    return _real_promote(path)\n")
+    code, output, reports, _ = run_with_identity_defect(tmp_path, url, SELECT_ID, enroll_session(tmp_path), defect)
+    assert code != 0 and "never overwritten" in output
+    assert planted.read_bytes() == b"planted before publication"
+    assert sorted(p.name for p in (tmp_path / "private").iterdir()) == ["identity.key", "reference.json"], "the candidate is discarded"
+    assert json.loads((campaign(tmp_path, "M40-ID") / "m40-id-publication.json").read_text())["publication"].startswith("refused")
+
+
+def test_a_crash_during_the_publication_leaves_no_valid_reference(sim, tmp_path):
+    url, client, _ = sim(ENV_ID)
+    defect = ("\n_real_link = os.link\n\n\ndef _link(src, dst, *args, **kwargs):\n    if str(dst).endswith('reference.json'):\n"
+              "        raise OSError('crash while publishing (injected)')\n    return _real_link(src, dst, *args, **kwargs)\n\n\nos.link = _link\n")
+    code, output, reports, _ = run_with_identity_defect(tmp_path, url, SELECT_ID, enroll_session(tmp_path), defect)
+    assert code != 0 and "could not be published" in output
+    assert sorted(p.name for p in (tmp_path / "private").iterdir()) == ["identity.key"], "no reference, no candidate"
+    assert json.loads((campaign(tmp_path, "M40-ID") / "m40-id-publication.json").read_text())["publication"].startswith("failed")
+
+
+def test_a_stale_candidate_blocks_the_enrolment_before_any_command_and_is_left_untouched(sim, tmp_path):
+    url, client, _ = sim(ENV_ID)
+    document = enroll_session(tmp_path)
+    stale = tmp_path / "private" / "reference.json.candidate"
+    stale.write_bytes(b"left by an earlier run")
+    os.chmod(stale, 0o600)
+    code, output, reports, _ = run_id(tmp_path, url, document)
+    assert reports["M40-ID"]["status"] == "BLOCKED" and "stale reference candidate" in " ".join(reports["M40-ID"]["incidents"])
+    assert stale.read_bytes() == b"left by an earlier run" and not (tmp_path / "private" / "reference.json").exists() and not posts(tmp_path)
+
+
+def test_the_candidate_is_staged_promoted_or_discarded_never_overwritten(tmp_path):
+    directory = private_dir(tmp_path)
+    path = directory / "reference.json"
+    document = identity.reference_document(fingerprints())
+    assert not identity.has_candidate(path) and identity.discard_candidate(path) is False
+    candidate = identity.stage_reference(path, document)
+    assert candidate.name == "reference.json.candidate" and identity.has_candidate(path) and not path.exists()
+    with pytest.raises(identity.ReferenceExists):
+        identity.stage_reference(path, document)
+    assert identity.discard_candidate(path) is True and not identity.has_candidate(path)
+    identity.stage_reference(path, document)
+    identity.promote_reference(path)
+    assert identity.load_reference(path, ["A", "B"]) == document and stat.S_IMODE(path.stat().st_mode) == 0o600
+    assert [p.name for p in directory.iterdir()] == ["reference.json"], "the candidate is removed by the promotion"
+    before = path.read_bytes()
+    with pytest.raises(FileNotFoundError):
+        identity.promote_reference(path)                       # nothing staged: nothing is published, the final file is untouched
+    (directory / "reference.json.candidate").write_bytes(b"x")
+    os.chmod(directory / "reference.json.candidate", 0o600)
+    with pytest.raises(identity.ReferenceExists):
+        identity.promote_reference(path)
+    assert path.read_bytes() == before and (directory / "reference.json.candidate").exists(), "never overwritten, the candidate is kept for the caller to discard"
 
 
 # --- M40-PHYS-B end to end ---------------------------------------------------------------------------------------------------------------------
@@ -889,3 +1002,64 @@ def test_m40_id_counts_its_four_submissions(sim, tmp_path):
     url, client, _ = sim(ENV_ID)
     code, output, reports, _ = run_with_defect(tmp_path, url, SELECT_ID, base_session(tmp_path), DOUBLE_COUNT)
     assert reports["M40-ID"]["status"] == "FAIL" and "operations submitted, expected 4" in output + " ".join(reports["M40-ID"]["incidents"])
+
+
+# --- M40-PHYS-B: explicit continuity of the event streams ----------------------------------------------------------------------------------------
+def ev(seq, kind="uart", generation="g1"):
+    return {"seq": seq, "kind": kind, "generation": generation}
+
+
+def test_event_order_names_duplicates_gaps_and_reordering():
+    assert m40.check_event_order([], 10) == [] and m40.check_event_order([ev(11), ev(12), ev(13)], 10) == []
+    assert any("gap" in m and "11" in m for m in m40.check_event_order([ev(12), ev(13)], 10)), "the first event must be base+1"
+    assert any("duplicate event seq 12" in m for m in m40.check_event_order([ev(11), ev(12), ev(12)], 10))
+    assert any("gap" in m and "12" in m for m in m40.check_event_order([ev(11), ev(13)], 10))
+    assert any("reordered" in m for m in m40.check_event_order([ev(11), ev(13), ev(12)], 10))
+
+
+def test_successive_reads_must_extend_each_other():
+    first, second = [ev(11), ev(12)], [ev(11), ev(12), ev(13)]
+    assert m40.check_prefix_stable([]) == [] and m40.check_prefix_stable([first, second, second]) == []
+    assert m40.check_prefix_stable([second, first]), "a later read that lost events is refused"
+    assert m40.check_prefix_stable([first, [ev(11), ev(12, generation="g2")]]), "an event whose generation changed is refused"
+    assert m40.check_prefix_stable([first, [ev(12), ev(11)]]), "a reordered stream is refused"
+
+
+STREAM_DEFECT = """
+
+_real_drain = drain_events
+_reads = {{}}
+
+
+def drain_events(client, device_id, after, *, epoch, fields=EVENT_FIELDS):
+    events = _real_drain(client, device_id, after, epoch=epoch, fields=fields)
+    _reads[device_id] = _reads.get(device_id, 0) + 1
+    if device_id == {device!r}:
+        {body}
+    return events
+"""
+STREAM_ENV = {"SIM_UART_RATE": "4:8"}
+
+
+@pytest.mark.parametrize("body,fragment", [
+    ("if len(events) >= 3: del events[1]", "event gap"),
+    ("if events: events.insert(1, dict(events[0]))", "duplicate event seq"),
+    ("if len(events) >= 3: events[1], events[2] = events[2], events[1]", "reordered"),
+    ("if events: events[0] = {**events[0], 'seq': events[0]['seq'] + 1}", "event gap"),
+    ("if _reads[device_id] % 2 == 0 and events: events[0] = {**events[0], 'generation': 'rewritten'}", "does not extend")])
+@pytest.mark.parametrize("device", ["board2", "board"])
+def test_a_defect_in_an_event_stream_of_either_card_is_indeterminate_and_the_association_is_not_certified(sim, tmp_path, body, fragment, device):
+    url, client, process = sim(STREAM_ENV, control=True)
+    defect = STREAM_DEFECT.format(device=device, body=body)
+    code, output, reports, _ = run_with_defect(tmp_path, url, SELECT_PHYS, phys_session(tmp_path), defect, operator=operator(process))
+    assert code != 0 and reports["M40-PHYS-B"]["status"] == "INDETERMINATE", (reports, output[-2000:])
+    text = output + " ".join(reports["M40-PHYS-B"]["incidents"])
+    assert f"event stream of {device} is not trustworthy" in text and fragment in text
+    assert "PHYSICAL ASSOCIATION" not in " ".join(reports["M40-PHYS-B"]["evidence"])
+    assert not posts(tmp_path)
+
+
+def test_a_healthy_run_with_continuous_uart_passes_the_stream_checks(sim, tmp_path):
+    url, client, process = sim(STREAM_ENV, control=True)
+    code, output, reports, _ = run_phys(tmp_path, url, process, phys_session(tmp_path), act=operator(process))
+    assert reports["M40-PHYS-B"]["status"] == "PASS", output[-2000:]

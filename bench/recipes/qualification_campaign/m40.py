@@ -356,6 +356,33 @@ def check_contiguous(events, base_seq):
     return problems[:5]
 
 
+def check_event_order(events, base_seq):
+    """Explicit integrity of ONE card's event stream since `base_seq`: the first event is base+1 and there is no duplicate, no gap and no
+    reordering. (`drain_events` only checks epoch and the server's `lost` flag.)"""
+    problems, expected, seen = [], base_seq + 1, set()
+    for event in events:
+        seq = event["seq"]
+        if seq in seen:
+            problems.append(f"duplicate event seq {seq}")
+        elif seq < expected:
+            problems.append(f"event seq {seq} arrived after {expected - 1} (reordered)")
+        elif seq > expected:
+            problems.append(f"event gap: seq {expected} is missing before {seq}")
+        seen.add(seq)
+        expected = max(expected, seq + 1)
+    return problems[:5]
+
+
+def check_prefix_stable(snapshots):
+    """Successive reads of the same stream must extend each other: what was seen earlier is never rewritten, dropped or reordered."""
+    problems, key = [], lambda e: (e["seq"], e["kind"], e.get("generation"))
+    for index in range(1, len(snapshots)):
+        previous, current = [key(e) for e in snapshots[index - 1]], [key(e) for e in snapshots[index]]
+        if current[:len(previous)] != previous:
+            problems.append(f"read {index + 1} of the stream does not extend read {index}: earlier events changed")
+    return problems[:5]
+
+
 def check_reservations(first, second, *, first_held, second_held):
     """Reservation state of two cards against what the scenario step expects (each flag: the card must / must not be reserved)."""
     problems = []

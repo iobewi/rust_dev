@@ -17,6 +17,12 @@ present in the page agent, in the server's memory and in the HTTP response of th
 The REFERENCE file records the fingerprints of the expected cards. It is created ONCE, atomically (a fully written 0600 temporary file is
 hard-linked to its final name, which fails if the name exists), never overwritten, never partial (a crash leaves no final file) and is
 independent of any campaign result directory.
+
+PUBLICATION BOUNDARY (M40-ID): a reference is never created while a campaign can still fail. The recipe STAGES a candidate under the name
+`<reference>.candidate` (same atomic, never-overwritten write; the candidate is not a reference: nothing ever loads it as one) and PROMOTES it
+(hard link to the final name, then removal of the candidate) only after the campaign has closed with verdict PASS, i.e. after the explicit
+release of the reservations, the final state checks and Campaign.close(). A campaign that ends FAIL, BLOCKED or INDETERMINATE discards the
+candidate. "Qualified" (the verdict) and "published" (the reference exists) are two recorded facts; a failed promotion leaves no reference.
 """
 import hashlib
 import hmac
@@ -252,3 +258,47 @@ def compare_reference(reference, fingerprints):
             changed = [field for field in FIELDS if recorded["fields"][field] != current["fields"][field]]
             problems.append(f"{name}: hardware identity differs from the reference in {changed or ['digest only']}")
     return problems
+
+
+# --- publication boundary: stage, then promote only after a PASS ------------------------------------------------------
+def candidate_path(path):
+    path = Path(path)
+    return path.with_name(path.name + ".candidate")
+
+
+def has_candidate(path):
+    candidate = candidate_path(path)
+    return candidate.exists() or candidate.is_symlink()
+
+
+def stage_reference(path, document):
+    """Write the CANDIDATE once, atomically and privately (same guarantees as write_reference; a stale candidate raises ReferenceExists).
+    The candidate is not a reference: `load_reference` is only ever called on the final name."""
+    candidate = candidate_path(path)
+    write_reference(candidate, document)
+    return candidate
+
+
+def promote_reference(path):
+    """Publish a staged candidate as THE reference: a hard link to the final name (fails with ReferenceExists if the name is taken: never
+    overwritten), then the candidate is removed. The final name only ever appears complete."""
+    path, candidate = Path(path), candidate_path(path)
+    _require_private_file(candidate)
+    try:
+        os.link(candidate, path)
+    except FileExistsError:
+        raise ReferenceExists(f"{path.name} already exists: a reference is never overwritten") from None
+    _sync_directory(path.parent)
+    try:
+        os.unlink(candidate)
+    except FileNotFoundError:
+        pass
+
+
+def discard_candidate(path):
+    """Remove a staged candidate (campaign not PASS, or promotion failed). Returns True if one was removed."""
+    try:
+        os.unlink(candidate_path(path))
+        return True
+    except FileNotFoundError:
+        return False

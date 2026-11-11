@@ -8,6 +8,10 @@ M40-ID  (consent M40-ID; M40-ID-ENROLL only to record a first reference)
   argument exists for identify), reduces every raw result to a fingerprint (identity.py: HMAC-SHA-256 over the canonical form
   iobewi-identity-v1|chip|mac|flash_size|flash_id, 32-byte private key) and clears the raw result at once.
   Hardware transitions: each identify enters the ROM loader and returns to the console = 2 resets; 4 identify = 8 transitions (4 per card).
+  PUBLICATION    a first reference is only STAGED (`<reference>.candidate`) after every criterion passed and PROMOTED to the reference name once the
+                 campaign has closed with PASS (reservations released, Campaign.close() done). FAIL / BLOCKED / INDETERMINATE, a failing close or a failing
+                 promotion leave NO reference (the candidate is discarded); a stale candidate BLOCKS an enrolment. `m40-id-publication.json` records the
+                 qualification verdict and the publication separately; `report.json` certifies the qualification only.
   PASS           per card the two reads agree on chip, MAC, flash_size and flash_id; the two cards have different digests and MACs; each identify is
                  followed by `opening loader` and `console opened` on ITS card and by nothing foreign; generations, agents and epoch never change;
                  exactly [identify, identify] per card and four submissions (no replay); reservations are released when the state is safe; when a
@@ -27,7 +31,9 @@ M40-PHYS-B  (consent M40-PHYS-B for the cable gesture; M40-PHYS-B-ID additionall
   Hardware transitions: the operator's replug (the page re-opens the port and re-identifies B: 2 resets, not controlled by the recipe) and, with
   M40-PHYS-B-ID, 2 more for the identify. A gesture that demonstrably hits A first (A lost while B was not), a quarantine / grant / foreign event on A, or a different identity is a
   FAIL; any other loss of continuity of A (it re-registers, its generation changes) is INDETERMINATE because its cause cannot be attributed to the
-  gesture; B never coming back is INDETERMINATE; a gesture never seen is BLOCKED.
+  gesture; B never coming back is INDETERMINATE; a gesture never seen is BLOCKED. The event stream of B (and of A) is checked explicitly from the
+  baseline sequence: first event = base+1, no gap, no duplicate, no reordering, and every later read must extend the earlier ones (the stream is read
+  again after the return and after the identify); a violation is INDETERMINATE (the proof of the association is not trustworthy).
 Evidence (fingerprints, timeline, steps) is written in a `finally`, independently file by file, with 0600 permissions, in every verdict. It holds
 digests, the last two octets of the MAC (diagnostics only) and no raw MAC and no key. Hardware status: NOT executed.
 """
@@ -125,6 +131,36 @@ def _hold_if_console_not_proven(board, name, check):
         raise PendingOperation(f"{name}: no `console opened` event after identify; the card may still be in the loader - reservation kept, no replay")
 
 
+@contextlib.contextmanager
+def _publication(case, out, spec, state):
+    """Promote the staged candidate ONLY after `recorded` returned normally (verdict PASS and Campaign.close() succeeded); discard it otherwise."""
+    reference = spec["reference_file"]
+    try:
+        yield
+        if state["staged"]:
+            if out.status != "PASS":
+                raise AssertionError(f"the campaign verdict is {out.status}: the reference is not published")
+            try:
+                identity.promote_reference(reference)
+            except identity.ReferenceExists:
+                state["publication"] = "refused: a reference appeared meanwhile, never overwritten"
+                raise AssertionError("a reference appeared before publication: it is never overwritten") from None
+            except Exception as error:                      # noqa: BLE001 - nothing partial is ever a reference
+                state["publication"] = f"failed ({type(error).__name__})"
+                raise AssertionError(f"the reference could not be published ({type(error).__name__}): no valid reference exists") from None
+            state["publication"] = "published"
+    finally:
+        removed = False
+        if state["staged"] and state["publication"] != "published":
+            with contextlib.suppress(Exception):
+                removed = identity.discard_candidate(reference)
+            state["publication"] = state["publication"] or "not published (campaign not PASS)"
+        if state["staged"]:
+            with contextlib.suppress(Exception):
+                _private_json(case, "m40-id-publication.json", {"qualification_verdict": out.status, "publication": state["publication"],
+                                                                "candidate_discarded": removed, "note": "report.json certifies the qualification only"})
+
+
 # ------------------------------------------------------------------------------------------------------------------------
 def test_m40_id_hardware_identity(bench_client, qual_session, pytestconfig, record_property):
     cfg = qual_session
@@ -138,8 +174,8 @@ def test_m40_id_hardware_identity(bench_client, qual_session, pytestconfig, reco
     record_property("devices", f"{first_id},{other}")
     record_property("enroll_consent", str(enroll).lower())
     reads, steps = {first_id: [], other: []}, []
-    state = {"phase": "start", "error": None, "persisted": False}
-    with recorded(case, "M40-ID", out, preconditions=f"{cfg['chip']} x2 ({first_id}, {other}); 2 identify each; 8 loader/console transitions", limits=LIMITS_ID):
+    state = {"phase": "start", "error": None, "persisted": False, "staged": False, "publication": ""}
+    with _publication(case, out, spec, state), recorded(case, "M40-ID", out, preconditions=f"{cfg['chip']} x2 ({first_id}, {other}); 2 identify each; 8 loader/console transitions", limits=LIMITS_ID):
         start_or_block(case)
         record_transport(case, bench_client, cfg, out)
         compatible, basis, reasons = _server_compat(case, cfg, case.client.health())
@@ -147,6 +183,8 @@ def test_m40_id_hardware_identity(bench_client, qual_session, pytestconfig, reco
             raise Blocked("; ".join(reasons))
         key = _load_key(spec, out)
         reference = _load_reference(spec, [first_id, other])
+        if reference is None and enroll and identity.has_candidate(spec["reference_file"]):
+            raise Blocked("a stale reference candidate exists (an earlier enrolment did not finish): inspect and remove it by hand, it is never reused")
         first, second = case.client.device(first_id), _second_card(case.client, other)
         problems = m40.check_ready(first, first_id) + m40.check_ready(second, other) + m40.check_distinct(first, second)
         problems += [f"{name} has no `identify` capability" for name, card in ((first_id, first), (other, second)) if "identify" not in card.get("capabilities", [])]
@@ -212,12 +250,14 @@ def test_m40_id_hardware_identity(bench_client, qual_session, pytestconfig, reco
             reference_mode = "compared with the recorded reference (not replaced)"
         elif enroll:
             try:
-                identity.write_reference(spec["reference_file"], identity.reference_document(current))
+                identity.stage_reference(spec["reference_file"], identity.reference_document(current))
+                state["staged"] = True
             except identity.ReferenceExists:
-                raise AssertionError("a reference appeared during the run: it is never overwritten") from None
+                raise AssertionError("a candidate or a reference appeared during the run: nothing is ever overwritten") from None
             except Exception as error:                      # noqa: BLE001 - nothing partial is ever a valid reference
-                raise AssertionError(f"the reference could not be recorded ({type(error).__name__}): no valid reference exists") from None
-            reference_mode = "no reference existed: recorded ONCE after every other check (atomic, 0600, outside the campaign results)"
+                raise AssertionError(f"the reference candidate could not be staged ({type(error).__name__}): no valid reference exists") from None
+            reference_mode = ("no reference existed: a CANDIDATE was staged after every other check; it becomes the reference only once the campaign "
+                              "has closed with PASS (atomic, 0600, outside the campaign results)")
         else:
             reference_mode = "no reference exists and M40-ID-ENROLL was not granted: nothing recorded, cross-session stability NOT shown"
         out.evidence.append(f"two independent identify per card agree on chip, MAC, flash_size and flash_id; {first_id} {reads[first_id][0]['digest'][:12]} != "
@@ -245,6 +285,7 @@ def test_m40_phys_b_cable_association(bench_client, qual_session, pytestconfig, 
     record_property("identity_option", str(with_identity).lower())
     token = os.environ["BENCH_CLIENT_TOKEN"]
     steps, timeline, fingerprint_rows = [], [], []
+    snapshots = {first_id: [], other: []}
     state = {"phase": "start", "error": None, "persisted": False}
     with recorded(case, "M40-PHYS-B", out, preconditions=f"{first_id} stays, the cable of {other} is unplugged and replugged by the operator"
                   + ("; one identify of B after its return" if with_identity else ""), limits=LIMITS_ID):
@@ -281,6 +322,8 @@ def test_m40_phys_b_cable_association(bench_client, qual_session, pytestconfig, 
                 while True:
                     a_events = m40.drain_events(case.client, first_id, base[first_id], epoch=epoch, fields=("seq", "kind", "generation"))
                     found = m40.drain_events(case.client, other, base[other], epoch=epoch, fields=("seq", "kind", "generation", "at"))
+                    snapshots[first_id].append(a_events)
+                    snapshots[other].append(found)
                     if any(e["kind"] in ("disconnected", "connected") for e in a_events):
                         if lost(found):                         # B had already gone: the cause of A's change cannot be attributed to the gesture
                             raise ContinuityError(f"{first_id} re-registered during the gesture on {other}: continuity lost, not attributable")
@@ -308,6 +351,7 @@ def test_m40_phys_b_cable_association(bench_client, qual_session, pytestconfig, 
                 raise ContinuityError(f"{other} did not come back under a new generation within {phys['return_timeout_s']:.0f} s: its state is unknown, nothing is replayed")
             time.sleep(phys["settle_s"])
             events_b = m40.drain_events(case.client, other, base[other], epoch=epoch, fields=("seq", "kind", "generation", "at"))
+            snapshots[other].append(events_b)
             _step(steps, case, f"{other} returned", first_id, other)
             timeline = [{"seq": e["seq"], "kind": e["kind"], "at": round(e["at"], 3) if e.get("at") else None, "generation": str(e.get("generation"))[:8]} for e in events_b]
             if with_identity:
@@ -345,6 +389,14 @@ def test_m40_phys_b_cable_association(bench_client, qual_session, pytestconfig, 
         incomplete = m40.check_complete(result)
         if incomplete:
             raise ContinuityError(f"observation of {first_id} incomplete: " + "; ".join(incomplete))
+        # explicit integrity of both event streams from their baselines, re-read AFTER the return (and the identify): never silently trusted
+        final_fields = ("seq", "kind", "generation", "at")
+        for name in (first_id, other):
+            snapshots[name].append(m40.drain_events(case.client, name, base[name], epoch=epoch, fields=final_fields))
+            stream = m40.check_event_order(snapshots[name][-1], base[name]) + m40.check_prefix_stable(snapshots[name])
+            if stream:
+                raise ContinuityError(f"event stream of {name} is not trustworthy ({'; '.join(stream)}): the association cannot be proven, nothing is replayed")
+        events_b = snapshots[other][-1]
         continuity = m40.stimulated_continuity(result)
         if continuity:
             raise ContinuityError(f"{first_id} lost its continuity during the gesture on {other} (not attributable to the gesture): " + "; ".join(continuity))
