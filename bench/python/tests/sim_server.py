@@ -1,6 +1,7 @@
 """Local test fixture. Uses only a RAM-backed agent, never browser hardware."""
 import asyncio
 import argparse
+import threading
 import json
 from pathlib import Path
 import sys
@@ -38,6 +39,8 @@ async def main():
     parser.add_argument("--grant", type=int, default=0)
     parser.add_argument("--chip", default="esp32s3", help="Chip family the RAM simulator reports (simulation only)")
     parser.add_argument("--second", action="store_true", help="Also register a second simulated card 'board2' (same family as --chip)")
+    parser.add_argument("--control", action="store_true",
+                        help="Read JSON lines on stdin: {\"device\": \"board2\", \"cmd\": \"unplug\", \"down_s\": 2} simulates the operator's cable gesture")
     parser.add_argument("--script-start", choices=["connect", "reservation"], default="connect",
                         help="When the simulated operator's script clock starts: at the agent's connection (default) or when the card "
                              "'board' first shows a reservation (the recipe under test has started and reserved it): an explicit state signal")
@@ -49,11 +52,24 @@ async def main():
     await site.start()
     url = "http://127.0.0.1:" + str(site._server.sockets[0].getsockname()[1])
     print(json.dumps({"url": url}), flush=True)
+    controls = {"board": asyncio.Queue(), "board2": asyncio.Queue()} if args.control else {}
+    if args.control:
+        loop = asyncio.get_running_loop()
+
+        def read_commands():
+            for line in sys.stdin:
+                try:
+                    command = json.loads(line)
+                    loop.call_soon_threadsafe(controls[command["device"]].put_nowait, command)
+                except (ValueError, KeyError):
+                    continue
+        threading.Thread(target=read_commands, daemon=True).start()
     started = asyncio.Event() if args.script_start == "reservation" else None
     watcher = asyncio.create_task(wait_for_reservation(url, started)) if started is not None else None
     task = asyncio.create_task(run(url, "pytest-agent-test-token", "board", grant=args.grant, script=json.loads(args.script), chip=args.chip,
-                                   script_start=started))
-    second = (asyncio.create_task(run(url, "pytest-agent2-test-token", "board2", chip=args.chip)) if args.second else None)
+                                   script_start=started, control=controls.get("board")))
+    second = (asyncio.create_task(run(url, "pytest-agent2-test-token", "board2", chip=args.chip, control=controls.get("board2")))
+              if args.second else None)
     try:
         await asyncio.Event().wait()
     finally:

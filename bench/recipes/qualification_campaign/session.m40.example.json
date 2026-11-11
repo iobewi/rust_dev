@@ -11,7 +11,7 @@
   "operator_timeout_s": 900,
   "consent": {
     "scenarios": [],
-    "note": "Template: consent stays EMPTY here. The private copy adds a scenario (M40-11, M40-12A, M40-11C, M40-4-RESET) only after the operator's explicit, dated consent to its effects; none authorises a write, an erase or a grant. M40-4 with stimulus 'reset_both' also needs --qual-allow-reset."
+    "note": "Template: consent stays EMPTY here. The private copy adds a scenario (M40-11, M40-12A, M40-11C, M40-4-RESET, M40-ID, M40-ID-ENROLL, M40-PHYS-B, M40-PHYS-B-ID) only after the operator's explicit, dated consent to its effects; none authorises a write, an erase or a grant. M40-4 with stimulus 'reset_both' also needs --qual-allow-reset."
   },
   "second_board": {
     "board_id": "esp32-zero"
@@ -58,6 +58,16 @@
           "REPLACE-a-distinctive-line-of-esp32-zero"
         ]
       }
+    },
+    "identity": {
+      "key_file": "/ABSOLUTE/PRIVATE/identity/identity.key",
+      "reference_file": "/ABSOLUTE/PRIVATE/identity/identity-reference.json",
+      "create_key": false
+    },
+    "phys_b": {
+      "disconnect_timeout_s": 120,
+      "return_timeout_s": 180,
+      "settle_s": 5
     }
   }
 }

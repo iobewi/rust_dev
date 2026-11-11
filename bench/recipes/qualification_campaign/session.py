@@ -13,7 +13,8 @@ from iobewi_bench import CampaignManifest
 CHIPS = {"esp32s3", "esp32c3"}
 TRANSPORTS = {"external_uart", "usb_serial_jtag", "native_usb_other", "unknown"}
 SCENARIOS = {"Q1", "Q2", "Q3", "C3R-READ", "C3R-RESET", "S3R-RESET", "S3R-BOOT", "S3R-READ", "R4",
-             "NUSB-READ", "NUSB-RESET", "T7", "R5", "H10", "U8", "M2", "M40-11", "M40-12A", "M40-11C", "M40-4-RESET"}
+             "NUSB-READ", "NUSB-RESET", "T7", "R5", "H10", "U8", "M2", "M40-11", "M40-12A", "M40-11C", "M40-4-RESET",
+             "M40-ID", "M40-ID-ENROLL", "M40-PHYS-B", "M40-PHYS-B-ID"}
 TOP_LEVEL = {"version", "board_id", "chip", "flash_size", "transport", "partition_table_offset",
              "approved_regions", "evidence_root", "operation_timeout_s", "operator_timeout_s",
              "consent", "q2", "q3", "readonly", "bootloader", "r4", "faults", "second_board", "lan_http", "capture", "accept_unknown_transport", "m40"}
@@ -165,7 +166,7 @@ def validate_second_board(section, cfg):
     return dict(section)
 
 
-M40_KEYS = {"read", "avoid", "sample_interval_s", "compatible_server_sha256", "known", "uart"}
+M40_KEYS = {"read", "avoid", "sample_interval_s", "compatible_server_sha256", "known", "uart", "identity", "phys_b"}
 M40_BLOCK = 1024 * 1024                       # the agent reads in blocks of at most 1 MiB: one block keeps the proof a single transfer
 
 
@@ -228,6 +229,10 @@ def validate_m40(section, cfg):
         result["known"] = validate_m40_known(section["known"], cfg)
     if "uart" in section:
         result["uart"] = validate_m40_uart(section["uart"], cfg)
+    if "identity" in section:
+        result["identity"] = validate_m40_identity(section["identity"], cfg)
+    if "phys_b" in section:
+        result["phys_b"] = validate_m40_phys_b(section["phys_b"])
     return result
 
 
@@ -252,6 +257,42 @@ def validate_m40_known(section, cfg):
     if type(timeout) not in (int, float) or isinstance(timeout, bool) or not 5 <= timeout <= 120:
         raise SessionError("m40.known.marker_timeout_s must be 5..120 seconds")
     return {**section, "marker_timeout_s": float(timeout)}
+
+
+def validate_m40_identity(section, cfg):
+    """M40-ID / M40-PHYS-B-ID: where the private identity key and the reference live. Both are absolute, distinct, and OUTSIDE the campaign
+    evidence root (a reference must survive the cleaning or rewriting of campaign results). `create_key` must be an explicit opt-in."""
+    keys = {"key_file", "reference_file", "create_key"}
+    if not isinstance(section, dict) or not {"key_file", "reference_file"} <= set(section) or set(section) - keys:
+        raise SessionError(f"m40.identity requires key_file and reference_file and accepts only {sorted(keys)}")
+    paths = {}
+    for name in ("key_file", "reference_file"):
+        value = section[name]
+        if not isinstance(value, str) or not value or not Path(value).is_absolute() or value.endswith("/"):
+            raise SessionError(f"m40.identity.{name} must be an absolute file path")
+        paths[name] = value
+    if paths["key_file"] == paths["reference_file"]:
+        raise SessionError("m40.identity: the key and the reference must be two different files")
+    root = Path(cfg["evidence_root"])
+    for name, value in paths.items():
+        if Path(value) == root or root in Path(value).parents:
+            raise SessionError(f"m40.identity.{name} must be outside the campaign evidence_root (it must survive the cleaning of campaign results)")
+    create = section.get("create_key", False)
+    if type(create) is not bool:
+        raise SessionError("m40.identity.create_key must be a boolean")
+    return {**paths, "create_key": create}
+
+
+def validate_m40_phys_b(section):
+    """M40-PHYS-B: bounded waits for the operator's cable gesture (seconds)."""
+    keys = {"disconnect_timeout_s", "return_timeout_s", "settle_s"}
+    if not isinstance(section, dict) or set(section) != keys:
+        raise SessionError(f"m40.phys_b requires exactly {sorted(keys)}")
+    for key, low, high in (("disconnect_timeout_s", 5, 900), ("return_timeout_s", 5, 900), ("settle_s", 0, 60)):
+        value = section[key]
+        if type(value) not in (int, float) or isinstance(value, bool) or not low <= value <= high:
+            raise SessionError(f"m40.phys_b.{key} must be {low}..{high} seconds")
+    return {key: float(value) for key, value in section.items()}
 
 
 def validate_m40_uart(section, cfg):
