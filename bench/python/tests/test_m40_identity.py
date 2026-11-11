@@ -1031,6 +1031,19 @@ _real_drain = drain_events
 _reads = {{}}
 
 
+def _drop_uart(events):
+    # only a UART event that is followed by another event: the lifecycle events (disconnected/connected) are never touched
+    index = next((i for i, e in enumerate(events[:-1]) if e['kind'] == 'uart'), None)
+    if index is not None:
+        del events[index]
+
+
+def _swap_uart(events):
+    index = next((i for i in range(len(events) - 1) if events[i]['kind'] == events[i + 1]['kind'] == 'uart'), None)
+    if index is not None:
+        events[index], events[index + 1] = events[index + 1], events[index]
+
+
 def drain_events(client, device_id, after, *, epoch, fields=EVENT_FIELDS):
     events = _real_drain(client, device_id, after, epoch=epoch, fields=fields)
     _reads[device_id] = _reads.get(device_id, 0) + 1
@@ -1042,9 +1055,9 @@ STREAM_ENV = {"SIM_UART_RATE": "4:8"}
 
 
 @pytest.mark.parametrize("body,fragment", [
-    ("if len(events) >= 3: del events[1]", "event gap"),
+    ("_drop_uart(events)", "event gap"),
     ("if events: events.insert(1, dict(events[0]))", "duplicate event seq"),
-    ("if len(events) >= 3: events[1], events[2] = events[2], events[1]", "reordered"),
+    ("_swap_uart(events)", "reordered"),
     ("if events: events[0] = {**events[0], 'seq': events[0]['seq'] + 1}", "event gap"),
     ("if _reads[device_id] % 2 == 0 and events: events[0] = {**events[0], 'generation': 'rewritten'}", "does not extend")])
 @pytest.mark.parametrize("device", ["board2", "board"])

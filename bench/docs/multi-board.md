@@ -1,13 +1,8 @@
 # Device Lab — contextes multicarte (issue #40)
 
-## État du chantier
+## État (v1.0.0)
 
-Le lot A (PR #41) définit l'identité d'agent navigateur liée au couple
-(session autorisée, carte logique). Le lot B (PR #42) introduit
-`BoardContexts` (registre des ressources) et `BoardManager` (cycle de vie).
-Il ne constitue pas encore une UI multicarte : les contrôles historiques
-`ui.js` restent mono-port jusqu'à leur raccordement. Les tests de la PR
-#42 sont des simulations logicielles, jamais une preuve matérielle.
+Le lot A (PR #41) définit l'identité d'agent navigateur liée au couple (session autorisée, carte logique). Le lot B (PR #42) introduit `BoardContexts` (registre des ressources) et `BoardManager` (cycle de vie). Le lot C livre l'interface : la liste permanente **Cartes actives** (nom sélectionnable, statut-bouton de déconnexion/reconnexion, **Retirer**, **Ajouter une carte**) raccordée aux zones Identification, Commandes, consoles et opérations. Les anciennes sections « Carte locale » et « USB » sont supprimées. Le parcours utilisateur est décrit dans [interface](interface.md).
 
 ## Invariants
 
@@ -47,20 +42,8 @@ Il ne constitue pas encore une UI multicarte : les contrôles historiques
   opt-in, simulations Node et Playwright avec deux ports et deux WebSockets
   dans une seule page ; isolation progressive des vues par device dans
   `ui.js`.
-- **C (à ouvrir)** : remplacer les contrôles mono-carte par la liste
-  persistante `Cartes actives`, raccorder le gestionnaire à toute la zone de
-  travail existante et qualifier les transitions de sélection/déconnexion
-  dans Playwright.
-
-Le parcours USB existant dans `ui.js` ne doit pas être supprimé avant que
-la variante multicarte ait démontré le même périmètre fonctionnel. Toute
-modification d'UX doit respecter les décisions de l'issue #40.
+- **C** : liste persistante `Cartes actives`, gestionnaire raccordé à toute la zone de travail, transitions de sélection/déconnexion qualifiées dans Playwright.
 
 ## Qualification
 
-Les tests unitaires injectent deux objets ports distincts et deux moteurs/
-agents simulés. Le test Playwright utilise un vrai serveur HTTP/WebSocket et
-une seule page Chromium, mais **aucun Web Serial matériel réel** : les ports
-et moteurs sont des objets simulés. La recette matérielle avec les deux S3
-nécessitera une validation et un accord spécifiques. Les critères v3 et les
-preuves M2 historiques ne changent pas.
+Les tests unitaires injectent deux objets ports distincts et deux moteurs/agents simulés. Les tests Playwright utilisent un vrai serveur HTTP/WebSocket et une seule page Chromium, mais **aucun Web Serial matériel** : ports et moteurs sont simulés. Les preuves matérielles à deux ESP32-S3 (recettes M40, dont M40-11c/d et M40-12a) et leurs limites sont dans [qualification-multi-board](qualification-multi-board.md) et [qualification-multi-board-complement](qualification-multi-board-complement.md). Un PASS simulé n'est jamais un PASS matériel ; les critères v3 et les preuves M2 historiques ne changent pas.
