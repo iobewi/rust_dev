@@ -399,7 +399,7 @@ def create_app(tokens, broker=None, origin=None, ui_forward_peers=()):
         revision = None
     declared = os.environ.get("BENCH_BUILD_SHA", "")
     declared = declared if len(declared) in {40, 64} and all(c in "0123456789abcdef" for c in declared) else None
-    app[BUILD] = {'version': '0.2.0', 'git_sha': revision,
+    app[BUILD] = {'version': '1.0.0', 'git_sha': revision,
         'server_sha256': source_digest(list(Path(__file__).parent.glob('*.py')) + list((PAGES.parent / 'protocol').glob('*.py'))),
         'assets_sha256': source_digest(PAGES.glob('*')),
         'source': 'observed_local_files', 'declared_build_sha': declared}
