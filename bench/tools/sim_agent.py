@@ -22,8 +22,8 @@ class SimFailure(Exception):
 
 
 class SimDevice:
-    def __init__(self, capacity=4 * 1024 * 1024, chip='esp32s3'):
-        self.chip = chip
+    def __init__(self, capacity=4 * 1024 * 1024, chip='esp32s3', device_id=''):
+        self.chip, self.device_id, self.identifies, self.unplug_down = chip, device_id, 0, 0.0
         self.flash = bytearray(b'\xff') * capacity
         for item in json.loads(os.environ.get('SIM_FLASH_PRELOAD', '[]')):          # SIMULATION ONLY: known flash content ([{address, hex}, ...])
             raw = bytes.fromhex(item['hex'])
@@ -33,6 +33,14 @@ class SimDevice:
 
     async def execute(self, name, args, download, upload):
         if name == 'identify':
+            self.identifies += 1
+            if os.environ.get('SIM_IDENTITY'):           # SIMULATION ONLY: per-card hardware identity {device: {mac, flash_id, flash_size}} (+ SIM_IDENTITY_CHANGE)
+                identity = {'mac': 'de:ad:be:ef:00:' + format(hashlib.sha256(self.device_id.encode()).digest()[0], '02x'), 'flash_id': 0x164068, 'flash_size': len(self.flash),
+                            **json.loads(os.environ['SIM_IDENTITY']).get(self.device_id, {})}
+                change = json.loads(os.environ.get('SIM_IDENTITY_CHANGE', '{}')).get(self.device_id)
+                if change and self.identifies > change['after']:
+                    identity.update({k: v for k, v in change.items() if k != 'after'})
+                return {'chip': self.chip, **identity, 'simulated': True}
             return {'chip': self.chip, 'flash_size': len(self.flash), 'simulated': True}
         if name == 'flash.write':
             images = [(i, await download(i['artifact'])) for i in args['images']]
@@ -89,7 +97,7 @@ def args_return_console(args):
     return args.get('return_console', True) is True
 
 
-async def run(url, token, device_id, grant=0, stop=None, script=(), chip='esp32s3', script_start=None):
+async def run(url, token, device_id, grant=0, stop=None, script=(), chip='esp32s3', script_start=None, control=None):
     """`script`: simulated operator gestures [(delay_s, grant_seconds)], 0 revokes. Simulation only.
 
     `script_start` (an asyncio.Event, optional): the script clock starts when it is set - an explicit state signal - instead of when the
@@ -97,19 +105,20 @@ async def run(url, token, device_id, grant=0, stop=None, script=(), chip='esp32s
 
     SIM_NATIVE=1 registers a native USB Serial/JTAG card (no io0 / boot.download); SIM_REENUMERATE=1 makes a `reset` re-enumerate the
     USB device (the agent disconnects and registers again with a new generation)."""
-    sim = SimDevice(chip=chip)
+    sim = SimDevice(chip=chip, device_id=device_id)
     async with ClientSession(headers={'Authorization': 'Bearer ' + token}) as session:
         first, connection = True, 0
         while True:
-            again = await serve(session, url, token, device_id, grant if first else 0, script, chip, sim, connection, script_start)
+            again = await serve(session, url, token, device_id, grant if first else 0, script, chip, sim, connection, script_start, control)
             first, connection = False, connection + 1
             if not again:
                 break
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(0.5 + sim.unplug_down)               # a simulated unplug keeps the card away for `unplug_down` seconds
+            sim.unplug_down = 0.0
     return sim
 
 
-async def serve(session, url, token, device_id, grant, script, chip, sim, connection=0, script_start=None):
+async def serve(session, url, token, device_id, grant, script, chip, sim, connection=0, script_start=None, control=None):
     """One agent connection. Returns True when the card re-enumerated (the caller reconnects)."""
     reenumerate = False
     async with session.ws_connect(url + '/agent/v1/ws') as ws:
@@ -174,6 +183,17 @@ async def serve(session, url, token, device_id, grant, script, chip, sim, connec
                 await asyncio.sleep(max(0, start + delay - time.monotonic()))
                 await (event('recover') if seconds == 'recover' else event('grant', seconds=seconds))
         gestures = asyncio.create_task(operator())
+
+        async def controller():
+            nonlocal reenumerate
+            while True:                                              # SIMULATES the operator's physical gestures, sent by the test harness
+                command = await control.get()
+                if command.get('cmd') == 'unplug':
+                    sim.unplug_down = float(command.get('down_s', 1))
+                    reenumerate = True
+                    await ws.close()                                 # the agent vanishes; serve() returns True and run() re-registers it later
+                    return
+        controls = asyncio.create_task(controller()) if control is not None else None
         pending = {}
 
         async def download(key):
@@ -220,7 +240,15 @@ async def serve(session, url, token, device_id, grant, script, chip, sim, connec
                         await event('mark', detail=args['label'])             # as the page agent does: an event, no hardware effect
                         result = {'label': args['label']}
                     else:
+                        if command == 'identify' and os.environ.get('SIM_IDENTIFY_EVENTS') == '1':
+                            await event('transport', detail='opening loader')
                         result = await sim.execute(command, args, download, upload)
+                        if (command == 'identify' and os.environ.get('SIM_IDENTIFY_EVENTS') == '1'
+                                and device_id not in os.environ.get('SIM_NO_CONSOLE_RETURN', '').split(',')):
+                            await event('transport', detail='console opened; opening a port may reset the MCU')
+                        spec = os.environ.get('SIM_REENUMERATE_AFTER_IDENTIFY', '')
+                        if command == 'identify' and spec.startswith(device_id + ':') and sim.identifies == int(spec.split(':')[1]):
+                            reenumerate = True                                    # SIMULATES the agent re-registering (new generation) after the n-th identify
                     if command == 'flash.read' and os.environ.get('SIM_SERIAL_FAIL_DURING_READ') == '1':
                         await asyncio.sleep(2)                    # the serial port vanishes under the read; the browser agent stays connected
                         err = RuntimeError('serial_disconnected'); err.code = 'serial_disconnected'
@@ -253,6 +281,8 @@ async def serve(session, url, token, device_id, grant, script, chip, sim, connec
                     if os.environ.get('SIM_SERIAL_FAIL_DURING_READ') == '1' and getattr(error, 'code', '') == 'serial_disconnected':
                         serial_lost = True                        # the page drops its agent shortly AFTER the result was acknowledged, then re-attaches the board
         gestures.cancel()
+        if controls:
+            controls.cancel()
         for task in tasks:
             task.cancel()
     return reenumerate
