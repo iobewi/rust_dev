@@ -35,7 +35,7 @@ Cette version ne change ni le protocole (version 1) ni le contrat des agents API
 | pytest (client, optionnel) | 8 à 9 (`python/pyproject.toml`) |
 | Node (tests) | 22+ |
 | Playwright (tests navigateur) | 1.62.1 (`package-lock.json`) |
-| Navigateur de l'opérateur | Chrome ou Edge récent (Web Serial) |
+| Navigateur de l'opérateur | Prise en charge de l'API Web Serial : Chrome ou Edge récents, Firefox Desktop 151+. Qualifié : tests Playwright sous Chromium (moteur simulé) ; essais matériels de l'issue #2 sous Firefox 159. Pas de matrice par navigateur. |
 | esptool-js (navigateur) | 0.7.0 via `unpkg.com` |
 
 ## Distribution

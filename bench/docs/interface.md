@@ -5,7 +5,7 @@ La page connecte **plusieurs cartes** dans une seule fenêtre, présente le tran
 ## Parcours minimal
 
 1. **Démarrer le serveur** (voir le README) : `BENCH_TOKENS_FILE=… python3 bench/tools/run_server.py`, puis vérifier `GET /health`.
-2. **Ouvrir l'interface** sur le PC qui possède les ports USB : `http://127.0.0.1:8080` (Chrome ou Edge). Aucun token à saisir.
+2. **Ouvrir l'interface** sur le PC qui possède les ports USB : `http://127.0.0.1:8080` (navigateur de bureau avec Web Serial : Chrome, Edge ou Firefox 151+ ; voir la qualification dans le README). Aucun token à saisir.
 3. **Ajouter une carte** : choisir son identifiant dans **Cartes actives**, cliquer **Ajouter une carte**, sélectionner le port. Répéter pour la deuxième carte.
 4. **Identifier et sélectionner** : cliquer sur le nom d'une carte ; **Identifier** (zone Identification) lit puce, flash, RDID et MAC de la carte sélectionnée.
 5. **Utiliser les commandes** : console, reset, BOOT, lecture mémoire… agissent sur la carte sélectionnée ; chaque opération prend et libère sa propre réservation.

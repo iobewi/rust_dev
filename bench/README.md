@@ -27,7 +27,8 @@ Le navigateur est l'**unique propriétaire USB** (Web Serial). Chaque carte y po
 
 ## Prérequis
 
-- **Poste de l'opérateur** : Chrome ou Edge récent (Web Serial). La page et les ports USB sont sur ce poste ; Firefox n'implémente pas Web Serial.
+- **Poste de l'opérateur** : navigateur de bureau prenant en charge Web Serial : Chrome ou Edge récents, ou Firefox Desktop 151 ou plus. La page et les ports USB sont sur ce poste. Ce sont les versions où **l'API** existe ; la **qualification effective** d'IOBEWI Device Lab est plus étroite (voir ci-dessous).
+- **Qualification par navigateur** : les tests automatisés (Playwright) s'exécutent sous Chromium avec un moteur Web Serial simulé ; les essais matériels de l'issue #2 ont utilisé Firefox 159 sur poste de bureau. Aucune matrice de qualification par navigateur et par version n'est établie pour la v1 : tout autre navigateur ou version est pris en charge par l'API mais non qualifié ici.
 - **Serveur** : Python 3.12+ et `aiohttp` (`requirements.txt`). Node 22+ seulement pour les tests.
 - **Accès Internet du navigateur** : le moteur charge `esptool-js 0.7.0` depuis `unpkg.com` (dépendance externe non embarquée).
 - **Cartes qualifiées** : ESP32-S3 (pont UART externe et USB Serial/JTAG). Voir [Restrictions et limites](#restrictions-et-limites).
