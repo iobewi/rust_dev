@@ -84,8 +84,8 @@ Les agents utilisent REST seulement pour uploader les dumps et télécharger les
 | `reset` | `{}` ; en console, EN sur pont UART ou reset interne USB Serial/JTAG 303a:1001 | Non |
 | `console` | `{}` | Non |
 | `partitions` | `address` défaut 0x8000, `return_console` | Non |
-| `flash.read` | `address`, `size`, `return_console`, `stub_digest` (booléen strict, défaut faux) ; résultat contient `artifact` et, si `stub_digest`, `stub_digests` (un état par bloc de 1 Mio : `received` + `md5`, `absent`, `partial`, `invalid`) | Non |
-| `flash.md5` | `address`, `size`, `return_console`, `loader` (`stub` par défaut, ou `rom` : chargeur ROM **sans stub**, sa seule valeur sûre est de comparer des chemins de lecture ; une session déjà ouverte dans l'autre mode est refusée) ; résultat : `md5` (32 hex), `format` (`stub-raw16` ou `rom-ascii32`), `loader` (`stub` ou `rom`, mode réellement utilisé), `ram_load_ops` (commandes de chargement mémoire écrites : 0 sans stub), `address`, `size`, `identify` (dont `loader_stub`, 0 sans stub). Lecture seule, calculée par la puce (SPI_FLASH_MD5) ; une réponse mal formée est `md5_response_invalid` | Non |
+| `flash.read` | `address`, `size`, `return_console`, `stub_digest`, `stub_variant` + `stub_sha256` (variante de stub expérimentale, voir [la variante de stub P4](p4-stub-variant.md) ; les deux ensemble, P4 seulement, lecture seule) (booléen strict, défaut faux) ; résultat contient `artifact` et, si `stub_digest`, `stub_digests` (un état par bloc de 1 Mio : `received` + `md5`, `absent`, `partial`, `invalid`) | Non |
+| `flash.md5` | `address`, `size`, `return_console`, `loader`, `stub_variant` + `stub_sha256` (comme pour `flash.read`) (`stub` par défaut, ou `rom` : chargeur ROM **sans stub**, sa seule valeur sûre est de comparer des chemins de lecture ; une session déjà ouverte dans l'autre mode est refusée) ; résultat : `md5` (32 hex), `format` (`stub-raw16` ou `rom-ascii32`), `loader` (`stub` ou `rom`, mode réellement utilisé), `ram_load_ops` (commandes de chargement mémoire écrites : 0 sans stub), `stub_identity` (stub qui a tourné : `official` ou la variante, avec les empreintes vérifiées), `address`, `size`, `identify` (dont `loader_stub`, 0 sans stub). Lecture seule, calculée par la puce (SPI_FLASH_MD5) ; une réponse mal formée est `md5_response_invalid` | Non |
 | `flash.write` | `chip`, `images` (1–16), `erase` optionnel, `return_console` | Oui + program + consentement |
 | `flash.erase` | `chip`, `return_console` | Oui + program + consentement |
 | `uart.write` | `data` base64, 1–16 384 octets | Oui |
@@ -220,3 +220,8 @@ See [reliability contracts](reliability.md) for the complete guarantees and limi
 - Durable operation views preserve their original epoch/result metadata and expose
   reconciliation_required, reconciled_at/generation, and result_sha256 where
   applicable. Journal failure is 503 journal_unavailable and fails execution closed.
+
+
+### Variante de stub expérimentale
+
+Une opération `flash.read` ou `flash.md5` portant `stub_variant` et `stub_sha256` charge, pour la durée de la session de chargeur, la variante épinglée au lieu du stub officiel. Le serveur exige en plus `allow_stub_variant: true` dans la requête de l'opération, les scopes `control` et `program`, un appareil `esp32p4` non en quarantaine, l'empreinte épinglée, et la refuse sur l'interface manuelle. Le stub officiel reste le comportement par défaut. Détails, preuves et retour arrière : [p4-stub-variant.md](p4-stub-variant.md).

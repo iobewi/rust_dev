@@ -3,7 +3,7 @@ export class HardwareError extends Error {
   constructor(code, detail = {}) { super(code); this.code = code; this.detail = detail; }
 }
 const codes = new Set(['capacity', 'console_required', 'external_uart_required', 'partition_table_invalid', 'physical_identity_changed',
-  'operator_recovery_required', 'signal_release_failed', 'serial_disconnected', 'serial_timeout', 'serial_partial_packet', 'serial_invalid_packet', 'short_flash_read', 'flash_capacity_unknown', 'md5_response_invalid', 'loader_mode_mismatch', 'rom_mode_stub_running', 'rom_flash_attach_failed', 'artifact_transfer_failed', 'artifact_integrity_failed',
+  'operator_recovery_required', 'signal_release_failed', 'serial_disconnected', 'serial_timeout', 'serial_partial_packet', 'serial_invalid_packet', 'short_flash_read', 'flash_capacity_unknown', 'md5_response_invalid', 'loader_mode_mismatch', 'stub_variant_unknown', 'stub_variant_not_allowed', 'stub_variant_sha_mismatch', 'stub_variant_chip_mismatch', 'stub_variant_file_unavailable', 'stub_variant_stub_running', 'stub_variant_start_failed', 'rom_mode_stub_running', 'rom_flash_attach_failed', 'artifact_transfer_failed', 'artifact_integrity_failed',
   'agent_disconnected', 'reservation_expired', 'trigger_not_owned', 'grant_expired', 'execution_deadline_exceeded', 'command_start_expired']);
 const phases = new Set(['prepare', 'identify', 'flash_read', 'flash_md5', 'artifact_upload', 'artifact_download', 'flash_write', 'flash_erase', 'console', 'control']);
 const kinds = new Set(['closed', 'no-response', 'partial-packet', 'invalid-packet']);
@@ -32,6 +32,13 @@ export const diagnostic = code => ({
   short_flash_read: 'Lecture flash incomplète : aucun dump partiel publié.',
   md5_response_invalid: 'La réponse MD5 de la puce est absente ou mal formée : aucune empreinte n’est retenue.',
   loader_mode_mismatch: 'Une session de chargeur est déjà ouverte dans l’autre mode (stub ou ROM) : aucune commande n’est envoyée.',
+  stub_variant_unknown: 'Variante de stub inconnue : aucune commande n’est envoyée.',
+  stub_variant_not_allowed: 'Cette commande n’est pas autorisée avec une variante de stub (lecture seule) : aucune commande n’est envoyée.',
+  stub_variant_sha_mismatch: 'L’empreinte SHA-256 de la variante de stub ne correspond pas à celle qui est épinglée : elle n’est pas chargée.',
+  stub_variant_chip_mismatch: 'La variante de stub ne s’applique pas à cette puce : elle n’est pas chargée.',
+  stub_variant_file_unavailable: 'Le fichier de la variante de stub est introuvable : elle n’est pas chargée.',
+  stub_variant_stub_running: 'Un stub tourne déjà sur la puce : la variante n’est pas chargée.',
+  stub_variant_start_failed: 'La variante de stub n’a pas répondu OHAI : réinitialiser la carte avant toute nouvelle commande.',
   rom_mode_stub_running: 'Mode ROM demandé mais un stub tourne déjà sur la puce : aucune commande n’est envoyée.',
   rom_flash_attach_failed: 'Le rattachement de la flash par la ROM (SPI_ATTACH) a échoué : aucune mesure.',
   flash_capacity_unknown: 'Identification physique : l’identifiant JEDEC lu ne correspond à aucune capacité connue (valeur brute dans le diagnostic).',

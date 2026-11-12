@@ -48,9 +48,16 @@ class SimDevice:
         """SIMULATES the agent's per-identification diagnostic (SIM_JEDEC=1) and an invalid identification at the N-th flash command (SIM_JEDEC_INVALID_AT=N).
         `args.loader == 'rom'` SIMULATES a loader session without stub (loader_stub 0); a session already open in the other mode is refused."""
         rom = args.get('loader') == 'rom'
-        mode = 'rom' if rom else 'stub'
+        variant = args.get('stub_variant')
+        mode = 'rom' if rom else ('stub:' + variant if variant else 'stub')
         if self.session_checks > 0 and getattr(self, 'session_mode', 'stub') != mode:
             raise SimFailure('loader_mode_mismatch', {'phase': 'identify', 'error_type': 'HardwareError', 'loader_stub': 0 if mode == 'stub' else 1})
+        if variant and self.session_checks == 0:
+            # SIMULATES the agent's own checks, made before the port is touched: its pinned SHA-256 and the chip
+            if args.get('stub_sha256') != os.environ.get('SIM_VARIANT_PIN', '911c86173efd9e51a12f289b4b8f1adb9046d1326b426a7ecfd9a646f8366f24'):
+                raise SimFailure('stub_variant_sha_mismatch', {'phase': 'identify', 'error_type': 'HardwareError'})
+            if os.environ.get('SIM_VARIANT_START') == 'fail':
+                raise SimFailure('stub_variant_start_failed', {'phase': 'identify', 'error_type': 'HardwareError', 'loader_stub': 0})
         if self.session_checks == 0:
             self.session_mode = mode
             if rom and os.environ.get('SIM_ROM_STUB_RUNNING') == '1':
@@ -66,6 +73,14 @@ class SimDevice:
         if args.get('return_console', True) is not False or os.environ.get('SIM_SESSION_RESET_EACH') == '1':      # SIM_SESSION_RESET_EACH: SIMULATES an agent that reopens the loader for every command
             self.session_checks = 0                                                      # the command returns to the console: the next one opens a new loader session
         return {'jedec_id': 0x1940C8, 'identify_index': index, 'loader_stub': stub_flag, 'chip_description': 'ESP32-P4 (revision v1.0)'} if os.environ.get('SIM_JEDEC') == '1' else None
+
+    @staticmethod
+    def stub_identity(args):
+        """SIMULATES the identity of the stub that ran, as the agent reports it."""
+        if args.get('stub_variant'):
+            return {'variant': args['stub_variant'], 'origin': 'experimental, uploaded by the agent', 'verified': True,
+                    'file_sha256': args['stub_sha256'], 'text_sha256': 'cc2865bba8c3984eb2a4ca64b2a1447cdf0407389da3c1825d94565a00331928', 'uart_baud': 115200}
+        return {'variant': 'official', 'origin': 'esptool-js bundled stub', 'verified': False, 'uart_baud': 460800}
 
     async def execute(self, name, args, download, upload):
         if name == 'identify':
@@ -110,14 +125,14 @@ class SimDevice:
                 rom_mode = os.environ.get('SIM_ROM_MODE', 'stable')           # stable | vary | vary_third (only the third ROM measurement differs)
                 if rom_mode == 'vary' or (rom_mode == 'vary_third' and self.rom_calls == 3):
                     truth = self.flip(truth, self.rom_calls * 53)             # SIMULATES a ROM measurement that differs from the others
-            elif mode == 'flash':
-                truth = self.flip(truth, self.md5_calls * 53)          # SIMULATES a flash that reads differently from one call to the next
+            elif mode == 'flash' and not (args.get('stub_variant') and os.environ.get('SIM_VARIANT_MODE', 'stable') == 'stable'):
+                truth = self.flip(truth, self.md5_calls * 53)          # SIMULATES a flash that reads differently from one call to the next (a variant series can stay stable)
             elif mode == 'md5cmd':
                 truth = b'not the flash content'                       # SIMULATES a chip MD5 that disagrees with everything else
             leak = rom and os.environ.get('SIM_ROM_STUB_LEAK') == '1'      # SIMULATES an agent that loaded the stub although the ROM was asked
             fmt = 'rom-ascii32' if rom and not leak else 'stub-raw16'
             return {'md5': hashlib.md5(truth).hexdigest(), 'format': fmt, 'address': args['address'], 'size': args['size'], 'simulated': True,
-                    'loader': 'rom' if rom and not leak else 'stub', 'ram_load_ops': 0 if rom and not leak else 5, **({'identify': identify} if identify else {})}
+                    'loader': 'rom' if rom and not leak else 'stub', 'ram_load_ops': 0 if rom and not leak else 5, 'stub_identity': self.stub_identity(args), **({'identify': identify} if identify else {})}
         if name == 'flash.read':
             if os.environ.get('SIM_FAIL_READ_AT') == str(args['address']):             # SIMULATES a read that fails definitively at one address
                 raise SimFailure('serial_timeout')
@@ -128,7 +143,7 @@ class SimDevice:
             data, stub_view = truth, truth                       # what the host receives / what the stub read from flash (and hashed before sending)
             if mode == 'transport':
                 data = self.flip(truth, self.reads_done * 37)    # SIMULATES a corruption between the stub and the host: the stub read the right bytes
-            elif mode == 'flash':
+            elif mode == 'flash' and not (args.get('stub_variant') and os.environ.get('SIM_VARIANT_MODE', 'stable') == 'stable'):
                 data = stub_view = self.flip(truth, self.reads_done * 37)    # SIMULATES a flash that reads differently: the stub hashed what it read
             extra = {}
             if args.get('stub_digest') is True:
@@ -143,7 +158,7 @@ class SimDevice:
                         block['length'] = 9 if state == 'partial' else 20
                     blocks.append(block)
                 extra['stub_digests'] = blocks
-            return {'artifact': await upload(data), 'address': args['address'], 'simulated': True, **({'identify': identify} if identify else {}), **extra}
+            return {'artifact': await upload(data), 'address': args['address'], 'simulated': True, 'stub_identity': self.stub_identity(args), **({'identify': identify} if identify else {}), **extra}
         if name == 'flash.erase':
             self.flash[:] = b'\xff' * len(self.flash)
             return {'erased': True, 'simulated': True}

@@ -208,6 +208,7 @@ class Broker:
     def manual(self, owner, scopes, body, local_agent=None):
         self.sweep()
         require(isinstance(body, dict) and not body.keys() - {'device', 'generation', 'command', 'args', 'ttl', 'timeout', 'allow_destructive'})
+        require(not isinstance(body.get('args'), dict) or not ({'stub_variant', 'stub_sha256'} & body['args'].keys()), 'stub_variant_not_allowed', 'No experimental stub from the manual interface', 403)
         d = self.device(body.get('device'))
         require(body.get('generation') == d['generation'], 'device_changed', 'Device changed; confirm the target again', 409)
         lease = next((x for x in self.leases.values() if x['active'] and x['device'] == d['id']), None)
@@ -282,7 +283,7 @@ class Broker:
     @checkpoint
     def submit(self, owner, scopes, body, local_agent=None):
         self.sweep()
-        require(isinstance(body, dict) and not (body.keys() - {'lease', 'command', 'args', 'ttl', 'timeout', 'allow_destructive'}))
+        require(isinstance(body, dict) and not (body.keys() - {'lease', 'command', 'args', 'ttl', 'timeout', 'allow_destructive', 'allow_stub_variant'}))
         lease = self.lease(body.get('lease'), owner)
         d = self.device(lease['device'])
         require(d['connected'], 'device_unavailable', 'Device offline', 409)
@@ -297,6 +298,10 @@ class Broker:
                     'Trigger belongs to another reservation or generation', 403)
         if requires_grant(name, args) and not local_control:
             require(d['grant_until'] > self.clock(), 'grant_required', 'Local operator grant required', 403)
+        if isinstance(args, dict) and {'stub_variant', 'stub_sha256'} & args.keys():
+            # Experimental code in the chip's RAM: explicit per-operation consent AND the programming scope, on top of the validation above.
+            require('program' in scopes, 'program_permission_required', 'Programming permission required for an experimental stub', 403)
+            require(body.get('allow_stub_variant') is True, 'stub_variant_consent_required', 'Explicit consent required for an experimental stub', 403)
         if name in PROGRAM:
             require('program' in scopes, 'program_permission_required', 'Programming permission required', 403)
             require(body.get('allow_destructive') is True, 'destructive_consent_required', 'Explicit programming consent required', 403)
@@ -329,7 +334,7 @@ class Broker:
             return None
         for op in self.operations.values():
             if op['device'] == device and op['state'] == 'queued':
-                if d['quarantined'] and op['command'] not in {'identify', 'partitions', 'flash.read', 'mark'}:
+                if d['quarantined'] and (op['command'] not in {'identify', 'partitions', 'flash.read', 'mark'} or 'stub_variant' in op['args']):
                     op['state'], op['error'] = 'cancelled', {'code': 'device_quarantined'}
                     continue
                 op['state'] = 'offered'
@@ -347,7 +352,7 @@ class Broker:
         require(op is not None, 'not_found', 'Unknown operation', 404)
         d = self.device(op['device'])
         require(d['agent'] == agent and d['generation'] == op['generation'], 'stale_agent', 'Agent generation changed', 409)
-        require(not d['quarantined'] or op['command'] in {'identify', 'partitions', 'flash.read', 'mark'},
+        require(not d['quarantined'] or op['command'] in {'identify', 'partitions', 'flash.read', 'mark'} and 'stub_variant' not in op['args'],
                 'device_quarantined', 'Device requires recovery', 409)
         require(op['state'] == 'offered', 'not_executable', 'Command no longer executable', 409)
         self.lease(op['lease'], op['owner'])

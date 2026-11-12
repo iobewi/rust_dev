@@ -15,14 +15,14 @@ CHIPS = {"esp32s3", "esp32c3"} | PC_CHIPS
 TRANSPORTS = {"external_uart", "usb_serial_jtag", "native_usb_other", "unknown"}
 SCENARIOS = {"Q1", "Q2", "Q3", "C3R-READ", "C3R-RESET", "S3R-RESET", "S3R-BOOT", "S3R-READ", "R4",
              "NUSB-READ", "NUSB-RESET", "T7", "R5", "H10", "U8", "M2", "M40-11", "M40-12A", "M40-11C", "M40-4-RESET",
-             "M40-ID", "M40-ID-ENROLL", "M40-PHYS-B", "M40-PHYS-B-ID", "PC-READ", "PC-RESET", "PC-CYCLE", "PC-BACKUP", "P4-JEDEC-READ", "P4-FLASH-INTEGRITY", "P4-FLASH-INTEGRITY-SESSION", "P4-ROM-MD5"}
+             "M40-ID", "M40-ID-ENROLL", "M40-PHYS-B", "M40-PHYS-B-ID", "PC-READ", "PC-RESET", "PC-CYCLE", "PC-BACKUP", "P4-JEDEC-READ", "P4-FLASH-INTEGRITY", "P4-FLASH-INTEGRITY-SESSION", "P4-ROM-MD5", "P4-STUB-VARIANT"}
 TOP_LEVEL = {"version", "board_id", "chip", "flash_size", "transport", "partition_table_offset",
              "approved_regions", "evidence_root", "operation_timeout_s", "operator_timeout_s",
-             "consent", "q2", "q3", "readonly", "bootloader", "r4", "faults", "second_board", "lan_http", "capture", "accept_unknown_transport", "m40", "loader", "images", "backup", "jedec", "integrity"}
+             "consent", "q2", "q3", "readonly", "bootloader", "r4", "faults", "second_board", "lan_http", "capture", "accept_unknown_transport", "m40", "loader", "images", "backup", "jedec", "integrity", "stub_variant"}
 DEFAULTS = {"operation_timeout_s": 120, "operator_timeout_s": 900, "approved_regions": [],
             "consent": {"scenarios": [], "note": ""}, "q2": {}, "q3": {},
             "readonly": {}, "bootloader": {}, "r4": {}, "faults": {}, "second_board": {}, "lan_http": {}, "capture": {}, "accept_unknown_transport": False,
-            "m40": {}, "loader": {}, "images": [], "backup": {}, "jedec": {}, "integrity": {}}
+            "m40": {}, "loader": {}, "images": [], "backup": {}, "jedec": {}, "integrity": {}, "stub_variant": {}}
 Q2_DEFAULTS = {"trigger_pattern_b64": "SU9CRVdJLVEyLU5FVkVSLVNUSU1VTEFURUQ=",  # inert, never stimulated
                "expires_ms": 120000, "reservation_ttl_s": 600}
 Q3_DEFAULTS = {"allow_restart": False, "launcher_pid_file": None, "state_dir": None, "launcher_log": None,
@@ -92,6 +92,7 @@ def validate_session(document):
     cfg["backup"] = validate_backup(cfg["backup"])
     cfg["jedec"] = validate_jedec(cfg["jedec"])
     cfg["integrity"] = validate_integrity(cfg["integrity"])
+    cfg["stub_variant"] = validate_stub_variant(cfg["stub_variant"])
     cfg["lan_http"] = validate_lan_http(cfg["lan_http"])
     cfg["capture"] = validate_capture(cfg["capture"])
     regions = cfg["approved_regions"]
@@ -148,6 +149,24 @@ def validate_integrity(section):
     digest = section.get("expected_assets_sha256")
     if digest is not None and not (isinstance(digest, str) and len(digest) == 64 and all(c in "0123456789abcdef" for c in digest)):
         raise SessionError("integrity.expected_assets_sha256 must be 64 lowercase hex characters")
+    return dict(section)
+
+
+STUB_VARIANTS = {"p4-no-clock-boost"}
+
+
+def validate_stub_variant(section):
+    """P4-STUB-VARIANT: which experimental stub, the SHA-256 the operator expects for it, the page assets digest of the reviewed agent, and optionally the MD5 the ROM
+    gave for the range (ground truth). No default: nothing is presumed about what is deployed or expected."""
+    keys = {"variant", "expected_sha256", "expected_assets_sha256", "reference_rom_md5"}
+    if not isinstance(section, dict) or section.keys() - keys:
+        raise SessionError(f"stub_variant accepts only {sorted(keys)}")
+    hexes = lambda v, n: isinstance(v, str) and len(v) == n and all(c in "0123456789abcdef" for c in v)      # noqa: E731
+    if "variant" in section and section["variant"] not in STUB_VARIANTS:
+        raise SessionError(f"stub_variant.variant must be one of {sorted(STUB_VARIANTS)}")
+    for key, size in (("expected_sha256", 64), ("expected_assets_sha256", 64), ("reference_rom_md5", 32)):
+        if key in section and not hexes(section[key], size):
+            raise SessionError(f"stub_variant.{key} must be {size} lowercase hex characters")
     return dict(section)
 
 
