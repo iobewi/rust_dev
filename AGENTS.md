@@ -108,9 +108,72 @@ survivent à une recréation du conteneur. Préserve les recettes locales histor
 et leurs preuves avant intégration ; un PASS local ne devient pas rétroactivement
 le PASS d'un nouveau commit.
 
+## Politique obligatoire de sélection des tests (L1 / L2 / L3 / H)
+
+**Choisir le périmètre avant d'exécuter pytest, npm ou une recette matérielle.**
+La simple présence de tests dans le dépôt ou dans la CI ne justifie **jamais**
+leur exécution manuelle. La qualification déjà acquise de Device Lab v1.0.0
+n'est pas rejouée à chaque modification.
+
+1. **Identifier la nature du changement** : serveur/API, navigateur/agent,
+   client/plugin Python, recette générique du banc ou recette métier d'un
+   projet consommateur. Les recettes propres à un firmware, par exemple le
+   pilote SDIO ESP32-P4 ↔ ESP32-C6, restent dans le dépôt consommateur.
+2. **L1 — ciblé** : nouveaux tests, comportements modifiés et invariants
+   directement concernés. Niveau par défaut pour une recette ou un correctif
+   localisé ; ne pas lancer automatiquement les suites non concernées.
+3. **L2 — non-régression ciblée** : L1 plus tests des consommateurs directs et
+   contrats réellement impactés lorsqu'un composant partagé change. Élargir
+   si les dépendances ne sont pas circonscrites de façon fiable, en expliquant
+   pourquoi.
+4. **L3 — validation globale** : réservée à la CI générale, aux refontes
+   transversales, aux mécanismes critiques à large impact et aux demandes
+   explicites de requalification. La CI PR peut exécuter sa sélection globale
+   automatiquement ; **ne pas reproduire cette commande manuellement par
+   habitude**, ni prétendre que L1/L2 remplacent une CI absente ou en échec.
+5. **H — qualification matérielle** : parcours distinct de L1/L2/L3, via
+   pytest → client officiel → API Device Lab → agent navigateur. Exiger les
+   réservations, scopes, consentements et grants applicables ; ne jamais
+   assimiler une simulation à une preuve matérielle. Un accord de modification
+   du code n'autorise pas à identifier, réinitialiser, programmer ou effacer
+   une carte.
+
+Avant chaque exécution, produire un **plan de tests court**, dans la session ou
+le rapport :
+
+```text
+Composant modifié :
+Nature du changement : banc / recette générique / projet consommateur
+Niveau : L1 / L2 / L3 / H
+Tests directement concernés :
+Tests de non-régression :
+Commande exacte prévue :
+Tests collectés : (pytest --collect-only lorsque pertinent)
+Tests laissés à la CI :
+Justification du périmètre :
+```
+
+Pour pytest, confirmer la sélection avec `python -m pytest <chemins précis>
+--collect-only -q` si applicable ; vérifier notamment les marqueurs et le
+nombre de tests effectivement collectés. Ne pas utiliser
+`python -m pytest python/tests recipes -m 'not slow_integration'` comme
+commande par défaut d'un développement de recette : c'est la sélection de
+la **CI PR**, non un prérequis à chaque modification locale.
+
+Les validations documentaires exigent d'abord la vérification des liens,
+chemins, instructions et contradictions ; elles ne déclenchent pas pytest
+global. Lors de l'arrêt d'une exécution, identifier ses PID et son groupe de
+processus, puis terminer **uniquement** les processus lancés pour cette
+exécution ; pas de `pkill -f` à motif large, ni d'impact sur le serveur
+Device Lab actif. Ne pas démarrer un serveur sur un port déjà occupé.
+
+Voir [la politique et les exemples pytest](bench/docs/pytest.md#sélection-des-tests-et-niveaux-de-validation).
+
 ## Software checks
 
-Use Python 3.12+ and Node 22+. In `bench`:
+Les commandes ci-dessous décrivent le **contrôle global L3** ou la CI ; elles
+ne sont **pas** la validation locale par défaut. Appliquer d'abord la politique
+L1/L2/L3/H ci-dessus. Use Python 3.12+ and Node 22+. In `bench`:
 
 ```sh
 python -m pip install -r requirements.txt -e './python[pytest]'

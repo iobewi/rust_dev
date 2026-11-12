@@ -10,6 +10,74 @@ sans dépendance d’exécution et un petit plugin pytest optionnel. Il ne poss�
 port série : le navigateur reste l’agent matériel et le serveur conserve l’exclusion,
 les scopes, les grants et la quarantaine. Aucun langage de recette supplémentaire.
 
+## Sélection des tests et niveaux de validation
+
+**Ne pas confondre le moteur pytest avec le périmètre à qualifier.** Les
+répertoires ont des responsabilités distinctes :
+
+| Emplacement | Responsabilité |
+| --- | --- |
+| `bench/tests/` | Tests internes Node.js et navigateur du banc |
+| `bench/python/tests/` | Tests internes du client Python, du plugin et de l'infrastructure |
+| `bench/recipes/` | Recettes génériques versionnées avec Device Lab |
+| Dépôt consommateur | Recettes métier propres au firmware ou au système qualifié (par exemple SDIO P4/C6) |
+
+Avant l'exécution, dresser le plan : composant modifié, nature, niveau,
+tests directs, dépendants, commande prévue, tests collectés, reste confié à
+la CI et justification. Vérifier la sélection pytest via `--collect-only`
+quand c'est pertinent. Le nombre de tests du dépôt ne détermine jamais
+à lui seul la taille de la validation.
+
+**L1 — tests ciblés** (recette nouvelle ou changement localisé) : uniquement
+les tests de la modification et de ses invariants. Exemple, depuis `bench/` :
+
+```sh
+python -m pytest python/tests/test_m40_identity.py --collect-only -q
+python -m pytest python/tests/test_m40_identity.py -q
+```
+
+Ces chemins illustrent **la sélection**, pas une instruction de relancer la
+qualification M40 pour une autre tâche. Une recette de projet consommateur est
+testée dans **son propre dépôt**, pas en collectant tous les tests de Device Lab.
+
+**L2 — non-régression ciblée** (module partagé/API) : ajouter aux tests L1
+ceux des consommateurs directs. Par exemple, si le gestionnaire de contextes
+Web Serial change, cibler ses tests Node et les tests navigateur concernés ;
+si le client Python change, cibler ses tests contractuels et les recettes
+directement dépendantes. Justifier toute extension de la sélection.
+
+**L3 — validation globale** (CI, refonte transversale, mécanisme critique ou
+requalification explicitement demandée) : la CI GitHub de PR exécute sa
+suite logicielle avec le filtre `not slow_integration` ; le lancement manuel
+du workflow couvre aussi les intégrations simulées longues. Ces commandes,
+depuis `bench/`, décrivent les deux niveaux de CI, **pas** une obligation
+de les relancer dans chaque session :
+
+```sh
+# CI PR : sélection globale rapide, automatique sur PR concernée
+python -m pytest python/tests recipes -m 'not slow_integration' -vv --durations=20 --durations-min=1
+# CI workflow_dispatch : intégration complète, demandée explicitement
+python -m pytest python/tests recipes -vv --durations=30 --durations-min=1
+```
+
+Les tests Node et Playwright sont également exécutés par la CI ; voir
+`.github/workflows/bench.yml`. Une CI non déclenchée, absente ou en échec
+doit être signalée : L1/L2 ne valent pas CI globale verte.
+
+**H — qualification matérielle**, indépendante de L1/L2/L3 : sélectionner
+une recette pytest précise et son matériel déclaré, obtenir avant toute
+commande les consentements applicables, scopes, réservations et grants
+locaux nécessaires. Seuls le navigateur et l'agent Web Serial possèdent
+le port USB. L'accès matériel passe exclusivement par l'API Device Lab.
+Un `SKIP` sans `--bench` ou un PASS simulé ne vaut pas qualification d'ESP32.
+Les campagnes historiques ne sont jamais rejouées sans motif et accord
+explicite.
+
+Pour interrompre une suite longue, relever le PID et le groupe des
+processus qu'elle a lancés ; arrêter uniquement ceux-ci, jamais un
+serveur Device Lab actif. Éviter `pkill -f` générique et ne pas ouvrir
+un serveur concurrent sur le port du banc.
+
 ## Installation et première campagne
 
 Depuis la racine du dépôt, dans l’environnement Python du projet :
@@ -121,6 +189,11 @@ recettes de chaque projet. Les assertions, paramètres de test et rapports pytes
 sont pas un filtre de secrets : ne pas y injecter des tokens ni des logs sensibles.
 
 ## Périmètre initial et validation
+
+La commande globale ci-dessous est une **illustration de validation L3**.
+Elle n'est pas requise après une recette nouvelle ou un correctif localisé :
+suivre la [sélection L1/L2/L3/H](#sélection-des-tests-et-niveaux-de-validation).
+
 
 Ce premier composant fonctionne en ligne de commande ; la page ne charge ni n’exécute
 de fichiers Python. Les interventions opérateur, la pause/reprise durable et les
