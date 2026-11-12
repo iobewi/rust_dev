@@ -85,7 +85,7 @@ Les agents utilisent REST seulement pour uploader les dumps et télécharger les
 | `console` | `{}` | Non |
 | `partitions` | `address` défaut 0x8000, `return_console` | Non |
 | `flash.read` | `address`, `size`, `return_console`, `stub_digest` (booléen strict, défaut faux) ; résultat contient `artifact` et, si `stub_digest`, `stub_digests` (un état par bloc de 1 Mio : `received` + `md5`, `absent`, `partial`, `invalid`) | Non |
-| `flash.md5` | `address`, `size`, `return_console` ; résultat : `md5` (32 hex), `format` (`stub-raw16` ou `rom-ascii32`), `address`, `size`. Lecture seule, calculée par la puce (SPI_FLASH_MD5) ; une réponse mal formée est `md5_response_invalid` | Non |
+| `flash.md5` | `address`, `size`, `return_console`, `loader` (`stub` par défaut, ou `rom` : chargeur ROM **sans stub**, sa seule valeur sûre est de comparer des chemins de lecture ; une session déjà ouverte dans l'autre mode est refusée) ; résultat : `md5` (32 hex), `format` (`stub-raw16` ou `rom-ascii32`), `loader` (`stub` ou `rom`, mode réellement utilisé), `ram_load_ops` (commandes de chargement mémoire écrites : 0 sans stub), `address`, `size`, `identify` (dont `loader_stub`, 0 sans stub). Lecture seule, calculée par la puce (SPI_FLASH_MD5) ; une réponse mal formée est `md5_response_invalid` | Non |
 | `flash.write` | `chip`, `images` (1–16), `erase` optionnel, `return_console` | Oui + program + consentement |
 | `flash.erase` | `chip`, `return_console` | Oui + program + consentement |
 | `uart.write` | `data` base64, 1–16 384 octets | Oui |
