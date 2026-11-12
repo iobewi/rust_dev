@@ -34,6 +34,7 @@ export function makeBenchTransport(Transport, ESPError, env = {}) {
       if (this._ready) return;
       this._ready = true; this._waiters = new Set(); this._closed = null; this.onEvent = this.onEvent || null;
       this.stats = { reads: 0, readMs: 0, timeouts: 0, bytesIn: 0, closes: 0 };
+      this.commandCounts = {};     // command frames (direction byte 0, header of 8 bytes) actually written, by opcode: what the host SENT, independent of any loader flag
     }
     _ev(name, detail) { if (this.onEvent) { try { this.onEvent(name, detail); } catch (e) {} } }
     _arrived(n) { this._init(); this.stats.bytesIn += n; this._firstByteAt = this._firstByteAt ?? now(); }
@@ -70,7 +71,7 @@ export function makeBenchTransport(Transport, ESPError, env = {}) {
       this._init();
       if (this._closed || !this.device?.writable) throw new SerialFault('closed', 'serial output unavailable');
       const writer = this.device.writable.getWriter();
-      try { await writer.write(this.slipWriter(data)); }
+      try { await writer.write(this.slipWriter(data)); if (data.length >= 8 && data[0] === 0) this.commandCounts[data[1]] = (this.commandCounts[data[1]] || 0) + 1; }
       catch (error) {
         if (error?.name === 'NetworkError') { this.abort('closed', 'serial write interrupted'); throw new SerialFault('closed', 'serial write interrupted'); }
         throw error;
