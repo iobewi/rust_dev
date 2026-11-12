@@ -80,11 +80,12 @@
 .app-brand h1 { margin:0; }
 .app-brand p { margin:0; font-size:0.72rem; color:var(--muted,#8793a4); }
 .active-cards { display:flex; flex-direction:column; gap:0.35rem; min-height:2rem; }
-.active-board { display:flex; align-items:center; gap:0.45rem; border:1px solid var(--border,#46505c); border-radius:0.4rem; padding:0.25rem; }
+.active-board { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,auto); grid-template-rows:auto auto; align-items:center; gap:0.2rem 0.4rem; border:1px solid var(--line); border-radius:0.4rem; padding:0.3rem; min-width:0; }
 .active-board[data-selected="true"] { border-color:var(--accent,#4c9cea); box-shadow:inset 3px 0 0 var(--accent,#4c9cea); }
-.active-board .board-name { flex:1; min-width:0; text-align:left; font-weight:600; overflow-wrap:anywhere; background:transparent; border:0; }
-.active-board .board-chip { font-size:0.7rem; opacity:0.75; }
-.active-board .board-status { font-size:0.72rem; padding:0.3rem 0.45rem; white-space:nowrap; }
+.active-board .board-name { grid-column:1; grid-row:1; width:100%; min-width:0; display:block; text-align:left; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; background:transparent; border:0; }
+.active-board .board-chip { grid-column:1; grid-row:2; min-width:0; font-size:0.7rem; opacity:0.75; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.active-board .board-status { grid-column:2; grid-row:1; justify-self:end; max-width:112px; font-size:0.72rem; padding:0.3rem 0.45rem; white-space:normal; overflow-wrap:normal; }
+.active-board .board-forget { grid-column:2; grid-row:2; justify-self:end; font-size:0.72rem; padding:0.25rem 0.45rem; }
 .active-board .board-status[data-state="connected"] { color:var(--ok,#48b78a); }
 .active-board .board-status[data-state="usb_lost"], .active-board .board-status[data-state="reconnecting"] { color:var(--warning,#e5b15e); }
 .active-board .board-status[data-state="disconnected"] { color:var(--muted,#8793a4); }
