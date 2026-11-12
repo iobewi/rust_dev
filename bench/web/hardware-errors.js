@@ -3,14 +3,14 @@ export class HardwareError extends Error {
   constructor(code, detail = {}) { super(code); this.code = code; this.detail = detail; }
 }
 const codes = new Set(['capacity', 'console_required', 'external_uart_required', 'partition_table_invalid', 'physical_identity_changed',
-  'operator_recovery_required', 'signal_release_failed', 'serial_disconnected', 'serial_timeout', 'serial_partial_packet', 'serial_invalid_packet', 'short_flash_read', 'artifact_transfer_failed', 'artifact_integrity_failed',
+  'operator_recovery_required', 'signal_release_failed', 'serial_disconnected', 'serial_timeout', 'serial_partial_packet', 'serial_invalid_packet', 'short_flash_read', 'flash_capacity_unknown', 'artifact_transfer_failed', 'artifact_integrity_failed',
   'agent_disconnected', 'reservation_expired', 'trigger_not_owned', 'grant_expired', 'execution_deadline_exceeded', 'command_start_expired']);
 const phases = new Set(['prepare', 'identify', 'flash_read', 'artifact_upload', 'artifact_download', 'flash_write', 'flash_erase', 'console', 'control']);
 const kinds = new Set(['closed', 'no-response', 'partial-packet', 'invalid-packet']);
 const types = new Set(['Error', 'ESPError', 'SerialFault', 'HardwareError', 'NetworkError', 'AbortError', 'TypeError', 'RangeError', 'SyntaxError', 'SecurityError', 'InvalidStateError']);
 const counters = ['elapsed_ms', 'received_bytes', 'expected_bytes', 'block_address', 'block_size', 'serial_reads', 'serial_bytes',
   'serial_timeouts', 'silence_limit_ms', 'last_read_ms', 'last_packet_bytes', 'execution_remaining_ms', 'lease_remaining_ms',
-  'grant_remaining_ms', 'start_remaining_ms', 'http_status'];
+  'grant_remaining_ms', 'start_remaining_ms', 'http_status', 'jedec_id', 'identify_index', 'loader_stub'];
 export function hardwareError(error, disconnected = false, details = {}) {
   const input = { ...details, ...error?.detail }, phase = phases.has(input.phase) ? input.phase : 'prepare';
   const kind = kinds.has(error?.kind) ? error.kind : kinds.has(input.transport_kind) ? input.transport_kind : null;
@@ -30,6 +30,7 @@ export const diagnostic = code => ({
   serial_partial_packet: 'Lecture série interrompue : paquet incomplet avant le délai de silence.',
   serial_invalid_packet: 'Paquet série invalide : erreur de trame SLIP.',
   short_flash_read: 'Lecture flash incomplète : aucun dump partiel publié.',
+  flash_capacity_unknown: 'Identification physique : l’identifiant JEDEC lu ne correspond à aucune capacité connue (valeur brute dans le diagnostic).',
   capacity: 'Stockage temporaire du serveur saturé ; nettoyage explicite requis.',
   artifact_transfer_failed: 'Échec du transfert d’artefact avec le serveur.',
   artifact_integrity_failed: 'Empreinte de l’artefact incorrecte.',

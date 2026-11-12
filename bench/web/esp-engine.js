@@ -12,7 +12,7 @@ export class EspEngine {
     this.native = usb.usbVendorId === 0x303a;
     this.usbSerialJtag = this.native && usb.usbProductId === 0x1001;
     this.mode = 'off'; this.reader = null; this.loader = null; this.baudrate = 115200;
-    this.flashBaud = 460800; this.hold = false; this.trigger = null; this.tail = new Uint8Array();
+    this.flashBaud = 460800; this.identityChecks = 0; this.hold = false; this.trigger = null; this.tail = new Uint8Array();
     this.trace = new Tracer(); this.busy = false; this.phase = 'prepare'; this.readProgress = {};
   }
   provenance() {
@@ -121,14 +121,19 @@ export class EspEngine {
     };
     const terminal = { clean() {}, write() {}, writeLine: () => {} };
     this.loader = new ESPLoader({ transport: this.transport, baudrate: this.flashBaud, terminal });
+    this.identityChecks = 0;   // identity re-checks made on THIS loader session (diagnostic only)
     try { this.chipDescription = await this.loader.main(); this.mode = 'loader'; }
     catch (e) { try { await this.close(); } catch { /* Preserve the original serial failure. */ } throw e; }
     return this.loader;
   }
   async identity() {
-    const l = await this.openLoader(), id = await l.readFlashId();
+    const l = await this.openLoader();
+    this.identityChecks += 1;
+    const id = await l.readFlashId();
     const code = id >>> 16 & 255;
-    if (code < 12 || code > 26) throw new Error('Unknown flash capacity');
+    // The check itself is unchanged. Only its failure now carries the raw JEDEC value read, the rank of this check in the loader
+    // session and whether the stub runs, so that a second identification that fails is explained by evidence and not by guesswork.
+    if (code < 12 || code > 26) throw new HardwareError('flash_capacity_unknown', { phase: 'identify', jedec_id: id >>> 0, identify_index: this.identityChecks, loader_stub: l.IS_STUB ? 1 : 0 });
     const chip = family(this.chipDescription.replace(/\s*\(.*$/, ''));
     return { chip, flash_size: 2 ** code, flash_id: id, mac: await l.chip.readMac(l) };
   }
@@ -279,6 +284,8 @@ export class EspEngine {
       context.check();
       this.setPhase('identify', context);
       const physical = await this.identity(), l = this.loader;
+      // Diagnostic only: the raw JEDEC id that THIS command's identification read, its rank in the loader session and whether the stub runs.
+      const identified = { jedec_id: physical.flash_id >>> 0, identify_index: this.identityChecks, loader_stub: l.IS_STUB ? 1 : 0 };
       if (command.startsWith('flash.') || command === 'partitions') {
         if (args.chip && args.chip !== physical.chip) throw new Error('Physical chip mismatch');
         if (physical.chip !== context.device.chip || physical.flash_size !== context.device.flash_size) throw new HardwareError('physical_identity_changed');
@@ -290,14 +297,14 @@ export class EspEngine {
         region(args.address ?? 0x8000, 0xc00, physical.flash_size);
         this.setPhase('flash_read', context);
         const bytes = await this.readFlash(l, args.address ?? 0x8000, 0xc00, context);
-        try { result = { partitions: partitions(bytes, physical.flash_size) }; if (!result.partitions.length) throw new Error('Empty table'); }
+        try { result = { partitions: partitions(bytes, physical.flash_size), identify: identified }; if (!result.partitions.length) throw new Error('Empty table'); }
         catch { throw new HardwareError('partition_table_invalid'); }
       } else if (command === 'flash.read') {
         region(args.address, args.size, physical.flash_size);
         this.setPhase('flash_read', context);
         const data = await this.readFlash(l, args.address, args.size, context);
         this.setPhase('artifact_upload', context);
-        result = { artifact: await context.upload(data), address: args.address };
+        result = { artifact: await context.upload(data), address: args.address, identify: identified };
       } else if (command === 'flash.write') {
         validateImages(images, physical.flash_size); context.check();
         this.setPhase('flash_write', context);

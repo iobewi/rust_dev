@@ -42,8 +42,8 @@ class Orchestrator:
         self.campaign.manifest.check_device(state)
         return state
 
-    def backup(self, board, *, address, size, filename, segment_size=4*1024*1024, timeout=600):
-        """Sequential read observations, not an atomic snapshot. No automatic retry."""
+    def backup(self, board, *, address, size, filename, segment_size=4*1024*1024, timeout=600, return_console=False):
+        """Sequential read observations, not an atomic snapshot. No automatic retry. `return_console` (default False, as before) is passed to every read."""
         if type(size) is not int or size <= 0 or type(segment_size) is not int or not 1 <= segment_size <= 16*1024*1024:
             raise ValueError('Invalid backup size or segment size')
         path = board.output_dir / filename if board.output_dir else None
@@ -58,7 +58,7 @@ class Orchestrator:
             _sync_directory(path.parent)
             for offset in range(0,size,segment_size):
                 count = min(segment_size,size-offset)
-                data = board.read_flash(address=address+offset,size=count,timeout=timeout,return_console=False)
+                data = board.read_flash(address=address+offset,size=count,timeout=timeout,return_console=return_console)
                 if len(data) != count:
                     raise BenchError('Backup segment size mismatch')
                 stream.write(data)
