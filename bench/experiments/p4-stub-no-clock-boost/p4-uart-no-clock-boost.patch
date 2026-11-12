@@ -1,0 +1,40 @@
+--- a/src/main.c
++++ b/src/main.c
+@@ -45,17 +45,28 @@
+ // DBIAS solved. Other chips, notably ESP32-S3, stay on the USB/SDIO-only clock
+ // path for now.
+ #if defined(ESP32) || defined(ESP32S2) || defined(ESP32P4) || defined(ESP32P4_REV1) || defined(ESP32S31)
+-    uint32_t rom_baudrate = stub_lib_uart_rominit_get_baudrate();
+-    if (rom_baudrate == 0) {
+-        // ROM download mode defaults to 115200 baud.
+-        rom_baudrate = 115200;
+-    }
++// EXPERIMENT (not for production): with STUB_P4_UART_NO_CLOCK_BOOST defined, the ESP32-P4 stub does not
++// run the DCDC handoff and the CPU/APB boost when the transport is UART (the behaviour of stubs up to
++// v1.0.0). USB and SDIO transports and every other chip keep the boost. Without the macro this block
++// is unchanged.
++#if defined(STUB_P4_UART_NO_CLOCK_BOOST) && (defined(ESP32P4) || defined(ESP32P4_REV1))
++#define STUB_BOOST_THIS_TRANSPORT (transport != TRANSPORT_UART)
++#else
++#define STUB_BOOST_THIS_TRANSPORT (1)
++#endif
++    if (STUB_BOOST_THIS_TRANSPORT) {
++        uint32_t rom_baudrate = stub_lib_uart_rominit_get_baudrate();
++        if (rom_baudrate == 0) {
++            // ROM download mode defaults to 115200 baud.
++            rom_baudrate = 115200;
++        }
+ 
+-    stub_lib_clock_init();
++        stub_lib_clock_init();
+ 
+-    // The boost changes the UART source clock. Reprogram the divider for the
+-    // ROM link baud, else UART logging and the OHAI/handshake are corrupted.
+-    stub_lib_uart_rominit_set_baudrate(UART_NUM_0, rom_baudrate);
++        // The boost changes the UART source clock. Reprogram the divider for the
++        // ROM link baud, else UART logging and the OHAI/handshake are corrupted.
++        stub_lib_uart_rominit_set_baudrate(UART_NUM_0, rom_baudrate);
++    }
+ #else
+     if (transport == TRANSPORT_USB_OTG || transport == TRANSPORT_USB_SERIAL_JTAG || transport == TRANSPORT_SDIO) {
+         stub_lib_clock_init();
