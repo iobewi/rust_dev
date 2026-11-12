@@ -6,7 +6,7 @@
 
 Les lectures du stub v1.2.2 sont instables sur notre P4 v3.2 (PC-7, PC-8) alors que le MD5 de la ROM est stable (PC-9). Le stub v1.2.2 diffère du v1.0.0 par un point pour le transport UART : il exécute `stub_lib_clock_init()` (bascule du cœur sur le DCDC externe, CPU de la fréquence de la ROM à 200 MHz). La variante **ne le fait pas pour le transport UART du P4** ; elle le garde pour USB et SDIO et ne change rien pour les autres puces. Le chemin de lecture ECO7 est conservé tel quel.
 
-Le patch (`p4-uart-no-clock-boost.patch`, 1 fichier, +17/−10 lignes, `src/main.c`) ajoute une garde de compilation `STUB_P4_UART_NO_CLOCK_BOOST`. **Sans la macro, le code compilé est identique à v1.2.2 (octet pour octet).**
+Le patch (`p4-uart-no-clock-boost.patch`, 1 fichier, +20/−9 lignes, `src/main.c`) ajoute une garde de compilation `STUB_P4_UART_NO_CLOCK_BOOST`. **Sans la macro, le code compilé est identique à v1.2.2 (octet pour octet).**
 
 ## 2. Reproductibilité
 
