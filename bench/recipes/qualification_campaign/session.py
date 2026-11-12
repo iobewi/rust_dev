@@ -15,14 +15,14 @@ CHIPS = {"esp32s3", "esp32c3"} | PC_CHIPS
 TRANSPORTS = {"external_uart", "usb_serial_jtag", "native_usb_other", "unknown"}
 SCENARIOS = {"Q1", "Q2", "Q3", "C3R-READ", "C3R-RESET", "S3R-RESET", "S3R-BOOT", "S3R-READ", "R4",
              "NUSB-READ", "NUSB-RESET", "T7", "R5", "H10", "U8", "M2", "M40-11", "M40-12A", "M40-11C", "M40-4-RESET",
-             "M40-ID", "M40-ID-ENROLL", "M40-PHYS-B", "M40-PHYS-B-ID", "PC-READ", "PC-RESET", "PC-CYCLE", "PC-BACKUP", "P4-JEDEC-READ", "P4-FLASH-INTEGRITY", "P4-FLASH-INTEGRITY-SESSION", "P4-ROM-MD5", "P4-STUB-VARIANT"}
+             "M40-ID", "M40-ID-ENROLL", "M40-PHYS-B", "M40-PHYS-B-ID", "PC-READ", "PC-RESET", "PC-CYCLE", "PC-BACKUP", "P4-JEDEC-READ", "P4-FLASH-INTEGRITY", "P4-FLASH-INTEGRITY-SESSION", "P4-ROM-MD5", "P4-STUB-VARIANT", "P4-QUAL-FULL"}
 TOP_LEVEL = {"version", "board_id", "chip", "flash_size", "transport", "partition_table_offset",
              "approved_regions", "evidence_root", "operation_timeout_s", "operator_timeout_s",
-             "consent", "q2", "q3", "readonly", "bootloader", "r4", "faults", "second_board", "lan_http", "capture", "accept_unknown_transport", "m40", "loader", "images", "backup", "jedec", "integrity", "stub_variant"}
+             "consent", "q2", "q3", "readonly", "bootloader", "r4", "faults", "second_board", "lan_http", "capture", "accept_unknown_transport", "m40", "loader", "images", "backup", "jedec", "integrity", "stub_variant", "qual_full"}
 DEFAULTS = {"operation_timeout_s": 120, "operator_timeout_s": 900, "approved_regions": [],
             "consent": {"scenarios": [], "note": ""}, "q2": {}, "q3": {},
             "readonly": {}, "bootloader": {}, "r4": {}, "faults": {}, "second_board": {}, "lan_http": {}, "capture": {}, "accept_unknown_transport": False,
-            "m40": {}, "loader": {}, "images": [], "backup": {}, "jedec": {}, "integrity": {}, "stub_variant": {}}
+            "m40": {}, "loader": {}, "images": [], "backup": {}, "jedec": {}, "integrity": {}, "stub_variant": {}, "qual_full": {}}
 Q2_DEFAULTS = {"trigger_pattern_b64": "SU9CRVdJLVEyLU5FVkVSLVNUSU1VTEFURUQ=",  # inert, never stimulated
                "expires_ms": 120000, "reservation_ttl_s": 600}
 Q3_DEFAULTS = {"allow_restart": False, "launcher_pid_file": None, "state_dir": None, "launcher_log": None,
@@ -93,6 +93,7 @@ def validate_session(document):
     cfg["jedec"] = validate_jedec(cfg["jedec"])
     cfg["integrity"] = validate_integrity(cfg["integrity"])
     cfg["stub_variant"] = validate_stub_variant(cfg["stub_variant"])
+    cfg["qual_full"] = validate_qual_full(cfg["qual_full"])
     cfg["lan_http"] = validate_lan_http(cfg["lan_http"])
     cfg["capture"] = validate_capture(cfg["capture"])
     regions = cfg["approved_regions"]
@@ -168,6 +169,25 @@ def validate_stub_variant(section):
         if key in section and not hexes(section[key], size):
             raise SessionError(f"stub_variant.{key} must be {size} lowercase hex characters")
     return dict(section)
+
+
+def validate_qual_full(section):
+    """P4-QUAL-FULL (phases A-D): the digest of the page assets of the reviewed agent (no default), the size of a backup segment (a multiple of 4 KiB, 1 MiB by default: one agent
+    block), the length of the local grant the operator is asked for (it must outlast the whole campaign; the server limit is 14400 s) and how long the recipe waits for its revocation."""
+    keys = {"expected_assets_sha256", "segment_size", "grant_seconds", "revoke_wait_s"}
+    if not isinstance(section, dict) or section.keys() - keys:
+        raise SessionError(f"qual_full accepts only {sorted(keys)}")
+    out = {"segment_size": 1024 * 1024, "grant_seconds": 14400, "revoke_wait_s": 600, **section}
+    digest = out.get("expected_assets_sha256")
+    if digest is not None and not (isinstance(digest, str) and len(digest) == 64 and all(c in "0123456789abcdef" for c in digest)):
+        raise SessionError("qual_full.expected_assets_sha256 must be 64 lowercase hex characters")
+    if type(out["segment_size"]) is not int or not 4096 <= out["segment_size"] <= 4 * 1024 * 1024 or out["segment_size"] % 4096:
+        raise SessionError("qual_full.segment_size must be a multiple of 4096 between 4096 and 4194304")
+    if type(out["grant_seconds"]) is not int or not 3600 <= out["grant_seconds"] <= 14400:
+        raise SessionError("qual_full.grant_seconds must be between 3600 and 14400")
+    if type(out["revoke_wait_s"]) is not int or not 0 <= out["revoke_wait_s"] <= 3600:
+        raise SessionError("qual_full.revoke_wait_s must be between 0 and 3600")
+    return out
 
 
 def validate_backup(section):

@@ -359,8 +359,8 @@ export class EspEngine {
       context.check(); this.setPhase('control', context);
       // Defense in depth: stub-variant arguments only ever reach the read commands the registry allows, whatever the server let through.
       if ((args.stub_variant !== undefined || args.stub_sha256 !== undefined) && !['flash.md5', 'flash.read'].includes(command)) throw new HardwareError('stub_variant_not_allowed');
-      // The only UART speed an agent can be asked for is 115200 (the ROM's), for the two read commands and the stub (official or variant); never with the ROM loader.
-      if (args.uart_baud !== undefined && (args.uart_baud !== 115200 || !['flash.md5', 'flash.read'].includes(command) || args.loader === 'rom')) throw new HardwareError('uart_baud_not_allowed');
+      // The only UART speed an agent can be asked for is 115200 (the ROM's), for the two read commands and flash.write, with the stub (official or variant); never with the ROM loader.
+      if (args.uart_baud !== undefined && (args.uart_baud !== 115200 || !['flash.md5', 'flash.read', 'flash.write'].includes(command) || args.loader === 'rom')) throw new HardwareError('uart_baud_not_allowed');
       if (command === 'mark') { this.event('mark', { detail: args.label }); return { label: args.label }; }
       if (command === 'trigger') {
         if (args.action === 'disarm') { this.cancelTrigger(); return { armed: false }; }
@@ -457,6 +457,7 @@ export class EspEngine {
         result = await runWrite(l, images.map(i => ({ data: i.data, addr: i.address, path: i.artifact, sha: i.sha256 })),
           { erase: args.erase === true, tracer: this.trace });
         if (!result.ok) return { ...result, hold: true };
+        result = { ...result, identify: identified, stub_identity: this.stubIdentity() };        // evidence: the JEDEC id read for THIS write and the stub / speed that ran
         if (context.live() && !context.deferCompletion) this.setHold(false);
       } else if (command === 'flash.erase') {
         this.setPhase('flash_erase', context);

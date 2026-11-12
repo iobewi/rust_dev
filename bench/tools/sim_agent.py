@@ -103,15 +103,20 @@ class SimDevice:
                     raise ValueError('bounds')
             if args.get('erase') or os.environ.get('SIM_FAULT_GLOBAL_ERASE') == '1':      # the env var SIMULATES an implicit global erase (test oracle)
                 self.flash[:] = b'\xff' * len(self.flash)
+            identify = self.jedec_view(args)                      # the strict identification of THIS write, with its rank in the loader session
+            self.writes_done = getattr(self, 'writes_done', 0) + 1
+            if os.environ.get('SIM_WRITE_FAIL_AT') == str(self.writes_done):
+                raise SimFailure('flash_write_failed', {'phase': 'flash_write', 'error_type': 'Error'})        # SIMULATES a write that fails definitively
             for i, data in images:
                 start = i['address']
                 lo, hi = start // 4096 * 4096, (start + len(data) + 4095) // 4096 * 4096
                 self.flash[lo:hi] = b'\xff' * (hi-lo)
-                self.flash[start:start+len(data)] = data
+                stored = self.flip(data, 7) if os.environ.get('SIM_WRITE_CORRUPT_AT') == str(self.writes_done) else data      # SIMULATES a write that stores other bytes
+                self.flash[start:start+len(stored)] = stored
                 if os.environ.get('SIM_FAULT_CORRUPT_WRITE') == '1' and len(images) > 1:   # SIMULATES a multi-image write that does not read back as written
                     self.flash[start] ^= 0xFF
             self.writes += 1
-            return {'written': len(images), 'simulated': True}
+            return {'written': len(images), 'simulated': True, 'stub_identity': self.stub_identity(args), **({'identify': identify} if identify else {})}
         if name == 'flash.md5':
             if os.environ.get('SIM_MD5_INVALID') == '1':
                 raise SimFailure('md5_response_invalid', {'phase': 'flash_md5'})           # SIMULATES a malformed chip answer
@@ -141,6 +146,8 @@ class SimDevice:
             self.reads_done += 1
             mode = os.environ.get('SIM_INTEGRITY', 'ok')
             data, stub_view = truth, truth                       # what the host receives / what the stub read from flash (and hashed before sending)
+            if os.environ.get('SIM_FLIP_READ_AT') == str(self.reads_done):
+                data = stub_view = self.flip(truth, 11)          # SIMULATES a single bad read (one bit) at the N-th flash.read: the stub hashed what it read
             if mode == 'transport':
                 data = self.flip(truth, self.reads_done * 37)    # SIMULATES a corruption between the stub and the host: the stub read the right bytes
             elif mode == 'flash' and not (args.get('stub_variant') and os.environ.get('SIM_VARIANT_MODE', 'stable') == 'stable'):

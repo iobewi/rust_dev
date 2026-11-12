@@ -204,8 +204,8 @@ test('the variant is at 115200 whether or not the argument is given, and no othe
 
 const V_ARGS = { stub_variant: NAME, stub_sha256: ENTRY.sha256 };
 
-test('uart_baud is for the two reads only and never with the ROM loader', async () => {
-  for (const command of ['flash.write', 'flash.erase', 'partitions', 'identify', 'console', 'reset', 'mark']) {
+test('uart_baud is for the two reads and flash.write only, and never with the ROM loader', async () => {
+  for (const command of ['flash.erase', 'partitions', 'identify', 'console', 'reset', 'mark']) {
     const x = setup();
     await assert.rejects(x.engine.execute(command, { uart_baud: 115200, images: [], chip: 'esp32p4' }, x.context), e => code(e) === 'uart_baud_not_allowed', command);
     untouched(x);
@@ -222,4 +222,14 @@ test('the speed is part of the session: a session opened at one speed is never r
   const fast = setup(); await md5(fast, { address: 0x2000, size: 4096, return_console: false });
   await assert.rejects(md5(fast, { address: 0x2000, size: 4096, return_console: false, uart_baud: 115200 }), e => code(e) === 'loader_mode_mismatch');
   assert.equal(fast.log.constructed.length, 1);
+});
+
+test('flash.write accepts uart_baud 115200 (the official stub then runs at 115200) and still refuses any other speed before the port is touched', async () => {
+  const x = setup();
+  await assert.rejects(x.engine.execute('flash.write', { uart_baud: 460800, images: [], chip: 'esp32p4' }, x.context), e => code(e) === 'uart_baud_not_allowed'); untouched(x);
+  // the guard lets 115200 through: the session is opened at 115200 (the double has no write support, so the command fails later, after that)
+  const y = setup();
+  x.context.download = async () => new Uint8Array(4096);
+  await y.engine.execute('flash.write', { uart_baud: 115200, chip: 'esp32p4', images: [] }, { ...y.context, download: async () => new Uint8Array(4096) }).catch(() => {});
+  assert.deepEqual(y.log.constructed, [{ baudrate: 115200 }]);
 });

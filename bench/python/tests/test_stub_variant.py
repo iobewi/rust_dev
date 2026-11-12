@@ -103,7 +103,18 @@ def test_uart_baud_accepts_only_115200_for_the_two_reads_and_the_default_is_unch
         validate_command("flash.md5", {**base, "uart_baud": 115200, "loader": "rom"}, DEVICE, {})
 
 
-@pytest.mark.parametrize("command", ["flash.write", "flash.erase", "partitions", "identify", "console", "uart.write", "mark", "reset"])
+def test_uart_baud_is_accepted_on_flash_write_only_with_115200():
+    sha = "ab" * 32
+    artifacts = {"a" * 32: {"sha256": sha, "size": 4096}}
+    base = {"chip": "esp32p4", "images": [{"artifact": "a" * 32, "address": 0x800000, "sha256": sha}]}
+    validate_command("flash.write", base, DEVICE, artifacts)                                            # default unchanged
+    validate_command("flash.write", {**base, "uart_baud": 115200, "return_console": True}, DEVICE, artifacts)
+    for bad in (460800, "115200", True, 0, None):
+        with pytest.raises(Fault):
+            validate_command("flash.write", {**base, "uart_baud": bad}, DEVICE, artifacts)
+
+
+@pytest.mark.parametrize("command", ["flash.erase", "partitions", "identify", "console", "uart.write", "mark", "reset"])
 def test_uart_baud_exists_on_no_other_command(command):
     with pytest.raises(Fault):
         validate_command(command, {"uart_baud": 115200}, DEVICE, {})
