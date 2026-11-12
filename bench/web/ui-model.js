@@ -20,3 +20,9 @@ export function requireTarget(lease, selected) {
   if (selected !== lease.device) throw new Error('La carte sélectionnée diffère de la carte réservée');
   return lease;
 }
+
+// Presentation-only fallback: server identity may outlive the local Web Serial attachment.
+// This must never be used to authorize hardware reconnects or validate a physical device.
+export function displayChip(localIdentity, serverDevice) {
+  return localIdentity?.chip || serverDevice?.chip || 'MCU inconnu';
+}
