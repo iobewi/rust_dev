@@ -31,7 +31,35 @@ export class EspEngine {
       serial_timeouts: Math.max(0, (stats.timeouts || 0) - (base.timeouts || 0)), ...this.lastRead };
   }
   setPhase(phase, context) { this.phase = phase; context.report?.(this.diagnostics()); }
-  async readFlash(loader, address, size, context) {
+  // After the data of a READ_FLASH, the stub sends one more frame: the MD5 of the bytes it read from flash, computed before they were sent.
+  // esptool-js 0.7.0 never reads it (the next command flushes the input). With `digests` given, read it here, no new command: the bytes
+  // were already sent. The state is reported as observed: received, absent (timeout), partial, invalid. A closed port is NOT classified: it
+  // is a disconnection and propagates.
+  async trailingDigest(loader) {
+    let frame;
+    try { frame = await loader.transport.read(3000); }
+    catch (e) {
+      if (e?.kind === 'no-response') return { state: 'absent' };
+      if (e?.kind === 'partial-packet') return { state: 'partial' };
+      if (e?.kind === 'invalid-packet') return { state: 'invalid' };
+      throw e;
+    }
+    if (!(frame instanceof Uint8Array)) return { state: 'invalid', length: 0 };
+    if (frame.length !== 16) return { state: frame.length < 16 ? 'partial' : 'invalid', length: frame.length };
+    return { state: 'received', md5: Array.from(frame, b => b.toString(16).padStart(2, '0')).join('') };
+  }
+  // MD5 of a flash range computed by the chip itself (SPI_FLASH_MD5, 0x13), through the existing esptool-js primitive. The answer is checked, never
+  // defaulted: a stub answers 16 raw bytes (32 hex characters), the ROM 32 ASCII characters (esptool-js returns their hex, 64 characters).
+  async chipMd5(loader, address, size) {
+    const hex = await loader.flashMd5sum(address, size);
+    if (loader.IS_STUB) {
+      if (typeof hex === 'string' && /^[0-9a-f]{32}$/.test(hex)) return { md5: hex, format: 'stub-raw16' };
+    } else if (typeof hex === 'string' && /^(?:3[0-9]|6[1-6]){32}$/.test(hex)) {
+      return { md5: hex.match(/../g).map(h => String.fromCharCode(parseInt(h, 16))).join(''), format: 'rom-ascii32' };
+    }
+    throw new HardwareError('md5_response_invalid', { phase: 'flash_md5' });
+  }
+  async readFlash(loader, address, size, context, digests = null) {
     // Keep esptool-js's cumulative append limited to 1 MiB per command. No retry:
     // every block is read once and only a complete region becomes an artifact.
     const data = new Uint8Array(size), blockLimit = 1024 * 1024;
@@ -53,6 +81,12 @@ export class EspEngine {
       });
       if (!(block instanceof Uint8Array) || block.length !== blockSize) throw new HardwareError('short_flash_read');
       data.set(block, offset); this.readProgress.received_bytes = offset + blockSize;
+      if (digests) {
+        // After a digest that is not `received` the byte stream is no longer known to be aligned on frames (a late or truncated frame may still arrive):
+        // the data keeps being read as before, but no further frame is read or interpreted. The remaining blocks are reported as not attempted.
+        const broken = digests.some(d => d.state !== 'received');
+        digests.push({ block_address: address + offset, block_size: blockSize, ...(broken ? { state: 'not_attempted' } : await this.trailingDigest(loader)) });
+      }
       context.report?.(this.diagnostics()); check();
     }
     return data;
@@ -64,7 +98,7 @@ export class EspEngine {
     this.triggerGeneration = (this.triggerGeneration || 0) + 1;
   }
   capabilities() {
-    const caps = ['identify', 'partitions', 'flash.read', 'flash.write', 'flash.erase', 'uart.write', 'uart.configure', 'console', 'mark', 'trigger', 'http.request'];
+    const caps = ['identify', 'partitions', 'flash.read', 'flash.md5', 'flash.write', 'flash.erase', 'uart.write', 'uart.configure', 'console', 'mark', 'trigger', 'http.request'];
     if (!this.native) return [...caps, 'reset', 'io0', 'boot.download'];
     return this.usbSerialJtag ? [...caps, 'reset'] : caps;
   }
@@ -285,7 +319,8 @@ export class EspEngine {
       this.setPhase('identify', context);
       const physical = await this.identity(), l = this.loader;
       // Diagnostic only: the raw JEDEC id that THIS command's identification read, its rank in the loader session and whether the stub runs.
-      const identified = { jedec_id: physical.flash_id >>> 0, identify_index: this.identityChecks, loader_stub: l.IS_STUB ? 1 : 0 };
+      const identified = { jedec_id: physical.flash_id >>> 0, identify_index: this.identityChecks, loader_stub: l.IS_STUB ? 1 : 0,
+        chip_description: String(this.chipDescription || '').slice(0, 64) };
       if (command.startsWith('flash.') || command === 'partitions') {
         if (args.chip && args.chip !== physical.chip) throw new Error('Physical chip mismatch');
         if (physical.chip !== context.device.chip || physical.flash_size !== context.device.flash_size) throw new HardwareError('physical_identity_changed');
@@ -302,9 +337,14 @@ export class EspEngine {
       } else if (command === 'flash.read') {
         region(args.address, args.size, physical.flash_size);
         this.setPhase('flash_read', context);
-        const data = await this.readFlash(l, args.address, args.size, context);
+        const digests = args.stub_digest === true ? [] : null;
+        const data = await this.readFlash(l, args.address, args.size, context, digests);
         this.setPhase('artifact_upload', context);
-        result = { artifact: await context.upload(data), address: args.address, identify: identified };
+        result = { artifact: await context.upload(data), address: args.address, identify: identified, ...(digests ? { stub_digests: digests } : {}) };
+      } else if (command === 'flash.md5') {
+        region(args.address, args.size, physical.flash_size);
+        this.setPhase('flash_md5', context);
+        result = { ...(await this.chipMd5(l, args.address, args.size)), address: args.address, size: args.size, identify: identified };
       } else if (command === 'flash.write') {
         validateImages(images, physical.flash_size); context.check();
         this.setPhase('flash_write', context);

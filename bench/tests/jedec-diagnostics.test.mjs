@@ -97,8 +97,8 @@ test('a new loader session restarts the rank', async () => {
 test('a successful flash.read reports the raw JEDEC id of its own identification, and the check stays strict', async () => {
   const x = setup([P4_JEDEC, P4_JEDEC]);
   const first = await read(x), second = await read(x);
-  assert.deepEqual(first.identify, { jedec_id: P4_JEDEC, identify_index: 1, loader_stub: 1 });
-  assert.deepEqual(second.identify, { jedec_id: P4_JEDEC, identify_index: 2, loader_stub: 1 });
+  assert.deepEqual(first.identify, { jedec_id: P4_JEDEC, identify_index: 1, loader_stub: 1, chip_description: 'ESP32-P4 (revision v1.0)' });
+  assert.deepEqual(second.identify, { jedec_id: P4_JEDEC, identify_index: 2, loader_stub: 1, chip_description: 'ESP32-P4 (revision v1.0)' });
   assert.equal(first.artifact.size, 4096);
   assert.equal(x.calls.readFlashId, 2, 'the id is still read again for every command');
 });
@@ -107,6 +107,6 @@ test('a successful partitions command also reports the JEDEC id read for it', as
   const x = setup([P4_JEDEC]);
   x.loader.readFlash = async (_a, size) => { const b = new Uint8Array(size).fill(0xFF); b.set([0xAA, 0x50, 0, 2, 0, 0x10, 0, 0, 0, 0x10, 0, 0], 0); b.set(new TextEncoder().encode('nvs'), 12); return b; };
   const result = await x.engine.execute('partitions', { address: 0x8000, return_console: false }, x.context);
-  assert.deepEqual(result.identify, { jedec_id: P4_JEDEC, identify_index: 1, loader_stub: 1 });
+  assert.deepEqual(result.identify, { jedec_id: P4_JEDEC, identify_index: 1, loader_stub: 1, chip_description: 'ESP32-P4 (revision v1.0)' });
   assert.equal(result.partitions.length, 1);
 });

@@ -10,7 +10,7 @@ import struct
 import time
 from aiohttp import ClientSession, ClientTimeout
 
-CAPS = ['identify', 'reset', 'partitions', 'flash.read', 'flash.write', 'flash.erase',
+CAPS = ['identify', 'reset', 'partitions', 'flash.read', 'flash.md5', 'flash.write', 'flash.erase',
         'uart.write', 'uart.configure', 'console', 'io0', 'boot.download', 'mark', 'trigger', 'http.request']
 NATIVE_CAPS = [c for c in CAPS if c not in {'io0', 'boot.download'}]     # a native USB Serial/JTAG card offers neither (SIM_NATIVE=1)
 
@@ -34,7 +34,15 @@ class SimDevice:
             self.flash[item['address']:item['address'] + len(raw)] = raw
         self.writes = 0
         self.trigger, self.trigger_id, self.dropped = None, 0, False
+        self.reads_done, self.md5_calls = 0, 0
         self.session_checks, self.flash_commands = 0, 0       # SIMULATION ONLY: identifications made in the current loader session / flash commands seen
+
+    @staticmethod
+    def flip(data, position):
+        """SIMULATION ONLY: the same bytes with one bit cleared at a position that depends on `position`."""
+        raw = bytearray(data)
+        raw[position % len(raw)] ^= 0x80
+        return bytes(raw)
 
     def jedec_view(self, args):
         """SIMULATES the agent's per-identification diagnostic (SIM_JEDEC=1) and an invalid identification at the N-th flash command (SIM_JEDEC_INVALID_AT=N)."""
@@ -43,9 +51,9 @@ class SimDevice:
         index = self.session_checks
         if os.environ.get('SIM_JEDEC_INVALID_AT') == str(self.flash_commands):          # the loader stays open after a failed identification
             raise SimFailure('flash_capacity_unknown', {'phase': 'identify', 'error_type': 'HardwareError', 'jedec_id': 0, 'identify_index': index, 'loader_stub': 1})
-        if args.get('return_console', True) is not False:
+        if args.get('return_console', True) is not False or os.environ.get('SIM_SESSION_RESET_EACH') == '1':      # SIM_SESSION_RESET_EACH: SIMULATES an agent that reopens the loader for every command
             self.session_checks = 0                                                      # the command returns to the console: the next one opens a new loader session
-        return {'jedec_id': 0x1940C8, 'identify_index': index, 'loader_stub': 1} if os.environ.get('SIM_JEDEC') == '1' else None
+        return {'jedec_id': 0x1940C8, 'identify_index': index, 'loader_stub': 1, 'chip_description': 'ESP32-P4 (revision v1.0)'} if os.environ.get('SIM_JEDEC') == '1' else None
 
     async def execute(self, name, args, download, upload):
         if name == 'identify':
@@ -77,12 +85,45 @@ class SimDevice:
                     self.flash[start] ^= 0xFF
             self.writes += 1
             return {'written': len(images), 'simulated': True}
+        if name == 'flash.md5':
+            if os.environ.get('SIM_MD5_INVALID') == '1':
+                raise SimFailure('md5_response_invalid', {'phase': 'flash_md5'})           # SIMULATES a malformed chip answer
+            identify = self.jedec_view(args)
+            self.md5_calls += 1
+            truth = bytes(self.flash[args['address']:args['address'] + args['size']])
+            mode = os.environ.get('SIM_INTEGRITY', 'ok')
+            if mode == 'flash':
+                truth = self.flip(truth, self.md5_calls * 53)          # SIMULATES a flash that reads differently from one call to the next
+            elif mode == 'md5cmd':
+                truth = b'not the flash content'                       # SIMULATES a chip MD5 that disagrees with everything else
+            return {'md5': hashlib.md5(truth).hexdigest(), 'format': 'stub-raw16', 'address': args['address'], 'size': args['size'], 'simulated': True,
+                    **({'identify': identify} if identify else {})}
         if name == 'flash.read':
             if os.environ.get('SIM_FAIL_READ_AT') == str(args['address']):             # SIMULATES a read that fails definitively at one address
                 raise SimFailure('serial_timeout')
             identify = self.jedec_view(args)
-            data = bytes(self.flash[args['address']:args['address']+args['size']])
-            return {'artifact': await upload(data), 'address': args['address'], 'simulated': True, **({'identify': identify} if identify else {})}
+            truth = bytes(self.flash[args['address']:args['address']+args['size']])
+            self.reads_done += 1
+            mode = os.environ.get('SIM_INTEGRITY', 'ok')
+            data, stub_view = truth, truth                       # what the host receives / what the stub read from flash (and hashed before sending)
+            if mode == 'transport':
+                data = self.flip(truth, self.reads_done * 37)    # SIMULATES a corruption between the stub and the host: the stub read the right bytes
+            elif mode == 'flash':
+                data = stub_view = self.flip(truth, self.reads_done * 37)    # SIMULATES a flash that reads differently: the stub hashed what it read
+            extra = {}
+            if args.get('stub_digest') is True:
+                state = os.environ.get('SIM_STUB_DIGEST_STATE', 'received')
+                blocks = []
+                for offset in range(0, args['size'], 1024 * 1024):
+                    size = min(1024 * 1024, args['size'] - offset)
+                    block = {'block_address': args['address'] + offset, 'block_size': size, 'state': state}
+                    if state == 'received':
+                        block['md5'] = hashlib.md5(stub_view[offset:offset + size]).hexdigest()
+                    elif state in ('partial', 'invalid'):
+                        block['length'] = 9 if state == 'partial' else 20
+                    blocks.append(block)
+                extra['stub_digests'] = blocks
+            return {'artifact': await upload(data), 'address': args['address'], 'simulated': True, **({'identify': identify} if identify else {}), **extra}
         if name == 'flash.erase':
             self.flash[:] = b'\xff' * len(self.flash)
             return {'erased': True, 'simulated': True}
@@ -294,7 +335,7 @@ async def serve(session, url, token, device_id, grant, script, chip, sim, connec
                         await emit_uart(('SIM download mode\r\nESP-ROM:%s-sim\r\nSIM-DOWNLOAD-MODE\r\n' % chip).encode())
                     elif command == 'uart.write':
                         await emit_uart(base64.b64decode(args['data']))
-                    if command == 'flash.read' and args_return_console(args) and os.environ.get('SIM_CONSOLE_EVENT') == '1':
+                    if command in ('flash.read', 'flash.md5') and args_return_console(args) and os.environ.get('SIM_CONSOLE_EVENT') == '1':
                         await event('transport', detail='console opened')
                     await ws.send_json({'type': 'result', 'id': op['id'], 'state': 'completed', 'result': result})
                 except Exception as error:

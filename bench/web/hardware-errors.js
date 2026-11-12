@@ -3,9 +3,9 @@ export class HardwareError extends Error {
   constructor(code, detail = {}) { super(code); this.code = code; this.detail = detail; }
 }
 const codes = new Set(['capacity', 'console_required', 'external_uart_required', 'partition_table_invalid', 'physical_identity_changed',
-  'operator_recovery_required', 'signal_release_failed', 'serial_disconnected', 'serial_timeout', 'serial_partial_packet', 'serial_invalid_packet', 'short_flash_read', 'flash_capacity_unknown', 'artifact_transfer_failed', 'artifact_integrity_failed',
+  'operator_recovery_required', 'signal_release_failed', 'serial_disconnected', 'serial_timeout', 'serial_partial_packet', 'serial_invalid_packet', 'short_flash_read', 'flash_capacity_unknown', 'md5_response_invalid', 'artifact_transfer_failed', 'artifact_integrity_failed',
   'agent_disconnected', 'reservation_expired', 'trigger_not_owned', 'grant_expired', 'execution_deadline_exceeded', 'command_start_expired']);
-const phases = new Set(['prepare', 'identify', 'flash_read', 'artifact_upload', 'artifact_download', 'flash_write', 'flash_erase', 'console', 'control']);
+const phases = new Set(['prepare', 'identify', 'flash_read', 'flash_md5', 'artifact_upload', 'artifact_download', 'flash_write', 'flash_erase', 'console', 'control']);
 const kinds = new Set(['closed', 'no-response', 'partial-packet', 'invalid-packet']);
 const types = new Set(['Error', 'ESPError', 'SerialFault', 'HardwareError', 'NetworkError', 'AbortError', 'TypeError', 'RangeError', 'SyntaxError', 'SecurityError', 'InvalidStateError']);
 const counters = ['elapsed_ms', 'received_bytes', 'expected_bytes', 'block_address', 'block_size', 'serial_reads', 'serial_bytes',
@@ -30,6 +30,7 @@ export const diagnostic = code => ({
   serial_partial_packet: 'Lecture série interrompue : paquet incomplet avant le délai de silence.',
   serial_invalid_packet: 'Paquet série invalide : erreur de trame SLIP.',
   short_flash_read: 'Lecture flash incomplète : aucun dump partiel publié.',
+  md5_response_invalid: 'La réponse MD5 de la puce est absente ou mal formée : aucune empreinte n’est retenue.',
   flash_capacity_unknown: 'Identification physique : l’identifiant JEDEC lu ne correspond à aucune capacité connue (valeur brute dans le diagnostic).',
   capacity: 'Stockage temporaire du serveur saturé ; nettoyage explicite requis.',
   artifact_transfer_failed: 'Échec du transfert d’artefact avec le serveur.',
@@ -50,5 +51,5 @@ export const diagnostic = code => ({
   hardware_command_failed: 'Échec de la commande matérielle. Consultez le journal de l’agent.',
 }[code] || code);
 export const phaseLabel = phase => ({ prepare: 'Préparation', identify: 'Identification', flash_read: 'Lecture flash',
-  artifact_upload: 'Envoi du dump au serveur', artifact_download: 'Réception du binaire', flash_write: 'Programmation',
+  flash_md5: 'Calcul MD5 par la puce', artifact_upload: 'Envoi du dump au serveur', artifact_download: 'Réception du binaire', flash_write: 'Programmation',
   flash_erase: 'Effacement', console: 'Console', control: 'Commande de contrôle' }[phase] || 'Préparation');
