@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "board_id": "esp32-local",
+  "chip": "esp32p4",
+  "flash_size": 33554432,
+  "transport": "external_uart",
+  "partition_table_offset": null,
+  "approved_regions": [],
+  "images": [],
+  "evidence_root": "/ABSOLUTE/PERSISTENT/outside-git/qualification-evidence",
+  "operation_timeout_s": 120,
+  "operator_timeout_s": 900,
+  "loader": {
+    "entry": "auto"
+  },
+  "readonly": {
+    "table_candidates": [],
+    "reads": []
+  },
+  "consent": {
+    "scenarios": [],
+    "note": "Template: consent stays EMPTY here. The private copy adds PC-READ (loader entry may restart the card), PC-RESET (explicit reset, also needs --qual-allow-reset) or PC-CYCLE (writes: also needs --bench-allow-destructive, approved_regions, images, a local grant) only after the operator's explicit, dated consent to its effects. Fill approved_regions and images from the reviewed firmware layout; nothing is approved by default. The P4 bridge (CH343) loader entry is the agent's automatic DTR/RTS sequence, an inference from the USB IDs, not a measurement."
+  }
+}

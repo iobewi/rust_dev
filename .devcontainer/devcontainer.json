@@ -8,7 +8,8 @@
     "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind",
     "mounts": [
         "source=iobewi-claude-state,target=/root/.claude,type=volume",
-        "source=iobewi-bench-state,target=/root/.local/state/iobewi-bench,type=volume"
+        "source=iobewi-bench-state,target=/root/.local/state/iobewi-bench,type=volume",
+        "source=iobewi-qualification-evidence,target=/root/qualification-evidence,type=volume"
     ],
     "forwardPorts": [
         8080

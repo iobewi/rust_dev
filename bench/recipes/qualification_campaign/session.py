@@ -10,18 +10,19 @@ from pathlib import Path
 
 from iobewi_bench import CampaignManifest
 
-CHIPS = {"esp32s3", "esp32c3"}
+PC_CHIPS = {"esp32p4", "esp32c6"}          # G1: qualified generically by the P4/C6 recipes (test_pc_*.py)
+CHIPS = {"esp32s3", "esp32c3"} | PC_CHIPS
 TRANSPORTS = {"external_uart", "usb_serial_jtag", "native_usb_other", "unknown"}
 SCENARIOS = {"Q1", "Q2", "Q3", "C3R-READ", "C3R-RESET", "S3R-RESET", "S3R-BOOT", "S3R-READ", "R4",
              "NUSB-READ", "NUSB-RESET", "T7", "R5", "H10", "U8", "M2", "M40-11", "M40-12A", "M40-11C", "M40-4-RESET",
-             "M40-ID", "M40-ID-ENROLL", "M40-PHYS-B", "M40-PHYS-B-ID"}
+             "M40-ID", "M40-ID-ENROLL", "M40-PHYS-B", "M40-PHYS-B-ID", "PC-READ", "PC-RESET", "PC-CYCLE"}
 TOP_LEVEL = {"version", "board_id", "chip", "flash_size", "transport", "partition_table_offset",
              "approved_regions", "evidence_root", "operation_timeout_s", "operator_timeout_s",
-             "consent", "q2", "q3", "readonly", "bootloader", "r4", "faults", "second_board", "lan_http", "capture", "accept_unknown_transport", "m40"}
+             "consent", "q2", "q3", "readonly", "bootloader", "r4", "faults", "second_board", "lan_http", "capture", "accept_unknown_transport", "m40", "loader", "images"}
 DEFAULTS = {"operation_timeout_s": 120, "operator_timeout_s": 900, "approved_regions": [],
             "consent": {"scenarios": [], "note": ""}, "q2": {}, "q3": {},
             "readonly": {}, "bootloader": {}, "r4": {}, "faults": {}, "second_board": {}, "lan_http": {}, "capture": {}, "accept_unknown_transport": False,
-            "m40": {}}
+            "m40": {}, "loader": {}, "images": []}
 Q2_DEFAULTS = {"trigger_pattern_b64": "SU9CRVdJLVEyLU5FVkVSLVNUSU1VTEFURUQ=",  # inert, never stimulated
                "expires_ms": 120000, "reservation_ttl_s": 600}
 Q3_DEFAULTS = {"allow_restart": False, "launcher_pid_file": None, "state_dir": None, "launcher_log": None,
@@ -30,6 +31,10 @@ READONLY_KEYS = {"table_candidates", "reads", "reset"}
 RESET_KEYS = {"marker", "marker_timeout_s", "reconnect_timeout_s"}
 BOOTLOADER_KEYS = {"marker", "hold_ms", "marker_timeout_s"}
 R4_KEYS = {"owned_partitions", "control_windows"}
+
+
+LOADER_KEYS = {"entry", "download_marker", "marker_timeout_s"}
+IMAGE_KEYS = {"label", "path", "sha256", "address"}
 
 
 class SessionError(ValueError):
@@ -83,6 +88,7 @@ def validate_session(document):
     cfg["faults"] = validate_faults(cfg["faults"], cfg)
     cfg["second_board"] = validate_second_board(cfg["second_board"], cfg)
     cfg["m40"] = validate_m40(cfg["m40"], cfg)
+    cfg["loader"] = validate_loader(cfg["loader"])
     cfg["lan_http"] = validate_lan_http(cfg["lan_http"])
     cfg["capture"] = validate_capture(cfg["capture"])
     regions = cfg["approved_regions"]
@@ -93,7 +99,56 @@ def validate_session(document):
             raise SessionError("A region needs exactly address and size")
         if region["address"] + region["size"] > cfg["flash_size"]:
             raise SessionError("Approved region exceeds the declared flash size")
+    cfg["images"] = validate_images(cfg["images"], cfg)
     return cfg
+
+
+def validate_loader(section):
+    """P4/C6 (G1): how the ROM loader is entered. `auto` = the agent's own DTR/RTS sequence (a wiring inference, never a measurement).
+    `manual` = the operator holds the download strap (C6: GPIO9 to GND, then resets the chip); the recipe then waits for the ROM's
+    download-mode banner on the UART. The banner has NO default: it must be fixed from the ROM documentation BEFORE a run."""
+    if not isinstance(section, dict) or section.keys() - LOADER_KEYS:
+        raise SessionError(f"loader accepts only {sorted(LOADER_KEYS)}")
+    out = {"entry": "auto", "marker_timeout_s": 120, **section}
+    if out["entry"] not in ("auto", "manual"):
+        raise SessionError("loader.entry must be 'auto' or 'manual'")
+    if out["entry"] == "manual":
+        if "download_marker" not in out:
+            raise SessionError("loader.entry 'manual' needs loader.download_marker (no default: fix it from the ROM documentation)")
+        _marker(out["download_marker"], "loader.download_marker")
+    elif "download_marker" in out:
+        raise SessionError("loader.download_marker only makes sense with loader.entry 'manual'")
+    if type(out["marker_timeout_s"]) is not int or not 5 <= out["marker_timeout_s"] <= 300:
+        raise SessionError("loader.marker_timeout_s must be 5..300 seconds")
+    return out
+
+
+def validate_images(items, cfg):
+    """PC-CYCLE (G1): firmware images the recipe may program. Each is a PRIVATE absolute file pinned by its SHA-256 and a 4-KiB aligned
+    address that must start inside an operator-approved region. The whole span (sector rounded) is checked again, with the real size,
+    before any command (images.plan)."""
+    import re
+    if not isinstance(items, list) or len(items) > 16:
+        raise SessionError("images: a list of at most 16 entries")
+    if items and not cfg["approved_regions"]:
+        raise SessionError("images need approved_regions (an image never creates write permission)")
+    labels = set()
+    for item in items:
+        if not isinstance(item, dict) or set(item) != IMAGE_KEYS:
+            raise SessionError(f"images: each entry is exactly {sorted(IMAGE_KEYS)}")
+        if not isinstance(item["label"], str) or not re.fullmatch(r"[A-Za-z0-9._-]{1,32}", item["label"]) or item["label"] in labels:
+            raise SessionError("images.label: 1..32 characters [A-Za-z0-9._-], unique")
+        labels.add(item["label"])
+        if not isinstance(item["path"], str) or not Path(item["path"]).is_absolute() or item["path"].endswith("/"):
+            raise SessionError("images.path must be an absolute file path (kept outside Git)")
+        if not (isinstance(item["sha256"], str) and len(item["sha256"]) == 64 and all(c in "0123456789abcdef" for c in item["sha256"])):
+            raise SessionError("images.sha256 must be 64 lowercase hex characters")
+        address = item["address"]
+        if type(address) is not int or address < 0 or address % 4096 or address >= cfg["flash_size"]:
+            raise SessionError("images.address: a 4-KiB aligned offset inside the declared flash")
+        if not any(r["address"] <= address < r["address"] + r["size"] for r in cfg["approved_regions"]):
+            raise SessionError("images.address must lie inside an approved region")
+    return [dict(item) for item in items]
 
 
 def validate_readonly(section, cfg):
