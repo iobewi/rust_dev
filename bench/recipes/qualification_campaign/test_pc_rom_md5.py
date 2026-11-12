@@ -7,8 +7,10 @@ varies, suspicion moves to the stub's read path; if it varies too, a cause commo
 
 The agent is asked explicitly for `loader: "rom"` (return_console=false does NOT mean no stub): the stub upload is skipped on that loader instance, the ECO7 flash power
 sequence of the connection still runs, the baud rate stays the ROM one, the flash is attached with the 8-byte SPI_ATTACH payload of esptool. The identity check of the agent
-stays strict (JEDEC id read again for every command; a failure keeps the raw value and its rank, nothing is bypassed). Proof that no stub ran, per measurement: the answer is the ROM
-format (`rom-ascii32`, 32 ASCII characters, not the stub's 16 raw bytes), `loader` is `rom` and the identification reports `loader_stub` 0. Anything else stops the scenario.
+stays strict (JEDEC id read again for every command; a failure keeps the raw value and its rank, nothing is bypassed). Proof that no stub ran, per measurement, from four sources that do not all depend on the loader flag: the chip's own answer is the ROM
+format (`rom-ascii32`, 32 ASCII characters: a stub would send 16 raw bytes and esptool-js would reject the shorter answer), the host sent no memory-load command
+(`ram_load_ops` 0: ESP_MEM_BEGIN/END/DATA counted on the wire), and the two flags derived from `IS_STUB` agree (`loader` is `rom`, `loader_stub` 0). A stub already running
+is also refused from the chip's sync answers. Anything else stops the scenario.
 
 Sequence: 1) ROM MD5, return_console=false (first command of a session, rank 1); 2) ROM MD5, return_console=true (second command of the SAME session, rank 2; the console returns);
 3) only if 1 and 2 agree: ROM MD5 after a NEW loader entry (rank 1), return_console=true. No retry, no replay, one run.
@@ -92,13 +94,14 @@ def test_pc9_p4_rom_md5(bench_client, qual_session, pytestconfig, loader_state, 
                     raise
                 identify = result.get("identify") or {}
                 record = {"kind": "rom_md5", "index": index, "session": session, "operation": board.last_operation["id"], "md5": result.get("md5"),
-                          "format": result.get("format"), "loader": result.get("loader"), "identify": identify}
+                          "format": result.get("format"), "loader": result.get("loader"), "ram_load_ops": result.get("ram_load_ops"), "identify": identify}
                 observations.append(record)
                 case.write(f"{name}.json", record)
                 out.evidence.append(f"{name} ({session}): md5={record['md5']} format={record['format']} loader={record['loader']} "
-                                    f"jedec={identify.get('jedec_id')} rank={identify.get('identify_index')} loader_stub={identify.get('loader_stub')}")
-                assert record["format"] == "rom-ascii32" and record["loader"] == "rom" and identify.get("loader_stub") == 0, \
-                    f"{name}: the answer is not a ROM answer without stub (format={record['format']}, loader={record['loader']}, loader_stub={identify.get('loader_stub')})"
+                                    f"jedec={identify.get('jedec_id')} rank={identify.get('identify_index')} loader_stub={identify.get('loader_stub')} ram_load_ops={record['ram_load_ops']}")
+                assert record["format"] == "rom-ascii32" and record["loader"] == "rom" and identify.get("loader_stub") == 0 \
+                    and record["ram_load_ops"] == 0, \
+                    f"{name}: the answer is not a ROM answer without stub (format={record['format']}, loader={record['loader']}, loader_stub={identify.get('loader_stub')}, ram_load_ops={record['ram_load_ops']})"
                 if index == 1 and record["md5"] != observations[0]["md5"]:
                     break                                                # the third measurement is taken only if the first two agree
         except BaseException as error:

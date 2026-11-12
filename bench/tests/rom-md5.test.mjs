@@ -13,19 +13,25 @@ const ASCII = (hex) => Array.from(hex, c => c.charCodeAt(0).toString(16).padStar
 const MD5 = '0123456789abcdef0123456789abcdef';
 
 function setup({ jedec = [P4_JEDEC], syncStub = false, attachFails = false, md5 = null } = {}) {
-  const log = { constructed: [], main: 0, runStub: 0, attach: [], flashId: 0, md5: 0 };
+  const log = { constructed: [], main: 0, runStub: 0, attach: [], flashId: 0, md5: 0, order: [] };
   class FakeLoader {
     constructor(options) {
       log.constructed.push({ baudrate: options.baudrate });
       this.transport = options.transport; this.IS_STUB = false; this.syncStubDetected = syncStub; this.ESP_SPI_ATTACH = 13;
       this.chip = { readMac: async () => 'aa:bb:cc:dd:ee:ff' };
     }
+    // esptool-js 0.7.0 main(): ..., runStub, [changeBaud if the baud differs], readFlashId (its own, uncounted by the engine)
     async main() {
       log.main++; await this.runStub();
+      log.order.push('main-flash-id');
       return 'ESP32-P4 (revision v3.2)';
     }
-    async runStub() { log.runStub++; this.IS_STUB = true; return this.chip; }
-    async checkCommand(name, op, data) { log.attach.push({ name, op, length: data.length }); if (attachFails) throw new ESPError('attach failed'); return 0; }
+    async runStub() {                                  // the REAL one: uploads the stub through memory-load commands, then IS_STUB = true
+      log.runStub++; this.IS_STUB = true;
+      this.transport._init(); for (const [op, n] of [[5, 1], [6, 1], [7, 3]]) this.transport.commandCounts[op] = n;
+      return this.chip;
+    }
+    async checkCommand(name, op, data) { log.order.push('attach'); log.attach.push({ name, op, length: data.length }); if (attachFails) throw new ESPError('attach failed'); return 0; }
     async readFlashId() { return jedec[Math.min(log.flashId++, jedec.length - 1)]; }
     async flashMd5sum() { log.md5++; return md5 ?? (this.IS_STUB ? MD5 : ASCII(MD5)); }
   }
@@ -40,14 +46,16 @@ const md5 = (x, args = {}) => x.engine.execute('flash.md5', { address: 0x2000, s
 test('default flash.md5 is unchanged: the stub is uploaded, 16-byte digest, loader_stub 1', async () => {
   const x = setup();
   const r = await md5(x);
+  assert.equal(r.ram_load_ops, 5, 'the stub upload is visible in the wire counters (1 begin + 1 end + 3 data)');
   assert.equal(x.log.runStub, 1); assert.equal(r.format, 'stub-raw16'); assert.equal(r.loader, 'stub'); assert.equal(r.identify.loader_stub, 1);
   assert.equal(x.log.attach.length, 0, 'no explicit SPI_ATTACH in stub mode');
 });
 
-test('loader "rom": runStub is never called, the ROM answer (32 ASCII) is decoded and the result says loader_stub 0', async () => {
+test('loader "rom": the real runStub is never called, the ROM answer (32 ASCII) is decoded and the result says loader_stub 0, no memory-load command sent', async () => {
   const x = setup();
   const r = await md5(x, { loader: 'rom' });
   assert.equal(x.log.main, 1); assert.equal(x.log.runStub, 0, 'the stub is not uploaded');
+  assert.equal(r.ram_load_ops, 0, 'no ESP_MEM_BEGIN/END/DATA written');
   assert.deepEqual({ md5: r.md5, format: r.format, loader: r.loader, stub: r.identify.loader_stub }, { md5: MD5, format: 'rom-ascii32', loader: 'rom', stub: 0 });
   assert.equal(r.identify.identify_index, 1);
 });
@@ -110,4 +118,37 @@ test('with return_console the ROM session ends and the next ROM command opens a 
   const a = await md5(x, { loader: 'rom', return_console: true }), b = await md5(x, { loader: 'rom' });
   assert.deepEqual([a.identify.identify_index, b.identify.identify_index], [1, 1]);
   assert.equal(x.log.attach.length, 2);
+});
+
+test('ROM mode attaches the flash BEFORE the flash id read of esptool-js main() (esptool order: power on, attach, then flash id), and attaches once per session', async () => {
+  const x = setup();
+  await md5(x, { loader: 'rom' });
+  assert.deepEqual(x.log.order, ['attach', 'main-flash-id']);
+});
+
+test('the attach happens inside the replaced runStub only: a stub detected at sync is refused BEFORE the attach and before any flash id read', async () => {
+  const x = setup({ syncStub: true });
+  await assert.rejects(md5(x, { loader: 'rom' }), e => hardwareError(e).code === 'rom_mode_stub_running');
+  assert.deepEqual(x.log.order, [], 'nothing was sent to the chip after the detection');
+});
+
+// --- what the bench transport counts: command frames actually written, by opcode ------------------------------------------------
+import { makeBenchTransport } from '../web/bench-transport.js';
+class WritableFake extends FakeTransport { slipWriter(data) { return data; } }
+function transportWith(writeImpl) {
+  const { BenchTransport } = makeBenchTransport(WritableFake, ESPError);
+  let end; const device = { pumpDone: new Promise((r) => { end = r; }), writable: { getWriter: () => ({ write: writeImpl, releaseLock() {} }) } };
+  return new BenchTransport(device);
+}
+const frame = (op, length = 8, direction = 0) => { const f = new Uint8Array(length); f[0] = direction; f[1] = op; return f; };
+
+test('the transport counts command frames written, by opcode; acknowledgements, responses and failed writes are not counted', async () => {
+  const t = transportWith(async () => {});
+  await t.write(frame(5)); await t.write(frame(7, 20)); await t.write(frame(7, 20)); await t.write(frame(0x13, 24));
+  await t.write(Uint8Array.from([0, 16, 0, 0]));       // 4-byte cumulative acknowledgement of a flash read
+  await t.write(frame(5, 8, 1));                        // direction byte 1: not a command
+  assert.deepEqual(t.commandCounts, { 5: 1, 7: 2, 19: 1 });
+  const bad = transportWith(async () => { throw Object.assign(new Error('x'), { name: 'NetworkError' }); });
+  await assert.rejects(bad.write(frame(5)));
+  assert.deepEqual(bad.commandCounts, {}, 'a write that failed was not sent');
 });

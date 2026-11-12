@@ -163,16 +163,24 @@ export class EspEngine {
     const terminal = { clean() {}, write() {}, writeLine: () => {} };
     const rom = mode === 'rom';
     this.loader = new ESPLoader({ transport: this.transport, baudrate: rom ? 115200 : this.flashBaud, terminal });
-    if (rom) this.loader.runStub = async function () { return this.chip; };      // the stub is never uploaded in this session
+    // esptool-js main() order: detect chip, postConnect (ECO7 flash power sequence), runStub, [baud change], readFlashId. In ROM mode runStub is replaced, on this loader
+    // instance only, by the SPI attach (esptool's own order: power on, attach, then any flash id read). It reproduces the branches esptool-js already has for "no stub
+    // available" (return this.chip, IS_STUB untouched). The only things the real runStub does besides the upload (IS_STUB = true, applyUsbFlashWriteSize for USB-OTG writes)
+    // are not needed for an MD5.
+    if (rom) {
+      this.loader.runStub = async function () {
+        // A stub already running on the chip is detected from the chip's own sync answers (syncStubDetected): refuse before any flash command.
+        if (this.syncStubDetected || this.IS_STUB) throw new HardwareError('rom_mode_stub_running', { phase: 'identify', loader_stub: 1 });
+        // 8-byte SPI_ATTACH payload of esptool Python (hspi_arg, then the reserved "legacy" word); esptool-js flashSpiAttach sends only 4.
+        try { await this.checkCommand('configure SPI flash pins', this.ESP_SPI_ATTACH, new Uint8Array(8)); }
+        catch (e) { throw new HardwareError('rom_flash_attach_failed', { phase: 'identify', loader_stub: 0 }); }
+        return this.chip;
+      };
+    }
     this.identityChecks = 0;   // identity re-checks made on THIS loader session (diagnostic only)
     try {
       this.chipDescription = await this.loader.main(); this.mode = 'loader'; this.loaderMode = mode;
-      if (rom) {
-        // A stub already running on the chip (detected at sync time) would answer in its own format: refuse before any command.
-        if (this.loader.syncStubDetected || this.loader.IS_STUB) throw new HardwareError('rom_mode_stub_running', { phase: 'identify', loader_stub: 1 });
-        try { await this.loader.checkCommand('configure SPI flash pins', this.loader.ESP_SPI_ATTACH, new Uint8Array(8)); }
-        catch (e) { throw new HardwareError('rom_flash_attach_failed', { phase: 'identify', loader_stub: 0 }); }
-      }
+      if (rom && (this.loader.syncStubDetected || this.loader.IS_STUB)) throw new HardwareError('rom_mode_stub_running', { phase: 'identify', loader_stub: 1 });
     }
     catch (e) { try { await this.close(); } catch { /* Preserve the original serial failure. */ } throw e; }
     return this.loader;
@@ -361,7 +369,9 @@ export class EspEngine {
       } else if (command === 'flash.md5') {
         region(args.address, args.size, physical.flash_size);
         this.setPhase('flash_md5', context);
-        result = { ...(await this.chipMd5(l, args.address, args.size)), address: args.address, size: args.size, loader: l.IS_STUB ? 'stub' : 'rom', identify: identified };
+        result = { ...(await this.chipMd5(l, args.address, args.size)), address: args.address, size: args.size, loader: l.IS_STUB ? 'stub' : 'rom',
+          // What the host actually sent: memory-load commands (ESP_MEM_BEGIN 5, END 6, DATA 7) are how a stub gets uploaded; 0 in a ROM session.
+          ram_load_ops: ['5', '6', '7'].reduce((n, op) => n + ((this.transport?.commandCounts || {})[op] || 0), 0), identify: identified };
       } else if (command === 'flash.write') {
         validateImages(images, physical.flash_size); context.check();
         this.setPhase('flash_write', context);

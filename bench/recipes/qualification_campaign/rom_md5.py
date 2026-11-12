@@ -21,14 +21,15 @@ def _hex32(value):
 
 
 def analyse_rom(observations):
-    """observations: [{index, md5, format, loader, identify:{loader_stub, identify_index}}...] in the order taken. Returns {conclusion, rows, findings, flags, caution}."""
+    """observations: [{index, md5, format, loader, ram_load_ops, identify:{loader_stub, identify_index}}...] in the order taken. Returns {conclusion, rows, findings, flags, caution}."""
     findings, problems = [], []
     for position, o in enumerate(observations):
         if not _hex32(o.get("md5")):
             problems.append(f"measurement {position + 1}: not a valid 32-hex MD5")
-        if o.get("format") != "rom-ascii32" or o.get("loader") != "rom" or (o.get("identify") or {}).get("loader_stub") != 0:
+        if (o.get("format") != "rom-ascii32" or o.get("loader") != "rom" or (o.get("identify") or {}).get("loader_stub") != 0
+                or o.get("ram_load_ops") != 0):
             problems.append(f"measurement {position + 1}: not a ROM answer without stub (format={o.get('format')}, loader={o.get('loader')}, "
-                            f"loader_stub={(o.get('identify') or {}).get('loader_stub')})")
+                            f"loader_stub={(o.get('identify') or {}).get('loader_stub')}, ram_load_ops={o.get('ram_load_ops')})")
     n = len(observations)
     md5s = [o.get("md5") for o in observations]
     flags = {"measurements": n, "same_session_equal": None, "after_new_entry_equal": None}

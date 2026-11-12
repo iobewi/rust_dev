@@ -117,7 +117,7 @@ class SimDevice:
             leak = rom and os.environ.get('SIM_ROM_STUB_LEAK') == '1'      # SIMULATES an agent that loaded the stub although the ROM was asked
             fmt = 'rom-ascii32' if rom and not leak else 'stub-raw16'
             return {'md5': hashlib.md5(truth).hexdigest(), 'format': fmt, 'address': args['address'], 'size': args['size'], 'simulated': True,
-                    'loader': 'rom' if rom and not leak else 'stub', **({'identify': identify} if identify else {})}
+                    'loader': 'rom' if rom and not leak else 'stub', 'ram_load_ops': 0 if rom and not leak else 5, **({'identify': identify} if identify else {})}
         if name == 'flash.read':
             if os.environ.get('SIM_FAIL_READ_AT') == str(args['address']):             # SIMULATES a read that fails definitively at one address
                 raise SimFailure('serial_timeout')

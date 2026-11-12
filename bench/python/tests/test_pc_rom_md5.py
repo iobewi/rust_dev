@@ -54,8 +54,8 @@ def test_the_loader_argument_is_a_strict_choice_on_flash_md5_only():
         validate_command("identify", {"loader": "rom"}, DEVICE, {})
 
 
-def rom(md5, index, stub=0, fmt="rom-ascii32", loader="rom"):
-    return {"kind": "rom_md5", "index": index, "md5": md5, "format": fmt, "loader": loader, "identify": {"loader_stub": stub, "identify_index": 1}}
+def rom(md5, index, stub=0, fmt="rom-ascii32", loader="rom", ops=0):
+    return {"kind": "rom_md5", "index": index, "md5": md5, "format": fmt, "loader": loader, "ram_load_ops": ops, "identify": {"loader_stub": stub, "identify_index": 1}}
 
 
 def test_three_identical_rom_md5_are_row_a_and_consistent():
@@ -76,7 +76,7 @@ def test_a_new_entry_that_differs_is_row_c_and_a_missing_third_is_incomplete():
     assert (r["conclusion"], r["rows"]) == ("incomplete", ["ROM-D"])
 
 
-@pytest.mark.parametrize("bad", [rom("", 0), rom(H("a"), 0, stub=1), rom(H("a"), 0, fmt="stub-raw16"), rom(H("a"), 0, loader="stub"), rom("A" * 32, 0)])
+@pytest.mark.parametrize("bad", [rom("", 0), rom(H("a"), 0, stub=1), rom(H("a"), 0, fmt="stub-raw16"), rom(H("a"), 0, loader="stub"), rom("A" * 32, 0), rom(H("a"), 0, ops=5)])
 def test_an_empty_malformed_or_non_rom_answer_is_never_a_success(bad):
     r = analyse_rom([bad, rom(H("a"), 1), rom(H("a"), 2)])
     assert r["conclusion"] == "incomplete" and r["rows"] == ["ROM-D"]
@@ -153,7 +153,7 @@ def test_stable_rom_md5_pass_with_three_rom_commands_and_no_flash_read(sim, tmp_
     assert [c["command"] for c in cmds] == ["flash.md5"] * 3, "ROM MD5 only: no identify, no flash.read, no explicit console"
     assert [c["args"] for c in cmds] == [{"address": 0x2000, "size": 4096, "return_console": rc, "loader": "rom"} for rc in (False, True, True)]
     evidence = " ".join(reports["PC-9"]["evidence"])
-    assert "identification ranks: [1, 2, 1]" in evidence and "format=rom-ascii32" in evidence and "loader_stub=0" in evidence
+    assert "identification ranks: [1, 2, 1]" in evidence and "format=rom-ascii32" in evidence and "loader_stub=0" in evidence and "ram_load_ops=0" in evidence
     assert analysis(tmp_path)["conclusion"] == "consistent"
     assert client.artifacts()["artifacts"] == [] and client.device("board")["reservation"] is None
 

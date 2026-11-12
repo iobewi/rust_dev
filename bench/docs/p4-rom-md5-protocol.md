@@ -18,14 +18,34 @@ Des MD5 ROM et stub différents ne prouvent pas un défaut à eux seuls : seule 
 ## 2. Mécanisme (code préparé)
 
 - **Protocole** : `flash.md5` accepte `loader` : `stub` (défaut, comportement inchangé) ou `rom`. Toute autre valeur est refusée ; `flash.read` et les autres commandes n'ont pas cet argument. `return_console=false` **ne signifie pas sans stub**.
-- **Agent (`esp-engine.js`)** : en mode `rom`, `openLoader('rom')` remplace, sur cette instance d'esptool-js seulement, l'étape `runStub` par un no-op. Vérifié dans le bundle d'esptool-js 0.7.0 (version épinglée par `ui.js`) : `main()` appelle `this.runStub()` puis, si le baud diffère, `changeBaud()`, puis `readFlashId()`. Le reste est inchangé : détection de la puce, `postConnect` (séquence d'alimentation flash ECO7), baud ROM 115200 (donc pas de changement de baud), puis `SPI_ATTACH` avec la charge utile de **8 octets** d'esptool Python (le `flashSpiAttach` d'esptool-js n'en envoie que 4).
+- **Agent (`esp-engine.js`)** : en mode `rom`, `openLoader('rom')` remplace, sur cette instance d'esptool-js seulement, l'étape `runStub` par le **rattachement de la flash** (`SPI_ATTACH`, charge utile de 8 octets d'esptool Python ; celle d'esptool-js n'en a que 4), sans téléverser de stub. Le reste de `main()` est inchangé : détection de la puce, `postConnect` (séquence d'alimentation flash ECO7), baud ROM 115200 (donc pas de changement de baud), puis sa propre lecture d'identifiant, désormais **après** le rattachement.
 - **Refus** : une session déjà ouverte dans l'autre mode (`loader_mode_mismatch`), un stub déjà actif sur la puce détecté à la synchronisation (`rom_mode_stub_running`), un échec du rattachement (`rom_flash_attach_failed`) : aucune mesure n'est faite.
 - **Contrôle d'identité inchangé et strict** : l'identifiant JEDEC est relu à chaque commande, rang compté ; un échec garde la valeur brute et son rang (comme PC-8). Aucun contournement, cache ni retry.
 - **Réponse** : `md5`, `format` (`rom-ascii32` : 32 caractères ASCII, validés ; jamais un MD5 par défaut), `loader` (mode réellement utilisé), `identify.loader_stub` (0 sans stub).
 
 ## 3. Preuve qu'aucun stub n'a tourné (par mesure)
 
-Trois indices indépendants, tous exigés : le format de réponse ROM (32 caractères ASCII, pas les 16 octets bruts du stub), `loader == "rom"` et `loader_stub == 0` dans l'identification. Un seul indice contraire arrête la recette (FAIL), après la première mesure concernée.
+Quatre indices, tous exigés ; ils ne dépendent pas tous de `IS_STUB` :
+
+| Indice | Origine | Dépend de `IS_STUB` ? |
+|---|---|---|
+| Réponse de la puce au format ROM (32 caractères ASCII) | La puce : un stub répondrait 16 octets bruts et esptool-js rejetterait la réponse plus courte (« Only got N bytes ») | Non pour l'octet reçu ; la longueur attendue en dépend, mais pas ce que la puce envoie |
+| `ram_load_ops` égal à 0 | L'hôte : nombre de commandes `ESP_MEM_BEGIN/END/DATA` réellement écrites sur le port (compteur du transport), seule voie par laquelle un stub est téléversé | **Non** |
+| Stub déjà actif refusé | La puce : `syncStubDetected` vient des réponses de synchronisation | Non |
+| `loader == "rom"` et `loader_stub == 0` | Dérivés de `IS_STUB` | Oui (deux indices, une seule source) |
+
+Un seul indice contraire arrête la recette (FAIL), après la première mesure concernée.
+
+## 3 bis. Vérification statique d'esptool-js 0.7.0 (avant déploiement)
+
+Lue dans le bundle épinglé par `ui.js` :
+- `IS_STUB` est mis à vrai à **deux endroits seulement**, tous deux dans `runStub` (stub déjà détecté à la synchronisation, ou après « OHAI » une fois le stub téléversé) ; il est remis à faux dans le repli de `changeBaud` (inatteignable en mode ROM, baud identique). `memBegin`, `memBlock` et `memFinish` ne sont appelés que par `runStub`. Remplacer `runStub` ne peut donc pas laisser croire à un stub, ni en téléverser un.
+- La substitution reproduit les branches « stub indisponible » que `runStub` possède déjà (`return this.chip`, `IS_STUB` intact). Ce que le vrai `runStub` fait en plus (`IS_STUB = true`, `applyUsbFlashWriteSize` pour les écritures USB-OTG) est sans effet sur un MD5.
+- `main()` appelle `runStub`, puis `changeBaud` seulement si le baud diffère, puis `readFlashId` (qui lève une exception seulement si la commande SPI ne se termine pas). Un autre chemin appelle `this.runStub()` après un échec de changement de baud : inatteignable ici.
+
+**Ordre d'initialisation de SPI1 (corrigé).** La première version rattachait la flash après `main()`, donc après sa lecture d'identifiant. esptool Python fait : `power_on_flash` (« needs to be powered on before attach_flash() »), puis `SPI_ATTACH`, puis seulement la lecture d'identifiant. Le rattachement est maintenant fait **dans le `runStub` remplacé**, c'est-à-dire après `postConnect` et avant toute lecture d'identifiant, y compris celle de `main()`. Cet ordre est celui d'esptool Python ; il n'est pas observé sur la carte.
+
+**`SPI_SET_PARAMS`.** esptool Python l'envoie après le rattachement (taille de flash dans la structure en RAM de la ROM) ; sa documentation de `read_flash` dit que ce réglage est nécessaire quand le stub est désactivé. esptool-js n'implémente pas cette commande du tout : ses propres flux ROM n'en envoient jamais. Nous n'en envoyons pas non plus. Pour cette plage (`0x2000`, 4096 octets, sous 16 Mio) elle ne devrait pas changer le résultat quelle que soit la taille par défaut de la ROM, mais **cela n'est pas observé** et reste une différence assumée avec esptool Python.
 
 ## 4. Séquence de la recette `P4-ROM-MD5` (PC-9)
 
@@ -45,9 +65,9 @@ Si la deuxième commande échoue à l'identification (comme en PC-8), la recette
 
 ## 6. Limites et points à relire
 
-- **Hypothèses sur le code d'esptool-js 0.7.0** (surcharge de `runStub` sur l'instance) : vérifiées par lecture du bundle, pas observées sur la carte.
-- **Avant le rattachement**, `main()` lit encore un identifiant JEDEC par registres SPI1 (résultat seulement journalisé par esptool-js, ne bloque que s'il lève une exception). Le contrôle strict de l'agent relit ensuite l'identifiant après le rattachement.
-- **`SPI_SET_PARAMS` n'est pas envoyé** (esptool Python l'envoie après le rattachement pour fixer la taille ; esptool-js n'a pas d'aide pour cela). La ROM garde donc sa taille par défaut ; la plage est sous 16 Mio, mais l'effet n'est pas observé.
+- **Hypothèses sur esptool-js 0.7.0** : vérifiées par lecture du bundle (section 3 bis), pas observées sur la carte ; une autre version d'esptool-js demanderait de refaire cette lecture.
+- **Lecture d'identifiant par registres SPI1** : `main()` en fait toujours une, après le rattachement et avant la nôtre. Le défaut vu en PC-8 (identifiant invalide en 2e commande) reste inexpliqué : la recette le conserve comme mesure sans le contourner.
+- **`SPI_SET_PARAMS` non envoyé** : voir 3 bis.
 - **Au-delà de 16 Mio** la ROM n'adresse pas complètement (note d'esptool) : seule cette plage est comparable ; ne pas extrapoler à la sauvegarde de 32 Mio.
 - **Bogue ECO7 « deuxième entrée en mode téléchargement »** (commentaire d'esptool) : la mesure 3 (nouvelle entrée) peut échouer sans que ce soit le sujet ; pas de relance automatique.
 - **Un MD5 sans octets** : aucune comparaison binaire ; elle ne remplace pas une lecture fiable.
