@@ -167,7 +167,7 @@ processus, puis terminer **uniquement** les processus lancés pour cette
 exécution ; pas de `pkill -f` à motif large, ni d'impact sur le serveur
 Device Lab actif. Ne pas démarrer un serveur sur un port déjà occupé.
 
-Voir [la politique et les exemples pytest](bench/docs/pytest.md#selection-des-tests-et-niveaux-de-validation).
+Voir [la politique et les exemples pytest](bench/docs/pytest.md#sélection-des-tests-et-niveaux-de-validation).
 
 ## Software checks
 
