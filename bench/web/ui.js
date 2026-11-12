@@ -7,7 +7,7 @@ import { EspEngine } from './esp-engine.js';
 import { BenchClient } from './api-client.js';
 import { b64, unb64, manifestPlan } from './protocol.js';
 import { ConsoleBuffer } from './console-buffer.js';
-import { address, hex, flashPlan } from './ui-model.js';
+import { address, hex, flashPlan, displayChip } from './ui-model.js';
 
 const $ = id => document.getElementById(id);
 document.title = 'IOBEWI Device Lab';
@@ -151,7 +151,7 @@ function renderActiveCards() {
       $('devices').onchange?.();
     };
     const chip = document.createElement('span');
-    chip.className = 'board-chip'; chip.textContent = ctx.identity?.chip || 'MCU inconnu';
+    chip.className = 'board-chip'; chip.textContent = displayChip(ctx.identity, info(ctx.id));
     const status = document.createElement('button');
     status.type = 'button'; status.className = 'board-status';
     status.dataset.state = ctx.status;
