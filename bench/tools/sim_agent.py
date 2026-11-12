@@ -16,9 +16,9 @@ NATIVE_CAPS = [c for c in CAPS if c not in {'io0', 'boot.download'}]     # a nat
 
 
 class SimFailure(Exception):
-    def __init__(self, code):
+    def __init__(self, code, detail=None):
         super().__init__(code)
-        self.code = code
+        self.code, self.detail = code, detail or {}
 
 
 class SimDevice:
@@ -34,6 +34,18 @@ class SimDevice:
             self.flash[item['address']:item['address'] + len(raw)] = raw
         self.writes = 0
         self.trigger, self.trigger_id, self.dropped = None, 0, False
+        self.session_checks, self.flash_commands = 0, 0       # SIMULATION ONLY: identifications made in the current loader session / flash commands seen
+
+    def jedec_view(self, args):
+        """SIMULATES the agent's per-identification diagnostic (SIM_JEDEC=1) and an invalid identification at the N-th flash command (SIM_JEDEC_INVALID_AT=N)."""
+        self.flash_commands += 1
+        self.session_checks += 1
+        index = self.session_checks
+        if os.environ.get('SIM_JEDEC_INVALID_AT') == str(self.flash_commands):          # the loader stays open after a failed identification
+            raise SimFailure('flash_capacity_unknown', {'phase': 'identify', 'error_type': 'HardwareError', 'jedec_id': 0, 'identify_index': index, 'loader_stub': 1})
+        if args.get('return_console', True) is not False:
+            self.session_checks = 0                                                      # the command returns to the console: the next one opens a new loader session
+        return {'jedec_id': 0x193040, 'identify_index': index, 'loader_stub': 1} if os.environ.get('SIM_JEDEC') == '1' else None
 
     async def execute(self, name, args, download, upload):
         if name == 'identify':
@@ -68,8 +80,9 @@ class SimDevice:
         if name == 'flash.read':
             if os.environ.get('SIM_FAIL_READ_AT') == str(args['address']):             # SIMULATES a read that fails definitively at one address
                 raise SimFailure('serial_timeout')
+            identify = self.jedec_view(args)
             data = bytes(self.flash[args['address']:args['address']+args['size']])
-            return {'artifact': await upload(data), 'simulated': True}
+            return {'artifact': await upload(data), 'address': args['address'], 'simulated': True, **({'identify': identify} if identify else {})}
         if name == 'flash.erase':
             self.flash[:] = b'\xff' * len(self.flash)
             return {'erased': True, 'simulated': True}
@@ -133,7 +146,9 @@ async def serve(session, url, token, device_id, grant, script, chip, sim, connec
                             'capabilities': NATIVE_CAPS if native and os.environ.get('SIM_NATIVE_WITH_IO0') != '1' else CAPS,
                             'http_origins': [o for o in os.environ.get('SIM_HTTP_ORIGINS', '').split(',') if o],
                             **({'provenance': {'usb_vid': 0x303a, 'usb_pid': 0x1001, 'transport': 'usb_serial_jtag',
-                                               'transport_basis': 'inferred_from_webserial_vid_pid'}} if native else {})}})
+                                               'transport_basis': 'inferred_from_webserial_vid_pid'}} if native else {}),
+                            **({'provenance': {'transport': 'external_uart', 'transport_basis': 'inferred_from_webserial_vid_pid',
+                                               'assets_sha256': os.environ['SIM_ASSETS_SHA256']}} if os.environ.get('SIM_ASSETS_SHA256') and not native else {})}})   # SIMULATION ONLY: the page assets digest the agent reports
         registered = await ws.receive_json()
         generation, seq = registered['generation'], 0
         tasks = []
@@ -283,7 +298,7 @@ async def serve(session, url, token, device_id, grant, script, chip, sim, connec
                         await event('transport', detail='console opened')
                     await ws.send_json({'type': 'result', 'id': op['id'], 'state': 'completed', 'result': result})
                 except Exception as error:
-                    await ws.send_json({'type': 'result', 'id': op['id'], 'state': 'failed', 'error': {'code': getattr(error, 'code', 'simulated_failure')}})
+                    await ws.send_json({'type': 'result', 'id': op['id'], 'state': 'failed', 'error': {**getattr(error, 'detail', {}), 'code': getattr(error, 'code', 'simulated_failure')}})
                     if os.environ.get('SIM_SERIAL_FAIL_DURING_READ') == '1' and getattr(error, 'code', '') == 'serial_disconnected':
                         serial_lost = True                        # the page drops its agent shortly AFTER the result was acknowledged, then re-attaches the board
         gestures.cancel()

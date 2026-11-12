@@ -284,6 +284,8 @@ export class EspEngine {
       context.check();
       this.setPhase('identify', context);
       const physical = await this.identity(), l = this.loader;
+      // Diagnostic only: the raw JEDEC id that THIS command's identification read, its rank in the loader session and whether the stub runs.
+      const identified = { jedec_id: physical.flash_id >>> 0, identify_index: this.identityChecks, loader_stub: l.IS_STUB ? 1 : 0 };
       if (command.startsWith('flash.') || command === 'partitions') {
         if (args.chip && args.chip !== physical.chip) throw new Error('Physical chip mismatch');
         if (physical.chip !== context.device.chip || physical.flash_size !== context.device.flash_size) throw new HardwareError('physical_identity_changed');
@@ -295,14 +297,14 @@ export class EspEngine {
         region(args.address ?? 0x8000, 0xc00, physical.flash_size);
         this.setPhase('flash_read', context);
         const bytes = await this.readFlash(l, args.address ?? 0x8000, 0xc00, context);
-        try { result = { partitions: partitions(bytes, physical.flash_size) }; if (!result.partitions.length) throw new Error('Empty table'); }
+        try { result = { partitions: partitions(bytes, physical.flash_size), identify: identified }; if (!result.partitions.length) throw new Error('Empty table'); }
         catch { throw new HardwareError('partition_table_invalid'); }
       } else if (command === 'flash.read') {
         region(args.address, args.size, physical.flash_size);
         this.setPhase('flash_read', context);
         const data = await this.readFlash(l, args.address, args.size, context);
         this.setPhase('artifact_upload', context);
-        result = { artifact: await context.upload(data), address: args.address };
+        result = { artifact: await context.upload(data), address: args.address, identify: identified };
       } else if (command === 'flash.write') {
         validateImages(images, physical.flash_size); context.check();
         this.setPhase('flash_write', context);
