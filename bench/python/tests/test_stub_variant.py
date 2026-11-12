@@ -5,6 +5,7 @@ import json
 import os
 import re
 import selectors
+import stat
 import subprocess
 import sys
 import time
@@ -89,6 +90,25 @@ def test_a_quarantined_device_never_gets_a_variant():
     assert error.value.code == "device_quarantined"
 
 
+@pytest.mark.parametrize("command", ["flash.md5", "flash.read"])
+def test_uart_baud_accepts_only_115200_for_the_two_reads_and_the_default_is_unchanged(command):
+    base = {"address": 0x2000, "size": 4096}
+    validate_command(command, base, DEVICE, {})                                   # no argument: unchanged
+    validate_command(command, {**base, "uart_baud": 115200}, DEVICE, {})
+    validate_command(command, {**base, **V, "uart_baud": 115200}, DEVICE, {})
+    for bad in (460800, 921600, 9600, 0, -1, "115200", True, None, 115200.0):
+        with pytest.raises(Fault):
+            validate_command(command, {**base, "uart_baud": bad}, DEVICE, {})
+    with pytest.raises(Fault):
+        validate_command("flash.md5", {**base, "uart_baud": 115200, "loader": "rom"}, DEVICE, {})
+
+
+@pytest.mark.parametrize("command", ["flash.write", "flash.erase", "partitions", "identify", "console", "uart.write", "mark", "reset"])
+def test_uart_baud_exists_on_no_other_command(command):
+    with pytest.raises(Fault):
+        validate_command(command, {"uart_baud": 115200}, DEVICE, {})
+
+
 # --- session ----------------------------------------------------------------------------------------------------------------------
 def test_the_session_section_is_strict_and_the_consent_is_separate():
     ok = {"variant": NAME, "expected_sha256": PIN, "expected_assets_sha256": ASSETS, "reference_rom_md5": ROM_MD5}
@@ -102,36 +122,71 @@ def test_the_session_section_is_strict_and_the_consent_is_separate():
 
 
 # --- pure comparison ---------------------------------------------------------------------------------------------------------------
-def obs(md5s=("a", "a"), read="a", stub="a", variant=None, ops=5):
-    ident = {"variant": variant or "official", "verified": variant is not None, **({"file_sha256": PIN} if variant else {})}
+def obs(md5s=("a", "a", "a"), read=("a", "a"), stub=("a", "a"), variant=None, ops=5, baud=115200):
+    ident = {"variant": variant or "official", "verified": variant is not None, "uart_baud": baud, **({"file_sha256": PIN} if variant else {})}
     h = lambda c: c * 32                                                         # noqa: E731
-    return [{"kind": "chip_md5", "index": 0, "md5": h(md5s[0]), "ram_load_ops": ops, "stub_identity": ident},
-            {"kind": "read", "index": 1, "md5_client": h(read), "stub": {"state": "received", "md5": h(stub)}, "stub_identity": ident},
-            {"kind": "chip_md5", "index": 2, "md5": h(md5s[1]), "ram_load_ops": ops, "stub_identity": ident}]
+    rows = []
+    for n, kind in enumerate(("chip_md5", "read", "chip_md5", "read", "chip_md5")):
+        if kind == "chip_md5":
+            rows.append({"kind": kind, "index": n, "md5": h(md5s[n // 2]), "ram_load_ops": ops, "stub_identity": ident})
+        else:
+            rows.append({"kind": kind, "index": n, "md5_client": h(read[n // 2]), "stub": {"state": "received", "md5": h(stub[n // 2])}, "stub_identity": ident})
+    return rows
 
 
-def run(official, variant, ref=None):
-    return compare(official, variant, variant_name=NAME, expected_sha256=PIN, reference_md5=ref)
+def run(official, variant, ref=None, **extra):
+    return compare(official, variant, variant_name=NAME, expected_sha256=PIN, reference_md5=ref, **extra)
 
 
 def test_rows_of_the_comparison():
-    unstable = obs(md5s=("a", "b"), read="c", stub="c")
+    unstable = obs(md5s=("a", "b", "a"), read=("c", "d"), stub=("c", "d"))
     assert run(unstable, obs(variant=NAME), "a" * 32)["rows"] == ["SV-A"]
     assert run(obs(), obs(variant=NAME), "a" * 32)["rows"] == ["SV-B"]
-    assert run(unstable, obs(md5s=("a", "b"), read="c", stub="c", variant=NAME))["rows"] == ["SV-C"]
+    assert run(unstable, obs(md5s=("a", "b", "a"), read=("c", "d"), stub=("c", "d"), variant=NAME))["rows"] == ["SV-C"]
     assert run(obs(), obs(variant=NAME), "f" * 32)["rows"] == ["SV-E"]
     assert all(f["level"] == "hypothesis" for f in run(unstable, obs(variant=NAME))["findings"] if f["id"].startswith("SV-"))
 
 
-@pytest.mark.parametrize("variant", [obs(variant=None), obs(variant="other"), obs(variant=NAME, ops=0), obs(variant=NAME)[:2]])
-def test_a_wrong_identity_no_upload_or_missing_measurement_is_incomplete_never_a_success(variant):
+@pytest.mark.parametrize("variant", [obs(variant=None), obs(variant="other"), obs(variant=NAME, ops=0), obs(variant=NAME)[:4], obs(variant=NAME, baud=460800)])
+def test_a_wrong_identity_speed_no_upload_or_missing_measurement_is_incomplete_never_a_success(variant):
     result = run(obs(), variant)
     assert result["conclusion"] == "incomplete" and result["rows"] == ["SV-D"]
+
+
+def test_the_two_series_must_run_at_the_same_speed():
+    result = run(obs(baud=460800), obs(variant=NAME))                              # the official series at another speed: the comparison is refused
+    assert result["rows"] == ["SV-D"] and any("same speed" in f["text"] for f in result["findings"])
 
 
 def test_the_official_series_must_say_official():
     bad = obs(variant=NAME)                                                       # a variant series passed as the official one
     assert run(bad, obs(variant=NAME))["rows"] == ["SV-D"]
+
+
+def sector(n=2, flips=()):
+    data = bytearray((n).to_bytes(4, "little") * 1024)
+    for position, mask in flips:
+        data[position] ^= mask
+    return bytes(data)
+
+
+def test_the_byte_comparison_uses_the_read_that_equals_the_rom_md5_as_truth_and_reports_positions_and_chunk_lanes_only():
+    truth = sector()
+    ref = hashlib.md5(truth).hexdigest()
+    wrong_late = sector(flips=[(0x102, 0x02), (0x122, 0x02), (0x142, 0x04)])      # positions 2 of their chunk, beyond the first 32 bytes
+    result = run(obs(), obs(variant=NAME), ref, reads={"official": [wrong_late, truth], NAME: [truth, truth]})
+    section = result["bytes"]
+    assert section["truth_available"] is True
+    official = section["series"]["official"]
+    assert official[0]["equals_truth"] is False and official[0]["deviations"] == 3 and official[0]["late_all_in_lanes_1_3"] is True and official[0]["lane_mod16"] == {2: 3}
+    assert official[1]["equals_truth"] is True and all(r["equals_truth"] for r in section["series"][NAME])
+    assert any(f["id"] == "lanes-official" for f in result["findings"])
+    assert not any("bytes" in str(v) and "content" in str(v) for v in official), "positions and counts only"
+
+
+def test_without_a_read_equal_to_the_rom_md5_nothing_is_said_about_correctness():
+    result = run(obs(), obs(variant=NAME), "e" * 32, reads={"official": [sector()], NAME: [sector()]})
+    assert result["bytes"]["truth_available"] is False and result["bytes"]["series"]["official"][0]["equals_truth"] is None
 
 
 # --- simulated bench -----------------------------------------------------------------------------------------------------------------
@@ -232,24 +287,33 @@ def comparison(tmp_path):
     return json.loads((case_dir(tmp_path) / "stub-variant-comparison.json").read_text())
 
 
-def test_stable_variant_equal_to_the_rom_md5_passes_with_six_read_only_operations_and_the_identity_in_the_evidence(sim, tmp_path):
+def test_stable_variant_equal_to_the_rom_md5_passes_with_ten_read_only_operations_at_the_same_speed_and_the_identity_in_the_evidence(sim, tmp_path):
     url, client = sim({"SIM_INTEGRITY": "flash"})                               # the official stub is unstable in this simulation, the variant is stable
     run, reports = run_recipe(tmp_path, url)
     assert reports["PC-10"]["status"] == "PASS", run.stdout[-1800:] + run.stderr[-300:]
     cmds = commands(tmp_path)
-    assert [c["command"] for c in cmds] == ["flash.md5", "flash.read", "flash.md5"] * 2, "reads only, six operations, no write, no erase, no explicit console"
-    official, variant = cmds[:3], cmds[3:]
-    assert all("stub_variant" not in c["args"] and "stub_sha256" not in c["args"] for c in official), "the official stub is the default: no variant argument"
+    assert [c["command"] for c in cmds] == ["flash.md5", "flash.read", "flash.md5", "flash.read", "flash.md5"] * 2, "reads only, ten operations, no write, no erase, no explicit console"
+    official, variant = cmds[:5], cmds[5:]
+    assert all("stub_variant" not in c["args"] and "stub_sha256" not in c["args"] for c in official), "the official stub is selected by default: no variant argument"
+    assert all(c["args"]["uart_baud"] == 115200 for c in cmds), "the SAME speed for both series"
     assert all(c["args"]["stub_variant"] == NAME and c["args"]["stub_sha256"] == PIN for c in variant)
     assert all(c["args"]["return_console"] is True for c in cmds), "one loader session per command"
     result = comparison(tmp_path)
     assert result["rows"] == ["SV-A"] and result["variant_equals_reference"] is True and result["official_equals_reference"] is False
+    assert result["bytes"]["truth_available"] is True and all(r["equals_truth"] for r in result["bytes"]["series"][NAME])
+    assert any(not r["equals_truth"] for r in result["bytes"]["series"]["official"]), "the unstable official reads deviate from the ROM-matching bytes"
+    assert json.loads((case_dir(tmp_path) / "official-1-read.json").read_text())["stub_identity"]["uart_baud"] == 115200
     for name in ("official-0-chip_md5", "official-1-read"):
         assert json.loads((case_dir(tmp_path) / f"{name}.json").read_text())["stub_identity"]["variant"] == "official"
     variant_record = json.loads((case_dir(tmp_path) / f"{NAME}-0-chip_md5.json").read_text())
     assert variant_record["stub_identity"]["verified"] is True and variant_record["stub_identity"]["file_sha256"] == PIN and variant_record["ram_load_ops"] > 0
     assert any("stub=p4-no-clock-boost" in line for line in reports["PC-10"]["evidence"])
     assert client.artifacts()["artifacts"] == [] and client.device("board")["reservation"] is None
+    # traceability: the final state is recorded after the reservation was released, and everything is private
+    after = json.loads((case_dir(tmp_path) / "after.json").read_text())
+    assert after["device"]["reservation"] is None and after["device"]["connected"] is True
+    modes = {str(p.relative_to(case_dir(tmp_path))): stat.S_IMODE(p.stat().st_mode) for p in case_dir(tmp_path).rglob("*")}
+    assert modes and all(m == (0o700 if (case_dir(tmp_path) / n).is_dir() else 0o600) for n, m in modes.items()), {n: oct(m) for n, m in modes.items() if m not in (0o600, 0o700)}
 
 
 def test_an_unstable_variant_series_fails_with_the_not_removed_row(sim, tmp_path):
@@ -275,8 +339,8 @@ def test_a_wrong_pin_in_the_session_is_refused_by_the_server_after_the_official_
     run, reports = run_recipe(tmp_path, url, {"stub_variant": {"variant": NAME, "expected_sha256": "0" * 64, "expected_assets_sha256": ASSETS}})
     assert reports["PC-10"]["status"] == "FAIL"
     ops = {json.loads(line)["id"]: json.loads(line)["command"] for line in (case_dir(tmp_path) / "board-0" / "operations.jsonl").read_text().splitlines()}
-    assert sorted(ops.values()) == ["console", "flash.md5", "flash.md5", "flash.read"], "three official operations and the console return: the refused variant request never became an operation"
-    assert [c["command"] for c in commands(tmp_path)].count("flash.md5") == 3, "the refused request was recorded as asked (one more flash.md5) but no operation exists for it"
+    assert sorted(ops.values()) == ["console", "flash.md5", "flash.md5", "flash.md5", "flash.read", "flash.read"], "five official operations and the console return: the refused variant request never became an operation"
+    assert [c["command"] for c in commands(tmp_path)].count("flash.md5") == 4, "the refused request was recorded as asked (one more flash.md5) but no operation exists for it"
     assert "stub_variant_sha_mismatch" in run.stdout + " ".join(reports["PC-10"]["incidents"] + reports["PC-10"]["evidence"])
     assert client.device("board")["reservation"] is None
 

@@ -49,7 +49,7 @@ class SimDevice:
         `args.loader == 'rom'` SIMULATES a loader session without stub (loader_stub 0); a session already open in the other mode is refused."""
         rom = args.get('loader') == 'rom'
         variant = args.get('stub_variant')
-        mode = 'rom' if rom else ('stub:' + variant if variant else 'stub')
+        mode = 'rom' if rom else ('stub:' + variant if variant else ('stub@%s' % args['uart_baud'] if args.get('uart_baud') else 'stub'))
         if self.session_checks > 0 and getattr(self, 'session_mode', 'stub') != mode:
             raise SimFailure('loader_mode_mismatch', {'phase': 'identify', 'error_type': 'HardwareError', 'loader_stub': 0 if mode == 'stub' else 1})
         if variant and self.session_checks == 0:
@@ -80,7 +80,7 @@ class SimDevice:
         if args.get('stub_variant'):
             return {'variant': args['stub_variant'], 'origin': 'experimental, uploaded by the agent', 'verified': True,
                     'file_sha256': args['stub_sha256'], 'text_sha256': 'cc2865bba8c3984eb2a4ca64b2a1447cdf0407389da3c1825d94565a00331928', 'uart_baud': 115200}
-        return {'variant': 'official', 'origin': 'esptool-js bundled stub', 'verified': False, 'uart_baud': 460800}
+        return {'variant': 'official', 'origin': 'esptool-js bundled stub', 'verified': False, 'uart_baud': args.get('uart_baud', 460800)}
 
     async def execute(self, name, args, download, upload):
         if name == 'identify':

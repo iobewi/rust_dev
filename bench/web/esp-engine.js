@@ -159,6 +159,7 @@ export class EspEngine {
     if (!entry.allowed_commands.includes(command)) throw new HardwareError('stub_variant_not_allowed');          // read only, whatever the server let through
     if (args.loader === 'rom') throw new HardwareError('stub_variant_not_allowed');
     if (typeof args.stub_sha256 !== 'string' || args.stub_sha256 !== entry.sha256) throw new HardwareError('stub_variant_sha_mismatch');
+    if (args.uart_baud !== undefined && args.uart_baud !== entry.uart_baud) throw new HardwareError('uart_baud_not_allowed');
     const key = 'stub:' + name;
     if (this.loader && (this.loaderKey ?? 'stub') !== key) throw new HardwareError('loader_mode_mismatch', { phase: 'identify', loader_stub: this.loader.IS_STUB ? 1 : 0 });
     if (this.loader) return { name, entry, key, bytes: null };                       // same variant already loaded in this session: nothing to re-read
@@ -205,7 +206,7 @@ export class EspEngine {
   // identified by the hashes it was verified against.
   stubIdentity() {
     const variant = this.loaderVariant;
-    if (!variant) return { variant: 'official', origin: 'esptool-js bundled stub', verified: false, uart_baud: this.flashBaud };
+    if (!variant) return { variant: 'official', origin: 'esptool-js bundled stub', verified: false, uart_baud: this.loaderBaud ?? this.flashBaud };
     return { variant: variant.name, origin: 'experimental, uploaded by the agent', verified: true, file_sha256: variant.entry.sha256, text_sha256: variant.entry.text_sha256,
       uart_baud: variant.entry.uart_baud, stub: variant.entry.origin.stub, stub_commit: variant.entry.origin.stub_commit, lib_commit: variant.entry.origin.lib_commit,
       patch_sha256: variant.entry.origin.patch_sha256 };
@@ -214,9 +215,10 @@ export class EspEngine {
   // loader instance only, by a no-op. Nothing else is bypassed: the chip is detected, the ECO7 flash power sequence (postConnect) still runs, the baud rate
   // stays the ROM one, and the flash is attached with the same 8-byte SPI_ATTACH payload as esptool (esptool-js flashSpiAttach sends only 4).
   // A session that is already open in the other mode is refused, never reused silently.
-  async openLoader(mode = 'stub', variant = null) {
+  async openLoader(mode = 'stub', variant = null, baud = null) {
+    const key = variant ? variant.key : (mode === 'stub' && baud ? `stub@${baud}` : mode);        // official default stays 'stub' (460800); a requested baud rate is part of the session identity
     if (this.loader) {
-      if ((this.loaderKey ?? this.loaderMode ?? 'stub') !== (variant ? variant.key : mode)) throw new HardwareError('loader_mode_mismatch', { phase: 'identify', loader_stub: this.loader.IS_STUB ? 1 : 0 });
+      if ((this.loaderKey ?? this.loaderMode ?? 'stub') !== key) throw new HardwareError('loader_mode_mismatch', { phase: 'identify', loader_stub: this.loader.IS_STUB ? 1 : 0 });
       return this.loader;
     }
     await this.closeConsole();
@@ -231,7 +233,8 @@ export class EspEngine {
     };
     const terminal = { clean() {}, write() {}, writeLine: () => {} };
     const rom = mode === 'rom';
-    this.loader = new ESPLoader({ transport: this.transport, baudrate: rom ? 115200 : variant ? variant.entry.uart_baud : this.flashBaud, terminal });
+    this.loader = new ESPLoader({ transport: this.transport, baudrate: rom ? 115200 : variant ? variant.entry.uart_baud : (baud ?? this.flashBaud), terminal });
+    this.loaderBaud = rom ? 115200 : variant ? variant.entry.uart_baud : (baud ?? this.flashBaud);
     if (variant) { const engine = this; this.loader.runStub = async function () { return engine.uploadVariant(this, variant); }; }
     // esptool-js main() order: detect chip, postConnect (ECO7 flash power sequence), runStub, [baud change], readFlashId. In ROM mode runStub is replaced, on this loader
     // instance only, by the SPI attach (esptool's own order: power on, attach, then any flash id read). It reproduces the branches esptool-js already has for "no stub
@@ -249,14 +252,14 @@ export class EspEngine {
     }
     this.identityChecks = 0;   // identity re-checks made on THIS loader session (diagnostic only)
     try {
-      this.chipDescription = await this.loader.main(); this.mode = 'loader'; this.loaderMode = mode; this.loaderKey = variant ? variant.key : mode; this.loaderVariant = variant;
+      this.chipDescription = await this.loader.main(); this.mode = 'loader'; this.loaderMode = mode; this.loaderKey = key; this.loaderVariant = variant;
       if (rom && (this.loader.syncStubDetected || this.loader.IS_STUB)) throw new HardwareError('rom_mode_stub_running', { phase: 'identify', loader_stub: 1 });
     }
     catch (e) { try { await this.close(); } catch { /* Preserve the original serial failure. */ } throw e; }
     return this.loader;
   }
-  async identity(mode = 'stub', variant = null) {
-    const l = await this.openLoader(mode, variant);
+  async identity(mode = 'stub', variant = null, baud = null) {
+    const l = await this.openLoader(mode, variant, baud);
     this.identityChecks += 1;
     const id = await l.readFlashId();
     const code = id >>> 16 & 255;
@@ -356,6 +359,8 @@ export class EspEngine {
       context.check(); this.setPhase('control', context);
       // Defense in depth: stub-variant arguments only ever reach the read commands the registry allows, whatever the server let through.
       if ((args.stub_variant !== undefined || args.stub_sha256 !== undefined) && !['flash.md5', 'flash.read'].includes(command)) throw new HardwareError('stub_variant_not_allowed');
+      // The only UART speed an agent can be asked for is 115200 (the ROM's), for the two read commands and the stub (official or variant); never with the ROM loader.
+      if (args.uart_baud !== undefined && (args.uart_baud !== 115200 || !['flash.md5', 'flash.read'].includes(command) || args.loader === 'rom')) throw new HardwareError('uart_baud_not_allowed');
       if (command === 'mark') { this.event('mark', { detail: args.label }); return { label: args.label }; }
       if (command === 'trigger') {
         if (args.action === 'disarm') { this.cancelTrigger(); return { armed: false }; }
@@ -415,7 +420,7 @@ export class EspEngine {
       context.check();
       this.setPhase('identify', context);
       const variant = await this.prepareVariant(command, args, context);       // refuses BEFORE any serial access; null unless a variant was asked for
-      const physical = await this.identity(command === 'flash.md5' && args.loader === 'rom' ? 'rom' : 'stub', variant), l = this.loader;
+      const physical = await this.identity(command === 'flash.md5' && args.loader === 'rom' ? 'rom' : 'stub', variant, args.uart_baud ?? null), l = this.loader;
       // Diagnostic only: the raw JEDEC id that THIS command's identification read, its rank in the loader session and whether the stub runs.
       const identified = { jedec_id: physical.flash_id >>> 0, identify_index: this.identityChecks, loader_stub: l.IS_STUB ? 1 : 0,
         chip_description: String(this.chipDescription || '').slice(0, 64) };

@@ -45,16 +45,24 @@ La variante n'existe que dans la RAM de la puce, pour une session de chargeur.
 
 ## 5. Tests (simulation et doubles)
 
-- Node `tests/stub-variant.test.mjs` (16) : vraies fonctions de l'agent, esptool-js et port simulés. Défaut officiel ; chargement avec l'empreinte épinglée, ordre et tailles du téléversement, vitesse, identité ; refus d'une empreinte fausse, d'un fichier altéré, inconnu, d'une autre puce ou révision, d'un stub déjà actif, d'un `OHAI` absent, de toute commande non lecture, du mode ROM ; sessions de modes différents refusées dans les deux sens ; réutilisation de la session de la variante ; retour au stub officiel.
-- Python `python/tests/test_stub_variant.py` (45) : trois registres d'empreintes d'accord, validation du protocole (puces, commandes, quarantaine), session, comparaison pure, opt-in et scope côté serveur, client, recette contre le simulateur.
+- Node `tests/stub-variant.test.mjs` (20) : vraies fonctions de l'agent, esptool-js et port simulés. Défaut officiel ; chargement avec l'empreinte épinglée, ordre et tailles du téléversement, vitesse, identité ; refus d'une empreinte fausse, d'un fichier altéré, inconnu, d'une autre puce ou révision, d'un stub déjà actif, d'un `OHAI` absent, de toute commande non lecture, du mode ROM ; sessions de modes différents refusées dans les deux sens ; réutilisation de la session de la variante ; retour au stub officiel.
+- Python `python/tests/test_stub_variant.py` (59) : trois registres d'empreintes d'accord, validation du protocole (puces, commandes, quarantaine), session, comparaison pure, opt-in et scope côté serveur, client, recette contre le simulateur.
 - Ils ne prouvent rien sur la vraie puce, le stub, esptool-js ni la flash.
 
-## 6. Proposition de recette comparative minimale : `P4-STUB-VARIANT` (PC-10), non exécutée
+## 6. Recette comparative `P4-STUB-VARIANT` (PC-10), à débit UART identique, non exécutée
 
-Série identique deux fois, stub officiel puis variante, une session de chargeur par opération : `flash.md5`, `flash.read` (avec le condensat final du stub), `flash.md5` sur `0x2000`/4096 octets, six opérations, aucune écriture, aucun retry, arrêt au premier échec. Le MD5 de la ROM pour la plage (`stub_variant.reference_rom_md5`, issu d'un run ROM) sert de vérité de terrain.
-- **PASS** : les deux séries complètes, identités conformes, série de la variante cohérente et égale au MD5 de la ROM ; la série officielle est reportée (ligne SV-A si elle est instable) sans être exigée.
-- **FAIL** : opération en échec, identité inattendue, condensat manquant, série de la variante incohérente (SV-C) ou différente du MD5 de la ROM (SV-E).
-- Limite : la série officielle tourne à la vitesse par défaut de l'agent (460800) et la variante à 115200 ; un écart n'est donc pas attribué à la seule bascule d'horloge. Aucune cause n'est établie.
+**Pourquoi une nouvelle version.** Le premier run de la variante (STUBVAR1) a donné un MD5 égal à celui de la ROM, mais il a changé deux choses à la fois : la transition DCDC / 200 MHz et le débit (460800 pour le stub officiel, 115200 pour la variante). La comparaison se fait donc **à 115200 bauds pour les deux stubs**.
+
+**Moyen.** Un argument `uart_baud` (seule valeur permise : `115200`, celle de la ROM) sur `flash.read` et `flash.md5`, pour le stub officiel comme pour la variante, jamais avec le chargeur ROM ni sur une autre commande. Sans l'argument, le comportement est inchangé (stub officiel à 460800). Le débit fait partie de l'identité de la session : une session ouverte à un débit n'est jamais réutilisée pour un autre. Le stub officiel reste le même binaire ; l'identité rapportée (`stub_identity.uart_baud`) donne le débit réellement utilisé.
+
+**Séries.** Identiques, deux fois (officiel d'abord, variante ensuite, le même jour) : `flash.md5`, `flash.read` (avec le condensat final du stub), `flash.md5`, `flash.read`, `flash.md5` sur `0x2000`/4096 octets, une session de chargeur par opération : dix opérations, aucune écriture, aucun retry, arrêt au premier échec. Le MD5 de la ROM (`stub_variant.reference_rom_md5`) est la vérité de terrain.
+
+**Analyse.** Séries analysées comme PC-7, plus une comparaison octet par octet : toute lecture dont le MD5 égale celui de la ROM fournit les octets de référence ; chaque lecture est comparée position par position (positions, bits, position dans le morceau de 16 octets, jamais le contenu) pour voir si les écarts du stub officiel, concentrés sur les octets 1 à 3 de leur morceau, disparaissent avec la variante. Sans lecture égale au MD5 de la ROM, rien n'est dit sur la justesse.
+
+- **PASS** : les deux séries complètes, identités et débits conformes, série de la variante cohérente et égale au MD5 de la ROM ; la série officielle est reportée (SV-A si elle est instable) sans être exigée.
+- **FAIL** : opération en échec, identité ou débit inattendu, condensat manquant, série de la variante incohérente (SV-C) ou différente du MD5 de la ROM (SV-E).
+- **Traçabilité** : l'état final (`after.json`) est enregistré après la libération de la réservation ; tous les fichiers de preuve de cette recette sont privés (0600, dossiers 0700), vérifié par un test.
+- Limite : un run, une plage de 4 Kio, des digests transportés par la même liaison ; aucune cause n'est établie.
 
 ## 7. Avant tout essai (rien de cela n'est fait)
 

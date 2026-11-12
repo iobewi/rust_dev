@@ -179,3 +179,47 @@ test('rollback: ending the variant session (console return) lets the next comman
   const b = await md5(x, { address: 0x2000, size: 4096, return_console: false });
   assert.equal(a.stub_identity.variant, NAME); assert.equal(b.stub_identity.variant, 'official'); assert.equal(x.log.runStub, 1);
 });
+
+// --- UART speed: the official stub can be asked for 115200 (the ROM's) so that a comparison with the variant is made at the same speed -----------------------------
+test('uart_baud 115200 makes the OFFICIAL stub run at 115200: the real runStub is used, nothing is fetched, the identity reports the speed, the default stays 460800', async () => {
+  const x = setup();
+  const r = await md5(x, { address: 0x2000, size: 4096, return_console: false, uart_baud: 115200 });
+  assert.deepEqual(x.log.constructed, [{ baudrate: 115200 }]); assert.equal(x.log.runStub, 1); assert.deepEqual(x.log.fetched, []);
+  assert.equal(r.stub_identity.variant, 'official'); assert.equal(r.stub_identity.uart_baud, 115200);
+  const y = setup(); const d = await md5(y, { address: 0x2000, size: 4096, return_console: false });
+  assert.deepEqual(y.log.constructed, [{ baudrate: 460800 }]); assert.equal(d.stub_identity.uart_baud, 460800);
+});
+
+test('the variant is at 115200 whether or not the argument is given, and no other speed is accepted anywhere', async () => {
+  const a = setup(), b = setup();
+  assert.equal((await md5(a)).stub_identity.uart_baud, 115200); assert.equal((await md5(b, args({ uart_baud: 115200 }))).stub_identity.uart_baud, 115200);
+  for (const bad of [460800, 921600, 9600, 0, -1, '115200', true, null, 115200.5]) {
+    for (const extra of [{}, V_ARGS]) {
+      const x = setup();
+      await assert.rejects(md5(x, { address: 0x2000, size: 4096, return_console: false, ...extra, uart_baud: bad }), e => code(e) === 'uart_baud_not_allowed', String(bad));
+      untouched(x); assert.deepEqual(x.log.fetched, []);
+    }
+  }
+});
+
+const V_ARGS = { stub_variant: NAME, stub_sha256: ENTRY.sha256 };
+
+test('uart_baud is for the two reads only and never with the ROM loader', async () => {
+  for (const command of ['flash.write', 'flash.erase', 'partitions', 'identify', 'console', 'reset', 'mark']) {
+    const x = setup();
+    await assert.rejects(x.engine.execute(command, { uart_baud: 115200, images: [], chip: 'esp32p4' }, x.context), e => code(e) === 'uart_baud_not_allowed', command);
+    untouched(x);
+  }
+  const x = setup();
+  await assert.rejects(md5(x, { address: 0x2000, size: 4096, return_console: false, loader: 'rom', uart_baud: 115200 }), e => code(e) === 'uart_baud_not_allowed'); untouched(x);
+});
+
+test('the speed is part of the session: a session opened at one speed is never reused for another, in both directions, and is reused for the same one', async () => {
+  const slow = setup(); await md5(slow, { address: 0x2000, size: 4096, return_console: false, uart_baud: 115200 });
+  await assert.rejects(md5(slow, { address: 0x2000, size: 4096, return_console: false }), e => code(e) === 'loader_mode_mismatch');
+  const again = await md5(slow, { address: 0x2000, size: 4096, return_console: false, uart_baud: 115200 });
+  assert.equal(again.identify.identify_index, 2); assert.equal(slow.log.constructed.length, 1);
+  const fast = setup(); await md5(fast, { address: 0x2000, size: 4096, return_console: false });
+  await assert.rejects(md5(fast, { address: 0x2000, size: 4096, return_console: false, uart_baud: 115200 }), e => code(e) === 'loader_mode_mismatch');
+  assert.equal(fast.log.constructed.length, 1);
+});

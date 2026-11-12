@@ -68,8 +68,8 @@ def validate_command(name, args, device, artifacts):
     require(isinstance(args, dict))
     schemas = {
         'identify': set(), 'reset': set(), 'console': {'return_console'},
-        'partitions': {'address', 'return_console'}, 'flash.read': {'address', 'size', 'return_console', 'stub_digest', 'stub_variant', 'stub_sha256'},
-        'flash.md5': {'address', 'size', 'return_console', 'loader', 'stub_variant', 'stub_sha256'},
+        'partitions': {'address', 'return_console'}, 'flash.read': {'address', 'size', 'return_console', 'stub_digest', 'stub_variant', 'stub_sha256', 'uart_baud'},
+        'flash.md5': {'address', 'size', 'return_console', 'loader', 'stub_variant', 'stub_sha256', 'uart_baud'},
         'flash.write': {'images', 'chip', 'erase', 'return_console'}, 'flash.erase': {'chip', 'return_console'},
         'uart.write': {'data'}, 'uart.configure': {'baudrate'}, 'io0': {'duration_ms'}, 'boot.download': {'hold_ms'},
         'http.request': {'url', 'method', 'body', 'timeout_ms'},
@@ -79,6 +79,10 @@ def validate_command(name, args, device, artifacts):
     for key in ('erase', 'return_console', 'stub_digest'):
         if key in args:
             require(type(args[key]) is bool)
+    if 'uart_baud' in args:
+        # The only speed a client can ask the stub for is 115200 (the ROM's), never with the ROM loader; the default (no argument) is unchanged.
+        require(type(args['uart_baud']) is int and args['uart_baud'] == 115200, 'uart_baud_not_allowed', 'uart_baud can only be 115200')
+        require(args.get('loader', 'stub') == 'stub', 'uart_baud_not_allowed', 'uart_baud cannot be combined with the ROM loader')
     if 'stub_variant' in args or 'stub_sha256' in args:
         require('stub_variant' in args and 'stub_sha256' in args, 'stub_variant_invalid', 'stub_variant and stub_sha256 go together')
         entry = STUB_VARIANTS.get(args['stub_variant']) if isinstance(args['stub_variant'], str) else None
