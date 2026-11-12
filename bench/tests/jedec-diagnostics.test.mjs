@@ -4,7 +4,7 @@ import { EspEngine } from '../web/esp-engine.js';
 import { hardwareError, diagnostic } from '../web/hardware-errors.js';
 
 const MiB = 1024 * 1024;
-const P4_JEDEC = 0x193040;          // the value the P4 returned on its first identification (capacity byte 0x19 = 32 MiB)
+const P4_JEDEC = 0x1940C8;          // the value the P4 returned on its first identification (capacity byte 0x19 = 32 MiB)
 
 // A loader double: readFlashId answers from a script, everything else is counted so that "no retry" can be asserted.
 function setup(ids, { stub = true } = {}) {

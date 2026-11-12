@@ -45,7 +45,7 @@ class SimDevice:
             raise SimFailure('flash_capacity_unknown', {'phase': 'identify', 'error_type': 'HardwareError', 'jedec_id': 0, 'identify_index': index, 'loader_stub': 1})
         if args.get('return_console', True) is not False:
             self.session_checks = 0                                                      # the command returns to the console: the next one opens a new loader session
-        return {'jedec_id': 0x193040, 'identify_index': index, 'loader_stub': 1} if os.environ.get('SIM_JEDEC') == '1' else None
+        return {'jedec_id': 0x1940C8, 'identify_index': index, 'loader_stub': 1} if os.environ.get('SIM_JEDEC') == '1' else None
 
     async def execute(self, name, args, download, upload):
         if name == 'identify':

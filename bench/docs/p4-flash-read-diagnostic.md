@@ -3,7 +3,7 @@
 **Statut : analyse statique. Aucun accès matériel n'a été fait pour ce document.** Ce qui suit distingue ce qui est démontré, ce qui est fortement étayé et ce qui reste inconnu.
 
 ## Les faits du run `p4-read-v1` (observations, voir le bilan privé)
-- `PC-0` : `identify` réussi, `esp32p4`, flash 33 554 432 octets, `flash_id` 0x193040.
+- `PC-0` : `identify` réussi, `esp32p4`, flash 33 554 432 octets, `flash_id` 0x1940C8.
 - `PC-1` : première `flash.read` de 4096 octets à `0x2000` réussie (`return_console=false`, premier octet `0xE9`). Deuxième `flash.read` identique, dans la même session de loader : échec `hardware_command_failed`.
 - Diagnostic complet de l'échec, relu sur le serveur : `phase=identify`, `error_type=Error`, `elapsed_ms=43`, `serial_reads=11`, `serial_bytes=132`, `serial_timeouts=0`, `last_read_ms=4`, `last_packet_bytes=12`.
 - La carte est restée saine : même génération, pas de quarantaine, aucune opération pendante.
@@ -16,7 +16,7 @@ Ces observations ont été obtenues avec un consentement `PC-READ` inscrit par l
 3. **L'erreur ressortit en `hardware_command_failed`** parce que l'exception d'origine est une `Error` JavaScript simple, sans code ni type de transport : `hardwareError()` retombe alors sur ce code. Une erreur d'esptool-js s'appellerait `ESPError` (la classe fixe son nom ; l'agent conserve ce nom dans `error_type`). Le nom `Error` observé écarte donc une erreur levée par esptool-js.
 4. **Dans `identity()`, la seule `Error` simple qui peut survenir une fois les réponses reçues est `Unknown flash capacity`** : elle suit la lecture de l'identifiant. La lecture de la MAC (`readMac`) vient après ce test.
 5. **Le nombre d'échanges correspond à `readFlashId`.** Dans esptool-js 0.7.0, `readFlashId()` appelle `runSpiflashCommand(0x9F, [], 24)`. En comptant les lectures et écritures de registres de cette fonction, elle fait `9 + k` échanges, `k` étant le nombre de sondages de fin de commande. Avec `k = 2`, cela donne 11, soit `serial_reads = 11`. Les 132 octets valent 11 paquets de 12 octets. Aucun timeout : toutes les réponses sont arrivées.
-6. **La valeur de capacité est `(id >> 16) & 0xFF`**, acceptée entre 12 et 26 inclus (2^12 = 4 Kio à 2^26 = 64 Mio). Une première lecture à 0x193040 donne 0x19 = 25 = 32 Mio.
+6. **La valeur de capacité est `(id >> 16) & 0xFF`**, acceptée entre 12 et 26 inclus (2^12 = 4 Kio à 2^26 = 64 Mio). Une première lecture à 0x1940C8 donne 0x19 = 25 = 32 Mio.
 
 ## Hypothèse fortement étayée (non prouvée)
 La deuxième lecture de l'identifiant JEDEC a renvoyé une valeur dont l'octet de capacité n'est pas dans l'intervalle 12 à 26, ce qui lève `Unknown flash capacity`. Les points 3 à 5 convergent. Aucune trace conservée ne contient la valeur brute : **elle n'a jamais été relevée**.
@@ -65,3 +65,21 @@ Ensuite, selon la valeur relevée :
 - **D.** Corriger la cause (état SPI) si la mesure la confirme, sans toucher aux garanties d'identité.
 
 La correction ne doit pas être choisie avant la mesure de `jedec_id`.
+
+## Résultat de l'essai P4-JEDEC-READ (2026-11-12, commit déployé `5bde67b7b`, autorisé par l'opérateur)
+Observations, preuves privées dans `$BENCH_STATE_DIR/qualification-evidence/PC-6-20261112T180914Z`. **Verdict de la recette : FAIL** (les deux lectures diffèrent).
+
+- Les deux lectures de 4096 octets à `0x2000`, chacune avec retour console, **ont réussi** : plus d'échec en phase `identify` et aucun `flash_capacity_unknown`. L'essai ne teste pas le mode enchaîné (`return_console=false`).
+- Le JEDEC brut rapporté pour l'identification de chaque commande est **`0x1940C8`** (1 654 984), identique pour `identify` et pour les deux lectures, `identify_index=1`, `loader_stub=1`. Octet de capacité `0x19` = 32 Mio. (Une version précédente de ce document donnait par erreur `0x193040` ; seul l'octet de capacité était juste.)
+- **Les deux lectures ont des SHA-256 différents** : 21 octets diffèrent sur 4096 (25 bits). La lecture du premier essai matériel, au même endroit, diffère aussi des deux autres (15 et 19 octets) : **trois lectures, trois empreintes**.
+- Structure des différences : presque toutes sont d'un seul bit (18 octets sur 21 entre les deux lectures de l'essai) ; sur les 25 bits, 24 passent de 1 à 0 et 1 de 0 à 1 ; les décalages sont réguliers (0xb à 0x11, puis 0xa3, 0xb3, 0xc3, 0xd3 espacés de 0x10, puis 0x102, 0x122, 0x142, 0x162, 0x1e2, 0x242, puis 0x601, 0x641).
+- Aucune lecture n'est toute à `0xFF`.
+
+### Ce que cela établit, et ce que cela n'établit pas
+- **Établi :** la lecture de flash du P4 par le banc n'est **pas déterministe** à cet endroit, avec ce chemin (esptool-js 0.7.0, stub, 460 800 bauds, CH343). Une sauvegarde complète faite avec ce chemin n'est donc pas fiable en l'état : la vérification actuelle de PC-BACKUP compare la copie locale à l'artefact du serveur, **pas** les octets lus à ceux de la flash.
+- **Non établi :** la cause. Pistes, aucune démontrée : (1) corruption sur la liaison série (esptool-js 0.7.0 ne vérifie pas le condensat MD5 renvoyé par le stub après la lecture) ; (2) réglage du mode ou de la fréquence de lecture de la flash par le stub pour le P4 ; (3) alimentation ou intégrité du signal de la flash ; (4) contenu réellement variable (peu plausible dans une zone d'amorce).
+- Le biais vers des bits passant de 1 à 0 et la régularité des décalages ne ressemblent pas à un bruit série uniforme ; c'est un indice, pas une conclusion.
+- **Non rattaché à la panne précédente :** l'échec en phase `identify` de la deuxième lecture ne s'est pas reproduit avec une session de loader neuve par commande. Cela ne prouve pas que le mode enchaîné soit réparé.
+
+### Diagnostic suivant à envisager (nécessite une nouvelle autorisation et un nouveau code relu)
+Comparer, pour la même plage, le **MD5 calculé par la puce** (commande `flash md5sum` du loader, qui lit la flash en interne, sans passer par la liaison série) aux MD5 des octets reçus. Si le MD5 de la puce est stable d'une fois à l'autre et ne correspond pas aux octets reçus, la corruption est sur la liaison ; s'il varie lui aussi, elle est du côté de la lecture de la flash.
