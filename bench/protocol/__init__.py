@@ -8,7 +8,7 @@ from urllib.parse import urlsplit
 VERSION = 1
 MAX_ARTIFACT = 16 * 1024 * 1024
 MAX_UART = 16384
-CAPABILITIES = {'identify', 'reset', 'partitions', 'flash.read', 'flash.write', 'flash.erase',
+CAPABILITIES = {'identify', 'reset', 'partitions', 'flash.read', 'flash.md5', 'flash.write', 'flash.erase',
                 'uart.write', 'uart.configure', 'console', 'io0', 'boot.download', 'mark', 'trigger', 'http.request'}
 PROGRAM = {'flash.write', 'flash.erase'}
 PRIVILEGED = PROGRAM | {'uart.write', 'io0', 'boot.download', 'trigger', 'http.request'}
@@ -64,18 +64,19 @@ def validate_command(name, args, device, artifacts):
     require(isinstance(args, dict))
     schemas = {
         'identify': set(), 'reset': set(), 'console': {'return_console'},
-        'partitions': {'address', 'return_console'}, 'flash.read': {'address', 'size', 'return_console'},
+        'partitions': {'address', 'return_console'}, 'flash.read': {'address', 'size', 'return_console', 'stub_digest'},
+        'flash.md5': {'address', 'size', 'return_console'},
         'flash.write': {'images', 'chip', 'erase', 'return_console'}, 'flash.erase': {'chip', 'return_console'},
         'uart.write': {'data'}, 'uart.configure': {'baudrate'}, 'io0': {'duration_ms'}, 'boot.download': {'hold_ms'},
         'http.request': {'url', 'method', 'body', 'timeout_ms'},
         'mark': {'label'}, 'trigger': {'data', 'action', 'delay_ms', 'expires_ms'},
     }
     require(not (args.keys() - schemas[name]), message='Unknown command fields')
-    for key in ('erase', 'return_console'):
+    for key in ('erase', 'return_console', 'stub_digest'):
         if key in args:
             require(type(args[key]) is bool)
     capacity = device['flash_size']
-    if name == 'flash.read':
+    if name in ('flash.read', 'flash.md5'):
         region(args.get('address'), args.get('size'), capacity)
     if name == 'partitions':
         region(args.get('address', 0x8000), 0xc00, capacity)

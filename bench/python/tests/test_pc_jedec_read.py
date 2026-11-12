@@ -112,7 +112,7 @@ def test_two_reads_with_console_return_pass_and_keep_the_jedec_of_every_identifi
     assert first["sha256"] == second["sha256"] and first["size"] == second["size"] == 4096
     expected = hashlib.sha256((0x2000 // 4096).to_bytes(4, "little") * 1024).hexdigest()
     assert first["sha256"] == expected, "the bytes at 0x2000 are the sector with index 2"
-    assert first["identify"] == {"jedec_id": 0x1940C8, "identify_index": 1, "loader_stub": 1}
+    assert first["identify"] == {"jedec_id": 0x1940C8, "identify_index": 1, "loader_stub": 1, "chip_description": "ESP32-P4 (revision v1.0)"}
     assert second["identify"]["identify_index"] == 1, "return_console=true: every read opens a new loader session"
     versions = json.loads((directory / "versions.json").read_text())
     assert versions["page_assets_sha256"] == ASSETS == versions["expected_assets_sha256"]

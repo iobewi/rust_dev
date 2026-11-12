@@ -84,7 +84,8 @@ Les agents utilisent REST seulement pour uploader les dumps et télécharger les
 | `reset` | `{}` ; en console, EN sur pont UART ou reset interne USB Serial/JTAG 303a:1001 | Non |
 | `console` | `{}` | Non |
 | `partitions` | `address` défaut 0x8000, `return_console` | Non |
-| `flash.read` | `address`, `size`, `return_console` ; résultat contient `artifact` | Non |
+| `flash.read` | `address`, `size`, `return_console`, `stub_digest` (booléen strict, défaut faux) ; résultat contient `artifact` et, si `stub_digest`, `stub_digests` (un état par bloc de 1 Mio : `received` + `md5`, `absent`, `partial`, `invalid`) | Non |
+| `flash.md5` | `address`, `size`, `return_console` ; résultat : `md5` (32 hex), `format` (`stub-raw16` ou `rom-ascii32`), `address`, `size`. Lecture seule, calculée par la puce (SPI_FLASH_MD5) ; une réponse mal formée est `md5_response_invalid` | Non |
 | `flash.write` | `chip`, `images` (1–16), `erase` optionnel, `return_console` | Oui + program + consentement |
 | `flash.erase` | `chip`, `return_console` | Oui + program + consentement |
 | `uart.write` | `data` base64, 1–16 384 octets | Oui |
