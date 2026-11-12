@@ -169,6 +169,27 @@ Device Lab actif. Ne pas démarrer un serveur sur un port déjà occupé.
 
 Voir [la politique et les exemples pytest](bench/docs/pytest.md#sélection-des-tests-et-niveaux-de-validation).
 
+## Répartition des validations entre développement et CI
+
+- **Session locale** : appliquer L1/L2 et ne lancer que les tests nécessaires
+  au changement. Une CI en cours n'est pas une invitation à relancer L3 dans
+  le devcontainer ; signaler son état séparément.
+- **Workflow `.github/workflows/bench.yml` / job `software`** : responsable
+  des suites générales Python, Node/unittest et navigateur. La PR utilise
+  `not slow_integration` ; `workflow_dispatch` permet la suite Python complète.
+- **Workflow `.github/workflows/devcontainer.yml` / job `container`** :
+  responsable du build effectif du conteneur, des toolchains, de l'import
+  client Python depuis le workspace, du journal SQLite isolé et de la
+  persistance des volumes après recréation. Les smoke tests ciblés de cet
+  environnement ne remplacent ni ne répètent les suites générales du job
+  `software`.
+- **Matériel** : qualification H distincte, sur consentement explicite.
+
+Les deux jobs peuvent s'exécuter sur une même PR touchant l'image ou les
+dépendances : ce sont des **preuves complémentaires**, non deux lancements
+de la même suite logicielle. Ne pas déclarer le changement validé tant
+qu'un job requis reste en échec ou n'a pas été déclenché.
+
 ## Software checks
 
 Les commandes ci-dessous décrivent le **contrôle global L3** ou la CI ; elles
