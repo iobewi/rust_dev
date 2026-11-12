@@ -65,7 +65,7 @@ def validate_command(name, args, device, artifacts):
     schemas = {
         'identify': set(), 'reset': set(), 'console': {'return_console'},
         'partitions': {'address', 'return_console'}, 'flash.read': {'address', 'size', 'return_console', 'stub_digest'},
-        'flash.md5': {'address', 'size', 'return_console'},
+        'flash.md5': {'address', 'size', 'return_console', 'loader'},
         'flash.write': {'images', 'chip', 'erase', 'return_console'}, 'flash.erase': {'chip', 'return_console'},
         'uart.write': {'data'}, 'uart.configure': {'baudrate'}, 'io0': {'duration_ms'}, 'boot.download': {'hold_ms'},
         'http.request': {'url', 'method', 'body', 'timeout_ms'},
@@ -75,6 +75,8 @@ def validate_command(name, args, device, artifacts):
     for key in ('erase', 'return_console', 'stub_digest'):
         if key in args:
             require(type(args[key]) is bool)
+    if name == 'flash.md5' and 'loader' in args:
+        require(args['loader'] in ('stub', 'rom'), message='loader must be stub or rom')
     capacity = device['flash_size']
     if name in ('flash.read', 'flash.md5'):
         region(args.get('address'), args.get('size'), capacity)

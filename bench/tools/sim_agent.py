@@ -45,15 +45,27 @@ class SimDevice:
         return bytes(raw)
 
     def jedec_view(self, args):
-        """SIMULATES the agent's per-identification diagnostic (SIM_JEDEC=1) and an invalid identification at the N-th flash command (SIM_JEDEC_INVALID_AT=N)."""
+        """SIMULATES the agent's per-identification diagnostic (SIM_JEDEC=1) and an invalid identification at the N-th flash command (SIM_JEDEC_INVALID_AT=N).
+        `args.loader == 'rom'` SIMULATES a loader session without stub (loader_stub 0); a session already open in the other mode is refused."""
+        rom = args.get('loader') == 'rom'
+        mode = 'rom' if rom else 'stub'
+        if self.session_checks > 0 and getattr(self, 'session_mode', 'stub') != mode:
+            raise SimFailure('loader_mode_mismatch', {'phase': 'identify', 'error_type': 'HardwareError', 'loader_stub': 0 if mode == 'stub' else 1})
+        if self.session_checks == 0:
+            self.session_mode = mode
+            if rom and os.environ.get('SIM_ROM_STUB_RUNNING') == '1':
+                raise SimFailure('rom_mode_stub_running', {'phase': 'identify', 'error_type': 'HardwareError', 'loader_stub': 1})
+            if rom and os.environ.get('SIM_ROM_ATTACH_FAIL') == '1':
+                raise SimFailure('rom_flash_attach_failed', {'phase': 'identify', 'error_type': 'HardwareError', 'loader_stub': 0})
         self.flash_commands += 1
         self.session_checks += 1
         index = self.session_checks
+        stub_flag = 0 if rom and os.environ.get('SIM_ROM_STUB_LEAK') != '1' else 1
         if os.environ.get('SIM_JEDEC_INVALID_AT') == str(self.flash_commands):          # the loader stays open after a failed identification
-            raise SimFailure('flash_capacity_unknown', {'phase': 'identify', 'error_type': 'HardwareError', 'jedec_id': 0, 'identify_index': index, 'loader_stub': 1})
+            raise SimFailure('flash_capacity_unknown', {'phase': 'identify', 'error_type': 'HardwareError', 'jedec_id': int(os.environ.get('SIM_JEDEC_INVALID_VALUE', '0')), 'identify_index': index, 'loader_stub': stub_flag})
         if args.get('return_console', True) is not False or os.environ.get('SIM_SESSION_RESET_EACH') == '1':      # SIM_SESSION_RESET_EACH: SIMULATES an agent that reopens the loader for every command
             self.session_checks = 0                                                      # the command returns to the console: the next one opens a new loader session
-        return {'jedec_id': 0x1940C8, 'identify_index': index, 'loader_stub': 1, 'chip_description': 'ESP32-P4 (revision v1.0)'} if os.environ.get('SIM_JEDEC') == '1' else None
+        return {'jedec_id': 0x1940C8, 'identify_index': index, 'loader_stub': stub_flag, 'chip_description': 'ESP32-P4 (revision v1.0)'} if os.environ.get('SIM_JEDEC') == '1' else None
 
     async def execute(self, name, args, download, upload):
         if name == 'identify':
@@ -91,13 +103,21 @@ class SimDevice:
             identify = self.jedec_view(args)
             self.md5_calls += 1
             truth = bytes(self.flash[args['address']:args['address'] + args['size']])
+            rom = args.get('loader') == 'rom'
             mode = os.environ.get('SIM_INTEGRITY', 'ok')
-            if mode == 'flash':
+            if rom:
+                self.rom_calls = getattr(self, 'rom_calls', 0) + 1
+                rom_mode = os.environ.get('SIM_ROM_MODE', 'stable')           # stable | vary | vary_third (only the third ROM measurement differs)
+                if rom_mode == 'vary' or (rom_mode == 'vary_third' and self.rom_calls == 3):
+                    truth = self.flip(truth, self.rom_calls * 53)             # SIMULATES a ROM measurement that differs from the others
+            elif mode == 'flash':
                 truth = self.flip(truth, self.md5_calls * 53)          # SIMULATES a flash that reads differently from one call to the next
             elif mode == 'md5cmd':
                 truth = b'not the flash content'                       # SIMULATES a chip MD5 that disagrees with everything else
-            return {'md5': hashlib.md5(truth).hexdigest(), 'format': 'stub-raw16', 'address': args['address'], 'size': args['size'], 'simulated': True,
-                    **({'identify': identify} if identify else {})}
+            leak = rom and os.environ.get('SIM_ROM_STUB_LEAK') == '1'      # SIMULATES an agent that loaded the stub although the ROM was asked
+            fmt = 'rom-ascii32' if rom and not leak else 'stub-raw16'
+            return {'md5': hashlib.md5(truth).hexdigest(), 'format': fmt, 'address': args['address'], 'size': args['size'], 'simulated': True,
+                    'loader': 'rom' if rom and not leak else 'stub', **({'identify': identify} if identify else {})}
         if name == 'flash.read':
             if os.environ.get('SIM_FAIL_READ_AT') == str(args['address']):             # SIMULATES a read that fails definitively at one address
                 raise SimFailure('serial_timeout')

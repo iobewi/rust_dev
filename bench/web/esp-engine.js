@@ -11,7 +11,7 @@ export class EspEngine {
     const usb = port.getInfo();
     this.native = usb.usbVendorId === 0x303a;
     this.usbSerialJtag = this.native && usb.usbProductId === 0x1001;
-    this.mode = 'off'; this.reader = null; this.loader = null; this.baudrate = 115200;
+    this.mode = 'off'; this.reader = null; this.loader = null; this.loaderMode = null; this.baudrate = 115200;
     this.flashBaud = 460800; this.identityChecks = 0; this.hold = false; this.trigger = null; this.tail = new Uint8Array();
     this.trace = new Tracer(); this.busy = false; this.phase = 'prepare'; this.readProgress = {};
   }
@@ -106,7 +106,7 @@ export class EspEngine {
     if (this.hold) throw new HardwareError('operator_recovery_required');
     if (this.mode === 'console') return;
     this.event('transport', { detail: 'opening console' });
-    if (this.transport) { await this.transport.disconnect(); this.transport = null; this.loader = null; }
+    if (this.transport) { await this.transport.disconnect(); this.transport = null; this.loader = null; this.loaderMode = null; }
     await this.port.open({ baudRate: this.baudrate });
     await this.port.setSignals({ dataTerminalReady: false, requestToSend: false });
     this.mode = 'console'; this.readDone = this.readLoop();
@@ -136,15 +136,22 @@ export class EspEngine {
   async close() {
     this.cancelTrigger();
     await this.closeConsole();
-    if (this.transport) { await this.transport.disconnect(); this.transport = null; this.loader = null; }
+    if (this.transport) { await this.transport.disconnect(); this.transport = null; this.loader = null; this.loaderMode = null; }
     // A failed/partial open may leave Web Serial open while the engine mode is off.
     if (this.port.readable || this.port.writable) await this.port.close();
     this.mode = 'off';
   }
-  async openLoader() {
-    if (this.loader) return this.loader;
+  // `mode` 'stub' (default, unchanged) or 'rom': esptool-js main() always uploads the stub, so in 'rom' mode its runStub step is replaced, on this
+  // loader instance only, by a no-op. Nothing else is bypassed: the chip is detected, the ECO7 flash power sequence (postConnect) still runs, the baud rate
+  // stays the ROM one, and the flash is attached with the same 8-byte SPI_ATTACH payload as esptool (esptool-js flashSpiAttach sends only 4).
+  // A session that is already open in the other mode is refused, never reused silently.
+  async openLoader(mode = 'stub') {
+    if (this.loader) {
+      if ((this.loaderMode ?? 'stub') !== mode) throw new HardwareError('loader_mode_mismatch', { phase: 'identify', loader_stub: this.loader.IS_STUB ? 1 : 0 });
+      return this.loader;
+    }
     await this.closeConsole();
-    this.event('transport', { detail: 'opening loader' });
+    this.event('transport', { detail: mode === 'rom' ? 'opening loader (ROM, no stub)' : 'opening loader' });
     const { ESPLoader, Transport, ESPError } = this.deps;
     const { BenchTransport } = makeBenchTransport(Transport, ESPError);
     this.transport = new BenchTransport(this.port, false);
@@ -154,14 +161,24 @@ export class EspEngine {
       if (name === 'read-end') this.lastRead = { ...this.lastRead, last_read_ms: detail.ms, last_packet_bytes: detail.bytes };
     };
     const terminal = { clean() {}, write() {}, writeLine: () => {} };
-    this.loader = new ESPLoader({ transport: this.transport, baudrate: this.flashBaud, terminal });
+    const rom = mode === 'rom';
+    this.loader = new ESPLoader({ transport: this.transport, baudrate: rom ? 115200 : this.flashBaud, terminal });
+    if (rom) this.loader.runStub = async function () { return this.chip; };      // the stub is never uploaded in this session
     this.identityChecks = 0;   // identity re-checks made on THIS loader session (diagnostic only)
-    try { this.chipDescription = await this.loader.main(); this.mode = 'loader'; }
+    try {
+      this.chipDescription = await this.loader.main(); this.mode = 'loader'; this.loaderMode = mode;
+      if (rom) {
+        // A stub already running on the chip (detected at sync time) would answer in its own format: refuse before any command.
+        if (this.loader.syncStubDetected || this.loader.IS_STUB) throw new HardwareError('rom_mode_stub_running', { phase: 'identify', loader_stub: 1 });
+        try { await this.loader.checkCommand('configure SPI flash pins', this.loader.ESP_SPI_ATTACH, new Uint8Array(8)); }
+        catch (e) { throw new HardwareError('rom_flash_attach_failed', { phase: 'identify', loader_stub: 0 }); }
+      }
+    }
     catch (e) { try { await this.close(); } catch { /* Preserve the original serial failure. */ } throw e; }
     return this.loader;
   }
-  async identity() {
-    const l = await this.openLoader();
+  async identity(mode = 'stub') {
+    const l = await this.openLoader(mode);
     this.identityChecks += 1;
     const id = await l.readFlashId();
     const code = id >>> 16 & 255;
@@ -317,7 +334,7 @@ export class EspEngine {
       }
       context.check();
       this.setPhase('identify', context);
-      const physical = await this.identity(), l = this.loader;
+      const physical = await this.identity(command === 'flash.md5' && args.loader === 'rom' ? 'rom' : 'stub'), l = this.loader;
       // Diagnostic only: the raw JEDEC id that THIS command's identification read, its rank in the loader session and whether the stub runs.
       const identified = { jedec_id: physical.flash_id >>> 0, identify_index: this.identityChecks, loader_stub: l.IS_STUB ? 1 : 0,
         chip_description: String(this.chipDescription || '').slice(0, 64) };
@@ -344,7 +361,7 @@ export class EspEngine {
       } else if (command === 'flash.md5') {
         region(args.address, args.size, physical.flash_size);
         this.setPhase('flash_md5', context);
-        result = { ...(await this.chipMd5(l, args.address, args.size)), address: args.address, size: args.size, identify: identified };
+        result = { ...(await this.chipMd5(l, args.address, args.size)), address: args.address, size: args.size, loader: l.IS_STUB ? 'stub' : 'rom', identify: identified };
       } else if (command === 'flash.write') {
         validateImages(images, physical.flash_size); context.check();
         this.setPhase('flash_write', context);
