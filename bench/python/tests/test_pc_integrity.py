@@ -1,8 +1,10 @@
 """Software checks of the P4-FLASH-INTEGRITY recipe and of its pure analysis (G1). SIMULATION ONLY: a RAM simulator that DECLARES itself an esp32p4 with 32 MiB
 and mimics the agent's flash.md5 / stub_digest contract. It proves decisions and evidence, never the behaviour of the real P4, the stub or esptool-js."""
+import hashlib
 import json
 import os
 import selectors
+import stat
 import subprocess
 import sys
 import time
@@ -126,13 +128,13 @@ def sim():
         process.communicate(timeout=10)
 
 
-def run_recipe(tmp_path, url, session=None, *flags):
+def run_recipe(tmp_path, url, session=None, *flags, ephemeral_ok=True):
     document = {**valid(), "evidence_root": str(tmp_path / "evidence"), "operator_timeout_s": 40, "operation_timeout_s": 60,
                 "consent": {"scenarios": ["P4-FLASH-INTEGRITY"]}, "integrity": {"expected_assets_sha256": ASSETS}, **(session or {})}
     (tmp_path / "session.json").write_text(json.dumps(document))
     env = {**os.environ, "BENCH_CLIENT_TOKEN": "pytest-client-test-token", "BENCH_URL": url, "BENCH_QUAL_SESSION": str(tmp_path / "session.json"),
            "PYTHONPATH": str(BENCH / "python/src")}
-    run = subprocess.run([sys.executable, "-m", "pytest", RECIPE, "--bench", "--qual-allow-dirty", *flags, "--bench-results", str(tmp_path / "runs"),
+    run = subprocess.run([sys.executable, "-m", "pytest", RECIPE, "--bench", "--qual-allow-dirty", *(["--qual-allow-ephemeral-evidence"] if ephemeral_ok else []), *flags, "--bench-results", str(tmp_path / "runs"),
                           "-q", "-rs", "-p", "no:cacheprovider", "--tb=short"], cwd=BENCH, env=env, capture_output=True, text=True, timeout=240)
     reports = {}
     for path in (tmp_path / "evidence").glob("*/report.json"):
@@ -160,7 +162,15 @@ def test_concordant_digests_pass_with_exactly_six_read_only_operations(sim, tmp_
     assert cmds[2]["args"]["stub_digest"] is True and "stub_digest" not in cmds[1]["args"]
     analysis = json.loads((case_dir(tmp_path) / "integrity-analysis.json").read_text())
     assert analysis["conclusion"] == "consistent"
-    assert list((case_dir(tmp_path) / "board-0").glob("read-*.bin")) and client.device("board")["reservation"] is None
+    assert client.device("board")["reservation"] is None
+    assert client.artifacts()["artifacts"] == [], "server readbacks deleted after their private copy was verified"
+    copies = sorted((case_dir(tmp_path) / "board-0").glob("flash-*-00002000.bin"))
+    assert len(copies) == 2 and all(stat.S_IMODE(c.stat().st_mode) == 0o600 for c in copies)
+    for copy in copies:
+        side = json.loads(copy.with_suffix(".json").read_text())
+        assert side["sha256"] == hashlib.sha256(copy.read_bytes()).hexdigest() and side["size"] == 4096
+    assert any("does not authorise the full P4 backup" in line for line in reports["PC-7"]["evidence"])
+    assert any(line.startswith("evidence storage:") for line in reports["PC-7"]["evidence"])
 
 
 def test_received_bytes_corrupted_with_stable_stub_digest_fails_with_the_transfer_hypothesis(sim, tmp_path):
@@ -169,6 +179,8 @@ def test_received_bytes_corrupted_with_stable_stub_digest_fails_with_the_transfe
     assert reports["PC-7"]["status"] == "FAIL", run.stdout[-1500:]
     analysis = json.loads((case_dir(tmp_path) / "integrity-analysis.json").read_text())
     assert "R1" in analysis["rows"] and analysis["conclusion"] == "discordance"
+    assert len(list((case_dir(tmp_path) / "board-0").glob("flash-*.bin"))) == 2, "the received bytes are kept even when the verdict is FAIL"
+    assert client.artifacts()["artifacts"] == []
     assert len(submitted(tmp_path)) == 6, "no retry, no extra operation"
 
 
@@ -202,6 +214,27 @@ def test_an_invalid_md5_response_stops_at_the_first_command_without_retry(sim, t
     assert failure["error"]["code"] == "md5_response_invalid"
     assert len(submitted(tmp_path)) == 2, "identify and the failed md5 only"
     assert client.device("board")["reservation"] is None
+
+
+def test_a_non_persistent_evidence_root_blocks_before_any_command(sim, tmp_path):
+    from qualification_campaign.evidence import check_persistent_root
+    if check_persistent_root(str(tmp_path))[0]:
+        pytest.skip("the temporary directory of this machine is persistent: the blocking path cannot be exercised here")
+    url, _ = sim()
+    run, reports = run_recipe(tmp_path, url, None, ephemeral_ok=False)
+    assert "BLOCKED" in run.stdout and "ephemeral" in run.stdout and not submitted(tmp_path)
+
+
+def test_durable_copy_never_overwrites_existing_evidence_and_is_private(tmp_path):
+    import importlib
+    module = importlib.import_module("qualification_campaign.test_pc_integrity")
+    data = bytes(range(256)) * 16
+    path = module.durable_copy(tmp_path, 1, 0x2000, data, {"id": "a" * 32}, "op1")
+    assert path.read_bytes() == data and stat.S_IMODE(path.stat().st_mode) == 0o600
+    assert json.loads(path.with_suffix(".json").read_text())["artifact"] == "a" * 32
+    with pytest.raises(FileExistsError):
+        module.durable_copy(tmp_path, 1, 0x2000, b"other", {"id": "b" * 32}, "op2")
+    assert path.read_bytes() == data, "the first evidence is untouched"
 
 
 def test_a_read_failure_stops_the_sequence(sim, tmp_path):

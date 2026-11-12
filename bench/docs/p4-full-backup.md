@@ -4,6 +4,8 @@
 
 Fichiers : `recipes/qualification_campaign/test_pc_backup.py` (recette), `backup.py` (plan et vérification, fonctions pures), `bench/python/tests/test_pc_backup.py` (tests). Option de session : `backup.segment_size` (multiple de 4096, au plus 16 Mio, 4 Mio par défaut) et `backup.return_console` (vrai par défaut).
 
+**Prérequis de reprise :** la sauvegarde complète reste suspendue tant que l'intégrité de lecture n'est pas établie ([diagnostic](p4-flash-integrity.md)). Un PASS de `P4-FLASH-INTEGRITY` n'autorise pas à lui seul cette recette : elle exige son propre consentement de l'opérateur.
+
 ## Principe
 - Chaque segment est une commande `flash.read` ordinaire : un artefact serveur de la taille du segment. `Orchestrator.backup` écrit la copie locale, la fsync, la relit et la compare **avant** de supprimer l'artefact serveur : un échec ne détruit jamais la seule copie.
 - Le plan (`plan_segments`) couvre `[0, 33 554 432)` exactement une fois, dans l'ordre : 8 segments de 4 Mio par défaut.

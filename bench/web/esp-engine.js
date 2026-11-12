@@ -81,7 +81,12 @@ export class EspEngine {
       });
       if (!(block instanceof Uint8Array) || block.length !== blockSize) throw new HardwareError('short_flash_read');
       data.set(block, offset); this.readProgress.received_bytes = offset + blockSize;
-      if (digests) digests.push({ block_address: address + offset, block_size: blockSize, ...(await this.trailingDigest(loader)) });
+      if (digests) {
+        // After a digest that is not `received` the byte stream is no longer known to be aligned on frames (a late or truncated frame may still arrive):
+        // the data keeps being read as before, but no further frame is read or interpreted. The remaining blocks are reported as not attempted.
+        const broken = digests.some(d => d.state !== 'received');
+        digests.push({ block_address: address + offset, block_size: blockSize, ...(broken ? { state: 'not_attempted' } : await this.trailingDigest(loader)) });
+      }
       context.report?.(this.diagnostics()); check();
     }
     return data;

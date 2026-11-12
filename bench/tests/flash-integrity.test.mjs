@@ -129,3 +129,12 @@ test('flash.md5 keeps the strict identity check (id read again, a different capa
 test('the engine announces the flash.md5 capability', () => {
   assert.ok(setup().engine.capabilities().includes('flash.md5'));
 });
+
+test('after a digest that is not received, no further frame is read: the remaining blocks are not_attempted and the data is still read', async () => {
+  const x = setup({ frames: [{ kind: 'partial-packet' }, digest(2), digest(3)] });
+  const result = await run(x, 'flash.read', { address: 0x100000, size: 3 * MiB, stub_digest: true });
+  assert.deepEqual(result.stub_digests.map(d => d.state), ['partial', 'not_attempted', 'not_attempted']);
+  assert.equal(x.calls.transportRead, 1, 'one transport read only');
+  assert.equal(x.calls.readFlash, 3, 'the data blocks are all read as without the option');
+  assert.equal(result.artifact.size, 3 * MiB);
+});
