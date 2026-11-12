@@ -10,6 +10,7 @@ a hypothesis written as such, and an empty or missing value is never a success.
 from collections import Counter
 
 PLAN = ("chip_md5", "read", "chip_md5", "read", "chip_md5")
+PLAN_SESSION = ("chip_md5", "read", "chip_md5")          # P4-FLASH-INTEGRITY-SESSION: the three commands share ONE loader session
 CAUTION = ("No cause is established by this analysis. The stub's MD5 and the chip's MD5 are themselves carried by the serial link, and different commands "
            "may read the flash through different paths: one discordance alone never proves a UART fault or a flash fault.")
 
@@ -27,13 +28,13 @@ def _hex32(value):
     return isinstance(value, str) and len(value) == 32 and all(c in "0123456789abcdef" for c in value)
 
 
-def analyse(observations):
-    """Returns {complete, conclusion, rows, findings, flags, caution}. `conclusion`: incomplete | consistent | discordance."""
+def analyse(observations, plan=PLAN):
+    """`plan` is the planned sequence of the scenario. Returns {complete, conclusion, rows, findings, flags, caution}. `conclusion`: incomplete | consistent | discordance."""
     chips = [o for o in observations if o.get("kind") == "chip_md5"]
     reads = [o for o in observations if o.get("kind") == "read"]
     findings, missing = [], []
 
-    expected = Counter(PLAN)
+    expected = Counter(plan)
     if len(chips) < expected["chip_md5"] or len(reads) < expected["read"]:
         missing.append(f"planned {expected['chip_md5']} chip MD5 and {expected['read']} reads, got {len(chips)} and {len(reads)}")
     for o in chips:

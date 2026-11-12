@@ -80,3 +80,7 @@ Un PASS PC-7 ne dit que ceci : cette plage de 4 Kio, observée dans ce run, éta
 Le changement de protocole modifie l'empreinte du code serveur : le déployer exige un SHA relu, un redémarrage de l'identifiant du lanceur et un rechargement de la page, avec l'accord de l'opérateur. Rien n'a été déployé ; `/workspace` reste sur le commit déployé.
 
 Questions ouvertes : le stub embarqué exact n'a pas été comparé octet à octet à la source consultée ; le délai de 3 s de la trame finale n'est pas mesuré ; l'ordre des commandes peut influencer la mesure (d'où la répétition) ; les écarts observés ne sont pas expliqués. La sauvegarde complète du P4 (PC-BACKUP) reste suspendue tant que l'intégrité de lecture n'est pas établie.
+
+## 8. Premier run matériel de PC-7 (v1, 2026-11-12, commit 3f8e88c91, autorisé par l'opérateur)
+
+Verdict **FAIL** (discordance, ligne R2). Six opérations correctes, aucune erreur de transport. Trois MD5 de la puce distincts ; deux lectures de SHA-256 distincts (28 octets, 44 bits d'écart, 22 vers 0 et 22 vers 1) ; la trame MD5 finale du stub a été reçue (16 octets, alignée) et égale le MD5 des octets reçus pour chacune des deux lectures, mais diffère entre les deux. Les cinq mesures ont été faites dans cinq sessions de chargeur distinctes (retour console à chaque commande) : voir [l'analyse des sessions de chargeur](p4-loader-session-analysis.md) et la variante `P4-FLASH-INTEGRITY-SESSION`, préparée en simulation seulement. Aucune cause n'est établie.

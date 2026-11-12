@@ -51,7 +51,7 @@ class SimDevice:
         index = self.session_checks
         if os.environ.get('SIM_JEDEC_INVALID_AT') == str(self.flash_commands):          # the loader stays open after a failed identification
             raise SimFailure('flash_capacity_unknown', {'phase': 'identify', 'error_type': 'HardwareError', 'jedec_id': 0, 'identify_index': index, 'loader_stub': 1})
-        if args.get('return_console', True) is not False:
+        if args.get('return_console', True) is not False or os.environ.get('SIM_SESSION_RESET_EACH') == '1':      # SIM_SESSION_RESET_EACH: SIMULATES an agent that reopens the loader for every command
             self.session_checks = 0                                                      # the command returns to the console: the next one opens a new loader session
         return {'jedec_id': 0x1940C8, 'identify_index': index, 'loader_stub': 1, 'chip_description': 'ESP32-P4 (revision v1.0)'} if os.environ.get('SIM_JEDEC') == '1' else None
 
