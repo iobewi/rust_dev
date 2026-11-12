@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "board_id": "esp32-zero",
+  "chip": "esp32c6",
+  "flash_size": 8388608,
+  "transport": "external_uart",
+  "partition_table_offset": null,
+  "approved_regions": [],
+  "images": [],
+  "evidence_root": "/ABSOLUTE/PERSISTENT/outside-git/qualification-evidence",
+  "operation_timeout_s": 120,
+  "operator_timeout_s": 900,
+  "loader": {
+    "entry": "manual",
+    "download_marker": "REPLACE-with-the-ROM-download-banner-documented-for-the-C6",
+    "marker_timeout_s": 120
+  },
+  "readonly": {
+    "table_candidates": [],
+    "reads": []
+  },
+  "consent": {
+    "scenarios": [],
+    "note": "Template: consent stays EMPTY here. C6 behind the H7 CP2102: the DTR/RTS lines are not known to reach EN/GPIO9, so the loader is entered BY HAND (strap GPIO9 to GND, reset) and the recipe waits for the ROM banner declared above. The banner has no default: replace the placeholder from the ROM documentation before a run (a placeholder that is never printed makes the recipe BLOCKED). The strap must be released and the chip reset before it runs an application again. See docs/qualification-p4-c6.md."
+  }
+}

@@ -16,6 +16,8 @@ def pytest_addoption(parser):
                     help="Allow C3R-3 to send an explicit reset command (also needs consent C3R-RESET in the session)")
     group.addoption("--qual-allow-bootloader", action="store_true",
                     help="Allow S3R-2 to send boot.download (IO0 + EN sequence); also needs consent S3R-BOOT and a local grant")
+    group.addoption("--qual-allow-ephemeral-evidence", action="store_true",
+                    help="Allow a destructive P4/C6 recipe to write its evidence on a non-persistent filesystem (simulation/development only; recorded in the run)")
     group.addoption("--qual-allow-restart", action="store_true",
                     help="Allow Q3 to signal the identified launcher; also needs q3.allow_restart in the session")
 
