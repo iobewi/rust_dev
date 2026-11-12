@@ -268,7 +268,7 @@ class Board:
                     file.write(record + "\n")
                 self._last_record = record
 
-    def command(self, name, args=None, *, timeout=120, start_timeout=30, allow_destructive=False):
+    def command(self, name, args=None, *, timeout=120, start_timeout=30, allow_destructive=False, allow_stub_variant=False):
         _duration(timeout, 0.1, 600)
         _duration(start_timeout, 0.1, 120)
         if self.pending or self.uncertain:
@@ -276,6 +276,10 @@ class Board:
         self._check_target()
         if name in {"flash.write", "flash.erase"} and not (self.allow_destructive is True and allow_destructive is True):
             raise BenchError("Destructive command needs run-level opt-in and explicit per-command consent")
+        if {"stub_variant", "stub_sha256"} & set(args or {}) and allow_stub_variant is not True:
+            raise BenchError("An experimental stub needs explicit per-command consent (allow_stub_variant=True)")
+        if {"stub_variant", "stub_sha256"} & set(args or {}) and name not in {"flash.read", "flash.md5"}:
+            raise BenchError("An experimental stub is for read commands only")
         if self.manifest is not None:
             self.manifest.check_command(self, name, args or {})
         # Even a lost POST response may have started hardware. Never resend or release blindly.
@@ -290,6 +294,7 @@ class Board:
             op = self.client._request("POST", "/api/v1/operations", {
                 "lease": self.lease_id, "command": name, "args": args or {},
                 "timeout": timeout, "ttl": start_timeout, "allow_destructive": allow_destructive,
+                **({"allow_stub_variant": True} if allow_stub_variant is True else {}),
             })
         except BenchHTTPError as error:
             if 400 <= error.status < 500:

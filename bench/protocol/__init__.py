@@ -11,6 +11,10 @@ MAX_UART = 16384
 CAPABILITIES = {'identify', 'reset', 'partitions', 'flash.read', 'flash.md5', 'flash.write', 'flash.erase',
                 'uart.write', 'uart.configure', 'console', 'io0', 'boot.download', 'mark', 'trigger', 'http.request'}
 PROGRAM = {'flash.write', 'flash.erase'}
+# Experimental flasher stubs the agent may upload (bench/web/stub-variants.js is the agent's copy of this registry; a test keeps the two in step).
+# Selected only by an explicit name + the pinned SHA-256, only for the chip below, only by read commands.
+STUB_VARIANTS = {'p4-no-clock-boost': {'chip': 'esp32p4', 'sha256': '911c86173efd9e51a12f289b4b8f1adb9046d1326b426a7ecfd9a646f8366f24'}}
+STUB_VARIANT_COMMANDS = {'flash.read', 'flash.md5'}
 PRIVILEGED = PROGRAM | {'uart.write', 'io0', 'boot.download', 'trigger', 'http.request'}
 
 
@@ -64,8 +68,8 @@ def validate_command(name, args, device, artifacts):
     require(isinstance(args, dict))
     schemas = {
         'identify': set(), 'reset': set(), 'console': {'return_console'},
-        'partitions': {'address', 'return_console'}, 'flash.read': {'address', 'size', 'return_console', 'stub_digest'},
-        'flash.md5': {'address', 'size', 'return_console'},
+        'partitions': {'address', 'return_console'}, 'flash.read': {'address', 'size', 'return_console', 'stub_digest', 'stub_variant', 'stub_sha256'},
+        'flash.md5': {'address', 'size', 'return_console', 'loader', 'stub_variant', 'stub_sha256'},
         'flash.write': {'images', 'chip', 'erase', 'return_console'}, 'flash.erase': {'chip', 'return_console'},
         'uart.write': {'data'}, 'uart.configure': {'baudrate'}, 'io0': {'duration_ms'}, 'boot.download': {'hold_ms'},
         'http.request': {'url', 'method', 'body', 'timeout_ms'},
@@ -75,6 +79,17 @@ def validate_command(name, args, device, artifacts):
     for key in ('erase', 'return_console', 'stub_digest'):
         if key in args:
             require(type(args[key]) is bool)
+    if 'stub_variant' in args or 'stub_sha256' in args:
+        require('stub_variant' in args and 'stub_sha256' in args, 'stub_variant_invalid', 'stub_variant and stub_sha256 go together')
+        entry = STUB_VARIANTS.get(args['stub_variant']) if isinstance(args['stub_variant'], str) else None
+        require(entry is not None, 'stub_variant_unknown', 'Unknown stub variant')
+        require(name in STUB_VARIANT_COMMANDS, 'stub_variant_not_allowed', 'A stub variant is only for read commands')
+        require(device['chip'] == entry['chip'], 'stub_variant_chip_mismatch', 'This stub variant does not apply to this chip')
+        require(args['stub_sha256'] == entry['sha256'], 'stub_variant_sha_mismatch', 'The SHA-256 does not match the pinned stub variant')
+        require(args.get('loader', 'stub') == 'stub', 'stub_variant_not_allowed', 'A stub variant cannot be combined with the ROM loader')
+        require(not device.get('quarantined'), 'device_quarantined', 'No experimental stub while the device is quarantined', 409)
+    if name == 'flash.md5' and 'loader' in args:
+        require(args['loader'] in ('stub', 'rom'), message='loader must be stub or rom')
     capacity = device['flash_size']
     if name in ('flash.read', 'flash.md5'):
         region(args.get('address'), args.get('size'), capacity)
