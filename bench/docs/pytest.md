@@ -192,7 +192,7 @@ sont pas un filtre de secrets : ne pas y injecter des tokens ni des logs sensibl
 
 La commande globale ci-dessous est une **illustration de validation L3**.
 Elle n'est pas requise après une recette nouvelle ou un correctif localisé :
-suivre la [sélection L1/L2/L3/H](#selection-des-tests-et-niveaux-de-validation).
+suivre la [sélection L1/L2/L3/H](#sélection-des-tests-et-niveaux-de-validation).
 
 
 Ce premier composant fonctionne en ligne de commande ; la page ne charge ni n’exécute
