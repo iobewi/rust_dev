@@ -22,9 +22,13 @@ class SimFailure(Exception):
 
 
 class SimDevice:
-    def __init__(self, capacity=4 * 1024 * 1024, chip='esp32s3', device_id=''):
+    def __init__(self, capacity=None, chip='esp32s3', device_id=''):
+        capacity = capacity or int(os.environ.get('SIM_FLASH_MIB', '4')) * 1024 * 1024    # SIMULATION ONLY: capacity of the simulated flash (default 4 MiB)
         self.chip, self.device_id, self.identifies, self.unplug_down = chip, device_id, 0, 0.0
         self.flash = bytearray(b'\xff') * capacity
+        if os.environ.get('SIM_FLASH_PATTERN') == 'sector-id':          # SIMULATION ONLY: every 4-KiB sector holds its own index, so a shifted or repeated read is visible
+            for sector in range(capacity // 4096):
+                self.flash[sector * 4096:(sector + 1) * 4096] = sector.to_bytes(4, 'little') * 1024
         for item in json.loads(os.environ.get('SIM_FLASH_PRELOAD', '[]')):          # SIMULATION ONLY: known flash content ([{address, hex}, ...])
             raw = bytes.fromhex(item['hex'])
             self.flash[item['address']:item['address'] + len(raw)] = raw
@@ -203,6 +207,8 @@ async def serve(session, url, token, device_id, grant, script, chip, sim, connec
         async def upload(data):
             async with session.post(url + '/api/v1/artifacts', data=data,
                 headers={'X-SHA256': hashlib.sha256(data).hexdigest()}) as r:
+                if r.status == 503:
+                    raise SimFailure('capacity')          # like web/agent.js: the server's definitive 'capacity' refusal becomes the string code 'capacity'
                 r.raise_for_status(); return await r.json()
         print(json.dumps({'simulation': True, 'device': device_id, 'connected': True}), flush=True)
         serial_lost = False

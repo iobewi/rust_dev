@@ -15,14 +15,14 @@ CHIPS = {"esp32s3", "esp32c3"} | PC_CHIPS
 TRANSPORTS = {"external_uart", "usb_serial_jtag", "native_usb_other", "unknown"}
 SCENARIOS = {"Q1", "Q2", "Q3", "C3R-READ", "C3R-RESET", "S3R-RESET", "S3R-BOOT", "S3R-READ", "R4",
              "NUSB-READ", "NUSB-RESET", "T7", "R5", "H10", "U8", "M2", "M40-11", "M40-12A", "M40-11C", "M40-4-RESET",
-             "M40-ID", "M40-ID-ENROLL", "M40-PHYS-B", "M40-PHYS-B-ID", "PC-READ", "PC-RESET", "PC-CYCLE"}
+             "M40-ID", "M40-ID-ENROLL", "M40-PHYS-B", "M40-PHYS-B-ID", "PC-READ", "PC-RESET", "PC-CYCLE", "PC-BACKUP"}
 TOP_LEVEL = {"version", "board_id", "chip", "flash_size", "transport", "partition_table_offset",
              "approved_regions", "evidence_root", "operation_timeout_s", "operator_timeout_s",
-             "consent", "q2", "q3", "readonly", "bootloader", "r4", "faults", "second_board", "lan_http", "capture", "accept_unknown_transport", "m40", "loader", "images"}
+             "consent", "q2", "q3", "readonly", "bootloader", "r4", "faults", "second_board", "lan_http", "capture", "accept_unknown_transport", "m40", "loader", "images", "backup"}
 DEFAULTS = {"operation_timeout_s": 120, "operator_timeout_s": 900, "approved_regions": [],
             "consent": {"scenarios": [], "note": ""}, "q2": {}, "q3": {},
             "readonly": {}, "bootloader": {}, "r4": {}, "faults": {}, "second_board": {}, "lan_http": {}, "capture": {}, "accept_unknown_transport": False,
-            "m40": {}, "loader": {}, "images": []}
+            "m40": {}, "loader": {}, "images": [], "backup": {}}
 Q2_DEFAULTS = {"trigger_pattern_b64": "SU9CRVdJLVEyLU5FVkVSLVNUSU1VTEFURUQ=",  # inert, never stimulated
                "expires_ms": 120000, "reservation_ttl_s": 600}
 Q3_DEFAULTS = {"allow_restart": False, "launcher_pid_file": None, "state_dir": None, "launcher_log": None,
@@ -89,6 +89,7 @@ def validate_session(document):
     cfg["second_board"] = validate_second_board(cfg["second_board"], cfg)
     cfg["m40"] = validate_m40(cfg["m40"], cfg)
     cfg["loader"] = validate_loader(cfg["loader"])
+    cfg["backup"] = validate_backup(cfg["backup"])
     cfg["lan_http"] = validate_lan_http(cfg["lan_http"])
     cfg["capture"] = validate_capture(cfg["capture"])
     regions = cfg["approved_regions"]
@@ -120,6 +121,24 @@ def validate_loader(section):
         raise SessionError("loader.download_marker only makes sense with loader.entry 'manual'")
     if type(out["marker_timeout_s"]) is not int or not 5 <= out["marker_timeout_s"] <= 300:
         raise SessionError("loader.marker_timeout_s must be 5..300 seconds")
+    return out
+
+
+BACKUP_KEYS = {"segment_size", "return_console"}
+
+
+def validate_backup(section):
+    """PC-BACKUP (G1): how the whole flash is read. `segment_size` is the size of every read operation (one artifact each): a multiple of
+    4 KiB, at most 16 MiB (the artifact limit). `return_console` tells whether each read returns the card to the console: True makes every
+    segment a fresh loader session (the safe choice while chained reads in one session are not qualified on the P4), False keeps one."""
+    if not isinstance(section, dict) or section.keys() - BACKUP_KEYS:
+        raise SessionError(f"backup accepts only {sorted(BACKUP_KEYS)}")
+    out = {"segment_size": 4 * 1024 * 1024, "return_console": True, **section}
+    size = out["segment_size"]
+    if type(size) is not int or not 4096 <= size <= 16 * 1024 * 1024 or size % 4096:
+        raise SessionError("backup.segment_size must be a multiple of 4096 between 4096 and 16777216")
+    if type(out["return_console"]) is not bool:
+        raise SessionError("backup.return_console must be a boolean")
     return out
 
 
