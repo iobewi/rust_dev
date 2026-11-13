@@ -43,7 +43,7 @@ test('grant and revoke use card-specific agent, not global selection alias', () 
 
 test('quick revocation is bound to its tile, not the currently selected card', () => {
   const start = ui.indexOf("quickRevoke.onclick = safely(");
-  const end = ui.indexOf("const status = document.createElement('button')", start);
+  const end = ui.indexOf("const status = document.createElement('span')", start);
   assert.ok(start > 0 && end > start);
   const handler = ui.slice(start, end);
   assert.match(handler, /boards\.get\(ctx\.id\) !== ctx/);
