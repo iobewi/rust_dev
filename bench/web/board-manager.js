@@ -31,7 +31,8 @@ export class BoardManager {
 
   async add(id, port, options = {}) {
     const ctx = this.contexts.add(id, port);
-    ctx.options = options;
+    // A per-board snapshot survives engine replacement on USB loss/reconnect.
+    ctx.options = { ...options, manualDownload: options.manualDownload === true };
     ctx.reconnect = this.makeReconnect({
       ports: () => this.ports(),
       idle: () => !ctx.busy && !ctx.disconnecting && !ctx.engine?.busy &&
