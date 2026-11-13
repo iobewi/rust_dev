@@ -104,6 +104,11 @@
 .manual-download input[type=checkbox]:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
 .manual-download input[type=checkbox]:disabled, .manual-download input[type=checkbox]:disabled + span { cursor:not-allowed; opacity:.55; }
 .manual-download span { min-width:0; overflow-wrap:anywhere; }
+.manual-download-row { display:flex; flex:1 1 100%; align-items:center; justify-content:flex-start; gap:6px; min-width:0; margin-top:2px; }
+.manual-download-row .manual-download { flex:0 1 auto; min-width:0; margin-top:0; padding:4px 2px; align-items:center; }
+.manual-download-row .manual-download input[type=checkbox] { margin-top:0; }
+.manual-download-row .manual-download-help { flex:none; }
+.manual-download-row .help-popup { left:auto; right:0; width:230px; max-width:calc(100vw - 32px); }
 /* manual-download:end */
 
 /* Per-board grant display. State is sourced only from each board's live agent. */
