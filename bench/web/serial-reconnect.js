@@ -20,9 +20,10 @@ export class SerialReconnect {
       if (!this.idle() || !(await this.ports()).includes(this.port)) return;
       if (version !== this.version) return;
       this.state('reconnecting');
-      await this.attach(this.port, this.identity);
+      await this.attach(this.port, this.identity, () => version === this.version && this.waiting);
       if (version === this.version) { this.waiting = false; this.state('usb_connected'); }
     } catch (error) {
+      if (version !== this.version) return;
       if (error?.code === 'physical_identity_changed') { this.waiting = false; this.state('identity_changed'); }
       else this.state('reconnect_failed');
     } finally {

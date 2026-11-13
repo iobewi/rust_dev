@@ -18,7 +18,7 @@ test('the checkbox sits inside its label, which is bound to it with for/id, with
 
 test('the checkbox is captured for the new board; engines use only its own context', () => {
   assert.match(ui, /const manualDownload = \$\('manual-download'\)\?\.checked === true;/);
-  assert.match(ui, /boards\.add\(id, port, \{ http_origins, manualDownload \}\)/);
+  assert.match(ui, /boards\.add\(id, port, \{ http_origins, manualDownload, loaderBaud \}\)/);
   assert.match(ui, /hardware\.manualDownload = ctx\.options\?\.manualDownload === true;/);
   assert.match(ui, /\$\('manual-download'\)\.checked = false;/);
   assert.doesNotMatch(ui, /hardware\.manualDownload = \$\('manual-download'\)/);
@@ -45,4 +45,20 @@ test('the block is the only place where this checkbox is styled and the global c
   const outside = css.replace(block, '').replace('/* manual-download:end */', '');
   assert.ok(!/manual-download/.test(outside));
   assert.ok(outside.includes('input[type=checkbox]{min-height:0;margin:0}'));
+});
+
+
+test('the UART loader speed is captured before USB selection and reapplied only from board context', () => {
+  assert.equal((html.match(/id="loader-baud"/g) || []).length, 1);
+  assert.ok(ui.indexOf("const loaderBaud = $('loader-baud')") < ui.indexOf('const port = await navigator.serial.requestPort()'));
+  assert.match(ui, /hardware\.loaderBaud = ctx\.options\?\.loaderBaud \?\? null/);
+  assert.match(ui, /boards\.add\(id, port, \{ http_origins, manualDownload, loaderBaud \}\)/);
+});
+
+
+test('the USB picker is locked before awaiting selection and cancellation releases the lock', () => {
+  const add = ui.slice(ui.indexOf('async function addCard('), ui.indexOf("hook('add-device'"));
+  assert.ok(add.indexOf('usbBusy = true') < add.indexOf('await navigator.serial.requestPort()'));
+  assert.ok(add.indexOf('try {') < add.indexOf('await navigator.serial.requestPort()'));
+  assert.match(add, /finally \{ usbBusy = false;/);
 });

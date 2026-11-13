@@ -1,3 +1,4 @@
+import { normalizeLoaderBaud } from './loader-settings.js';
 import { BoardContexts } from './board-contexts.js';
 import { SerialReconnect } from './serial-reconnect.js';
 
@@ -30,14 +31,15 @@ export class BoardManager {
   list() { return this.contexts.list(); }
 
   async add(id, port, options = {}) {
+    const loaderBaud = normalizeLoaderBaud(options.loaderBaud);
     const ctx = this.contexts.add(id, port);
     // A per-board snapshot survives engine replacement on USB loss/reconnect.
-    ctx.options = { ...options, manualDownload: options.manualDownload === true };
+    ctx.options = { ...options, loaderBaud, manualDownload: options.manualDownload === true };
     ctx.reconnect = this.makeReconnect({
       ports: () => this.ports(),
       idle: () => !ctx.busy && !ctx.disconnecting && !ctx.engine?.busy &&
         !ctx.agent?.active && (!ctx.agent?.awaitingResult || ctx.agent?.stopped),
-      attach: (exactPort, identity) => this.attach(ctx, exactPort, identity),
+      attach: (exactPort, identity, isCurrent) => this.attach(ctx, exactPort, identity, isCurrent),
       state: stage => {
         if (stage === 'reconnecting') ctx.status = 'reconnecting';
         if (stage === 'identity_changed') ctx.status = 'usb_lost';
@@ -58,7 +60,11 @@ export class BoardManager {
     }
   }
 
-  async attach(ctx, port, expectedIdentity = null) {
+  async attach(ctx, port, expectedIdentity = null, isCurrent = () => true) {
+    const checkCurrent = () => {
+      if (!isCurrent()) throw Object.assign(new Error('reconnect_cancelled'), { code: 'reconnect_cancelled' });
+    };
+    checkCurrent();
     if (ctx.port !== port || this.contexts.ports.get(port) !== ctx.id) throw new Error('serial_port_mismatch');
     if (ctx.busy || ctx.disconnecting || ctx.engine?.busy || ctx.agent?.active ||
         (ctx.agent?.awaitingResult && !ctx.agent?.stopped)) throw new Error('board_not_idle');
@@ -76,6 +82,7 @@ export class BoardManager {
       await ctx.engine.close();
       ctx.engine = null;
     }
+    checkCurrent();
     // An old engine may deliver a delayed UART/event callback after a
     // disconnect/reconnect. Never forward it to the new agent or console.
     let hardware;
@@ -88,12 +95,14 @@ export class BoardManager {
     ctx.engine = hardware;
     try {
       const identity = await hardware.identity();
+      checkCurrent();
       if (expectedIdentity && ['chip', 'flash_size', 'flash_id', 'mac'].some(k => identity[k] !== expectedIdentity[k])) {
         const error = new Error('physical_identity_changed');
         error.code = 'physical_identity_changed';
         throw error;
       }
       if (!hardware.hold) await hardware.openConsole();
+      checkCurrent();
       ctx.identity = identity;
       ctx.localDevice = this.makeDevice(ctx, identity, hardware);
       ctx.status = 'connected';
@@ -108,7 +117,7 @@ export class BoardManager {
     } catch (error) {
       try { await hardware.close(); } catch { /* best effort, no retry */ }
       if (ctx.engine === hardware) ctx.engine = null;
-      ctx.status = expectedIdentity ? 'usb_lost' : 'disconnected';
+      ctx.status = isCurrent() && expectedIdentity ? 'usb_lost' : 'disconnected';
       this.onState(ctx);
       throw error;
     }

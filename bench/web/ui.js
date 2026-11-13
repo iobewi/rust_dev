@@ -79,6 +79,7 @@ const boards = new BoardManager({
     const hardware = new EspEngine(port, esptoolDeps, emit,
       held => localStorage.setItem('bench.v1.hold.' + ctx.id, held ? '1' : '0'));
     hardware.hold = localStorage.getItem('bench.v1.hold.' + ctx.id) === '1';
+    hardware.loaderBaud = ctx.options?.loaderBaud ?? null;
     hardware.manualDownload = ctx.options?.manualDownload === true; // Per-board opt-in, reused only for this board.
     return hardware;
   },
@@ -560,14 +561,16 @@ async function addCard(id) {
   if (usbBusy) throw new Error('Sélection USB déjà en cours');
   // Capture the choice before any await. Other boards must never inherit it on reconnect.
   const manualDownload = $('manual-download')?.checked === true;
-  // requestPort must be called directly from the click activation, before any await.
-  const port = await navigator.serial.requestPort();
+  const loaderBaud = $('loader-baud').value ? Number($('loader-baud').value) : null;
+  // Lock before the picker await; requestPort still runs in the click activation.
   usbBusy = true; renderActiveCards();
   try {
+    const port = await navigator.serial.requestPort();
     esptoolDeps ||= await import('https://unpkg.com/esptool-js@0.7.0/bundle.js');
     const http_origins = $('http-origins').value.split(',').map(v => v.trim()).filter(Boolean)
       .map(v => new URL(v).origin);
-    await boards.add(id, port, { http_origins, manualDownload });
+    await boards.add(id, port, { http_origins, manualDownload, loaderBaud });
+    $('loader-baud').value = '';
     $('manual-download').checked = false; // Reset the option for the next new board only.
     renderDevices();
     $('devices').value = id;
