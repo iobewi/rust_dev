@@ -17,7 +17,10 @@ test('grant actions live directly below identification for the selected card', (
 
 test('each active board displays a separate live grant marker', () => {
   assert.match(ui, /grantMarker\.className = 'board-grant'/);
-  assert.match(ui, /row\.append\(name, chip, status, grantMarker\)/);
+  assert.match(ui, /row\.append\(name, chip, status, grantMarker, quickRevoke\)/);
+  assert.match(ui, /grantIcon\.setAttribute\('class', 'board-grant-icon'\)/);
+  assert.match(ui, /grantClock\.className = 'board-grant-time'/);
+  assert.match(ui, /grantIcon\.append\(grantSymbol\)/);
   assert.match(ui, /boards\.get\(row\.dataset\.device\)/);
   assert.match(ui, /ctx\?\.status === 'connected'/);
   assert.match(ui, /ctx\.agent\.socket\?\.readyState === 1/);
@@ -36,4 +39,17 @@ test('grant and revoke use card-specific agent, not global selection alias', () 
   assert.match(actions, /const ctx = boards\.get\(selected\(\)\)/);
   assert.match(actions, /ctx\.agent\.grant\(0\)/);
   assert.doesNotMatch(actions, /(^|[^.])agent\.grant\(/);
+});
+
+test('quick revocation is bound to its tile, not the currently selected card', () => {
+  const start = ui.indexOf("quickRevoke.onclick = safely(");
+  const end = ui.indexOf("const status = document.createElement('button')", start);
+  assert.ok(start > 0 && end > start);
+  const handler = ui.slice(start, end);
+  assert.match(handler, /boards\.get\(ctx\.id\) !== ctx/);
+  assert.match(handler, /!grantRemaining\(ctx\)/);
+  assert.match(handler, /ctx\.agent\.grant\(0\)/);
+  assert.doesNotMatch(handler, /selected\(\)/);
+  assert.match(ui, /revoke\.hidden = !active/);
+  assert.match(ui, /active \? '#icon-unlock' : '#icon-lock'/);
 });
