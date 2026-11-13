@@ -269,14 +269,20 @@ test(`local browser session and direct control over ${usbJtag?'USB Serial/JTAG':
   const localState=await page.evaluate(async()=>{const r=await fetch('/api/v1/devices');return (await r.json()).devices[0];});
   assert.equal(localState.privileged_seconds,0);
   assert.equal(await page.textContent('#usb-state'),'connecté');
-  // Remote grants remain explicit and their active state is visible with the panel closed.
-  await openStatus(page,'permissions');assert.equal(await page.locator('#grant').isVisible(),true);assert.equal(await page.locator('#grant-time').isVisible(),true);assert.equal(await page.locator('#status-panel-permissions details').count(),0);assert.equal(await page.locator('#recover').isVisible(),false);
+  // Remote grants are shown on the local card, not in a global header panel.
+  assert.equal(await page.locator('#status-permissions').count(),0);
+  assert.equal(await page.locator('#card-permissions').isVisible(),true);
+  assert.equal(await page.locator('#grant').isVisible(),true);
+  assert.equal(await page.locator('#grant-time').isVisible(),true);
+  assert.equal(await page.locator('#recover').isVisible(),false);
+  assert.equal(await page.locator('[data-device="board"] .board-grant').textContent(),'Sans grant');
   await page.selectOption('#grant-time','60');page.once('dialog',dialog=>dialog.accept());await page.click('#grant');
-  await page.waitForFunction(()=>/^Distant autorisé · [0-9]+ s$/.test(document.querySelector('#status-label-permissions').textContent));
-  await closeStatus(page);assert.equal(await page.locator('#status-permissions').getAttribute('data-tone'),'warning');
-  await openStatus(page,'permissions');await page.click('#revoke');
-  await page.waitForFunction(()=>document.querySelector('#status-label-permissions').textContent==='Autorisations');
-  await closeStatus(page);
+  await page.waitForFunction(()=>/^Grant actif · [0-9]+ s$/.test(document.querySelector('[data-device="board"] .board-grant')?.textContent||''));
+  assert.match(await page.locator('#grant-state').textContent(),/Grant actif sur board/);
+  assert.equal(await page.locator('#grant').isVisible(),false);
+  await page.click('#revoke');
+  await page.waitForFunction(()=>document.querySelector('[data-device="board"] .board-grant')?.textContent==='Sans grant');
+  assert.equal(await page.locator('#grant').isVisible(),true);
   // Physical agent can release an orphan reservation without restarting the server.
   const orphan=await fetch(url+'/api/v1/leases',{method:'POST',headers:{Authorization:'Bearer client-bob-1234567890','Content-Type':'application/json'},body:JSON.stringify({device:'board',ttl:60})});
   assert.equal(orphan.status,201);
@@ -323,7 +329,7 @@ test(`local browser session and direct control over ${usbJtag?'USB Serial/JTAG':
   await page.locator('#status-agent').hover();
   assert.equal(await page.locator('#status-help-agent').isVisible(),true);
   assert.equal(await page.locator('[data-device="board"] .board-status').isVisible(),true);
-  for (const name of ['agent','control','permissions','wake']) {
+  for (const name of ['agent','control','wake']) {
     await openStatus(page,name);
     assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
     const bounds=await page.locator('#status-panel-'+name).boundingBox();assert.ok(bounds.x>=0&&bounds.x+bounds.width<=360);
@@ -339,13 +345,12 @@ test(`local browser session and direct control over ${usbJtag?'USB Serial/JTAG':
   await page.evaluate(()=>window.scrollTo(0,document.body.scrollHeight));
   await openStatus(page,'agent');
   assert.ok(await page.locator('#status-panel-agent .pane-title').evaluate(node=>node.getBoundingClientRect().top>=document.querySelector('.app-header').getBoundingClientRect().bottom-1));
-  await openStatus(page,'permissions');
-  assert.equal(await page.locator('#status-panel-agent').isVisible(),false);
+  assert.equal(await page.locator('#status-panel-agent').isVisible(),true);
   assert.equal(await page.locator('.device-panel').isVisible(),true);
-  assert.equal(await page.locator('.status-panel:visible').count(),1);
-  await page.locator('#status-panel-permissions [data-close-status]').click();
-  assert.equal(await page.locator('#status-panel-permissions').isVisible(),false);
-  assert.equal(await page.locator('#status-permissions').evaluate(node=>node===document.activeElement),true);
+  assert.equal(await page.locator('#card-permissions').isVisible(),true);
+  assert.equal(await page.locator('#status-panel-permissions').count(),0);
+  await closeStatus(page);
+  assert.equal(await page.locator('.status-panel:visible').count(),0);
   await page.click('#workspace-tab-consoles');
   // Default height follows the viewport; a manual height lasts until Hauteur auto.
   // Explicitly restore live-follow before resizing: sidebar geometry can shift
@@ -414,7 +419,7 @@ test(`local browser session and direct control over ${usbJtag?'USB Serial/JTAG':
   assert.equal(await page.getAttribute('#card-commands','data-mode'),'loader');assert.equal(replayed,0);
   await page.waitForFunction(()=>document.querySelector('#status-label-card').textContent==='Carte bloquée');
   assert.equal(await page.locator('#status-card').getAttribute('data-tone'),'warning');
-  assert.equal(await page.textContent('#status-label-permissions'),'Autorisations');
+  assert.equal(await page.locator('[data-device="board"] .board-grant').textContent(),'Sans grant');
   await openStatus(page,'card');assert.equal(await page.locator('#recover').isVisible(),true);
   assert.equal(await page.locator('[data-command=console]').isDisabled(),true);
   // A physical unplug keeps the logical ID locked while reconnection is pending.
