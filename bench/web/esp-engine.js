@@ -5,6 +5,23 @@ import { runWrite, Tracer } from './flash-op.js';
 import { b64, unb64, family, region, validateImages, partitions, sha256 } from './protocol.js';
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
+// Loader (flash) speed per USB interface, chosen automatically from the port's VID/PID.
+// - A native USB port (303a:*, USB-Serial-JTAG or the ROM's USB-OTG, e.g. 303a:0012 on the ESP32-P4) has no UART speed:
+//   esptool-js's baud change after the stub (and the port reopening it implies) is only for an external UART bridge, and made
+//   the loader unreachable on the P4's USB-OTG port. -> 115200, i.e. no baud change.
+// - An external UART bridge defaults to 460800, except the interfaces listed here, each with the observation that justifies it.
+export const DEFAULT_BRIDGE_BAUD = 460800, ROM_BAUD = 115200;
+export const BRIDGE_BAUD_EXCEPTIONS = [
+  // CH343 of the Waveshare ESP32-P4-WIFI6-POE-ETH: only 115200 was reliable in the P4 reads, and a flash.write at 460800
+  // ended with "no response" at the begin command (2026-11-13). Re-evaluate with a measurement before raising it.
+  { vid: 0x1a86, pid: 0x55d3, baud: 115200 },
+];
+export function loaderBaud(usb) {
+  if (usb.usbVendorId === 0x303a) return ROM_BAUD;
+  const known = BRIDGE_BAUD_EXCEPTIONS.find(e => e.vid === usb.usbVendorId && e.pid === usb.usbProductId);
+  return known ? known.baud : DEFAULT_BRIDGE_BAUD;
+}
+
 export class EspEngine {
   constructor(port, deps, event, hold = () => {}) {
     this.port = port; this.deps = deps; this.event = event; this.persistHold = hold;
@@ -12,9 +29,8 @@ export class EspEngine {
     this.native = usb.usbVendorId === 0x303a;
     this.usbSerialJtag = this.native && usb.usbProductId === 0x1001;
     this.mode = 'off'; this.reader = null; this.loader = null; this.baudrate = 115200;
-    // A native USB port (303a:*, USB-Serial-JTAG or the ROM's USB-OTG, e.g. 303a:0012 on the ESP32-P4) has no UART speed: esptool-js's baud change after the stub (and the port reopening it implies) is
-    // only for an external UART bridge, and made the loader unreachable on the P4's USB-OTG port.
-    this.flashBaud = this.native ? 115200 : 460800; this.manualDownload = false; this.hold = false; this.trigger = null; this.tail = new Uint8Array();
+    // Loader speed is chosen from the USB interface (see loaderBaud).
+    this.flashBaud = loaderBaud(usb); this.manualDownload = false; this.hold = false; this.trigger = null; this.tail = new Uint8Array();
     this.trace = new Tracer(); this.busy = false; this.phase = 'prepare'; this.readProgress = {};
   }
   provenance() {

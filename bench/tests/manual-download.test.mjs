@@ -48,8 +48,8 @@ test('the opt-in never applies to an external UART bridge: it keeps the reset se
   }
 });
 
-test('loader speed: native USB ports stay at 115200 (no esptool-js baud change); an external UART bridge keeps 460800', async () => {
-  for (const [vid, pid, expected] of [[0x303a, 0x0012, 115200], [0x303a, 0x1001, 115200], [0x1a86, 0x55d3, 460800], [0x10c4, 0xea60, 460800]]) {
+test('loader speed is chosen from the interface: native USB and the CH343 stay at 115200 (no esptool-js baud change); other external bridges keep 460800', async () => {
+  for (const [vid, pid, expected] of [[0x303a, 0x0012, 115200], [0x303a, 0x1001, 115200], [0x1a86, 0x55d3, 115200], [0x10c4, 0xea60, 460800], [0x0403, 0x6001, 460800]]) {
     const x = setup({ vid, pid });
     const id = await x.engine.identity();
     assert.deepEqual(x.log.baud, [expected], `${vid.toString(16)}:${pid.toString(16)}`);
