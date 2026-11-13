@@ -103,3 +103,12 @@
 .manual-download input[type=checkbox]:disabled, .manual-download input[type=checkbox]:disabled + span { cursor:not-allowed; opacity:.55; }
 .manual-download span { min-width:0; overflow-wrap:anywhere; }
 /* manual-download:end */
+
+/* Per-board grant display. State is sourced only from each board's live agent. */
+.active-board .board-grant { grid-column:1; grid-row:3; min-width:0; font-size:0.7rem; color:var(--muted); }
+.active-board .board-grant[data-active="true"] { color:var(--warning); font-weight:600; }
+.card-permissions #grant-state { margin:0 0 8px; font-size:12px; }
+.card-permissions #authorization-settings { display:flex; flex-direction:column; align-items:stretch; gap:8px; }
+.card-permissions #authorization-settings label { display:flex; flex-direction:column; align-items:stretch; gap:4px; font-size:12px; }
+.card-permissions #authorization-settings button { width:100%; }
+.card-permissions .hint { margin:8px 0 0; font-size:11px; }
