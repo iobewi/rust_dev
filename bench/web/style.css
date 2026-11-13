@@ -87,7 +87,7 @@
 .active-board .board-status { grid-column:2; grid-row:1; justify-self:end; display:inline-flex; align-items:center; gap:5px; min-width:0; max-width:120px; font-size:0.72rem; text-align:right; }
 .active-board .board-status::before { content:""; width:7px; height:7px; flex:none; border-radius:50%; background:currentColor; }
 .active-board .board-action { grid-column:2; grid-row:2; justify-self:end; font-size:0.7rem; padding:0.18rem 0.4rem; min-height:26px; }
-.active-board .board-forget { grid-column:2; grid-row:4; justify-self:end; font-size:0.7rem; padding:0.18rem 0.4rem; }
+.active-board .board-forget { grid-column:2; grid-row:3; justify-self:end; font-size:0.7rem; padding:0.18rem 0.4rem; }
 .active-board .board-status[data-state="connected"] { color:var(--positive,#48b78a); }
 .active-board .board-status[data-state="usb_lost"], .active-board .board-status[data-state="reconnecting"] { color:var(--warning,#e5b15e); }
 .active-board .board-status[data-state="disconnected"] { color:var(--muted,#8793a4); }
