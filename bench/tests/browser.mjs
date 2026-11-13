@@ -275,13 +275,17 @@ test(`local browser session and direct control over ${usbJtag?'USB Serial/JTAG':
   assert.equal(await page.locator('#grant').isVisible(),true);
   assert.equal(await page.locator('#grant-time').isVisible(),true);
   assert.equal(await page.locator('#recover').isVisible(),false);
-  assert.equal(await page.locator('[data-device="board"] .board-grant').textContent(),'Sans grant');
+  assert.equal(await page.locator('[data-device="board"] .board-grant').getAttribute('data-active'),'false');
+  assert.equal(await page.locator('[data-device="board"] .board-grant-revoke').isVisible(),false);
   await page.selectOption('#grant-time','60');page.once('dialog',dialog=>dialog.accept());await page.click('#grant');
-  await page.waitForFunction(()=>/^Grant actif · [0-9]+ s$/.test(document.querySelector('[data-device="board"] .board-grant')?.textContent||''));
+  await page.waitForFunction(()=>/^[0-9]+ s$/.test(document.querySelector('[data-device="board"] .board-grant-time')?.textContent||''));
+  assert.equal(await page.locator('[data-device="board"] .board-grant').getAttribute('data-active'),'true');
+  assert.equal(await page.locator('[data-device="board"] .board-grant-revoke').isVisible(),true);
   assert.match(await page.locator('#grant-state').textContent(),/Grant actif sur board/);
   assert.equal(await page.locator('#grant').isVisible(),false);
-  await page.click('#revoke');
-  await page.waitForFunction(()=>document.querySelector('[data-device="board"] .board-grant')?.textContent==='Sans grant');
+  await page.locator('[data-device="board"] .board-grant-revoke').click();
+  await page.waitForFunction(()=>document.querySelector('[data-device="board"] .board-grant')?.dataset.active==='false');
+  assert.equal(await page.locator('[data-device="board"] .board-grant-revoke').isVisible(),false);
   assert.equal(await page.locator('#grant').isVisible(),true);
   // Physical agent can release an orphan reservation without restarting the server.
   const orphan=await fetch(url+'/api/v1/leases',{method:'POST',headers:{Authorization:'Bearer client-bob-1234567890','Content-Type':'application/json'},body:JSON.stringify({device:'board',ttl:60})});
@@ -419,7 +423,7 @@ test(`local browser session and direct control over ${usbJtag?'USB Serial/JTAG':
   assert.equal(await page.getAttribute('#card-commands','data-mode'),'loader');assert.equal(replayed,0);
   await page.waitForFunction(()=>document.querySelector('#status-label-card').textContent==='Carte bloquée');
   assert.equal(await page.locator('#status-card').getAttribute('data-tone'),'warning');
-  assert.equal(await page.locator('[data-device="board"] .board-grant').textContent(),'Sans grant');
+  assert.equal(await page.locator('[data-device="board"] .board-grant').getAttribute('data-active'),'false');
   await openStatus(page,'card');assert.equal(await page.locator('#recover').isVisible(),true);
   assert.equal(await page.locator('[data-command=console]').isDisabled(),true);
   // A physical unplug keeps the logical ID locked while reconnection is pending.
