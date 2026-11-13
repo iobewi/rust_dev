@@ -86,10 +86,11 @@ export class EspEngine {
     if (!this.native) return [...caps, 'reset', 'io0', 'boot.download'];
     return this.usbSerialJtag ? [...caps, 'reset'] : caps;
   }
-  // Native USB port with the operator's explicit opt-in (`manualDownload`, the « Entrée manuelle » checkbox): the operator put the chip in ROM download mode (BOOT held, RESET tapped) and ANY reset takes
-  // it out of it (without an application the port then disappears). So: no reset sequence (esptool-js connects with 'no_reset'), and the loader session stays open (the console is NOT reopened after the
-  // identification or a command: closing and reopening the port is not trusted not to reset the chip). Without the opt-in nothing changes, on any port.
-  keepsLoaderOpen() { return this.manualDownload === true && this.native === true; }
+  // Explicit operator opt-in (`manualDownload`, the « Entrée manuelle » checkbox) on any port: the operator put the chip in ROM download mode by hand (BOOT/GPIO9 held, RESET tapped) and ANY reset takes
+  // it out of it (on a native USB port without an application the port then disappears; an external UART bridge without DTR/RTS wiring, like the ESP32-C6 header of the Waveshare P4 board, cannot enter it
+  // by itself). So: no reset sequence (esptool-js connects with 'no_reset'), and the loader session stays open (the console is NOT reopened after the identification or a command: closing and
+  // reopening the port is not trusted not to reset the chip). Without the opt-in nothing changes, on any port.
+  keepsLoaderOpen() { return this.manualDownload === true; }
   entryMode() { return this.keepsLoaderOpen() ? 'no_reset' : 'default_reset'; }
   async openConsole(explicit = false) {
     if (!explicit && this.keepsLoaderOpen() && this.mode === 'loader') return;       // only an explicit console command / uart.configure leaves the loader session

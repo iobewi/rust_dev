@@ -39,12 +39,12 @@ test('opt-in on a native USB port (303a:0012 ROM USB-OTG, 303a:1001 USB-Serial-J
   }
 });
 
-test('the opt-in never applies to an external UART bridge: it keeps the reset sequence', async () => {
+test('the opt-in also applies to an external UART bridge (no DTR/RTS wiring, e.g. the ESP32-C6 header): no reset, the loader session stays open', async () => {
   for (const [vid, pid] of [[0x1a86, 0x55d3], [0x10c4, 0xea60], [0x0403, 0x6001]]) {
     const x = setup({ vid, pid, manual: true });
     await x.engine.openLoader();
-    assert.deepEqual(x.log.modes, ['default_reset'], `${vid.toString(16)}:${pid.toString(16)}`);
-    assert.equal(x.engine.keepsLoaderOpen(), false);
+    assert.deepEqual(x.log.modes, ['no_reset'], `${vid.toString(16)}:${pid.toString(16)}`);
+    assert.equal(x.engine.keepsLoaderOpen(), true);
   }
 });
 
