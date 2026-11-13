@@ -175,7 +175,7 @@ function renderActiveCards() {
     quickRevoke.setAttribute('aria-label', 'Révoquer le grant de ' + ctx.id);
     quickRevoke.hidden = true;
     quickRevoke.onclick = safely(() => {
-      // The captured board identity must still own its agent. Never use selected().
+      // The captured board identity must still own its agent, independently of UI selection.
       if (boards.get(ctx.id) !== ctx || !grantRemaining(ctx))
         throw new Error('Grant indisponible pour cette carte');
       ctx.agent.grant(0);
