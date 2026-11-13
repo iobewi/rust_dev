@@ -182,18 +182,29 @@ function renderActiveCards() {
       renderGrantIndicators();
       renderState();
     });
-    const status = document.createElement('button');
-    status.type = 'button'; status.className = 'board-status';
+    // USB status is informational; its neighboring button performs the action.
+    const status = document.createElement('span');
+    status.className = 'board-status';
+    status.setAttribute('role', 'status');
+    status.setAttribute('aria-label', 'État USB de ' + ctx.id);
     status.dataset.state = ctx.status;
     status.textContent = ({ connected: 'Connectée', connecting: 'Connexion…',
       usb_lost: ctx.reconnect?.waiting ? 'Reconnexion en attente' : 'USB perdu',
       reconnecting: 'Reconnexion…', disconnected: 'Déconnectée' })[ctx.status] || 'Indisponible';
-    status.title = ctx.status === 'connected' ? 'Déconnecter uniquement ce port USB' :
-      ctx.reconnect?.waiting ? 'Annuler la reconnexion de cette carte' :
-      'Reconnecter cette carte à son port précédemment sélectionné';
-    status.disabled = ctx.disconnecting || ctx.busy || ctx.engine?.busy || ctx.agent?.active ||
-      ctx.agent?.awaitingResult || ctx.reconnect?.running || ctx.status === 'connecting';
-    status.onclick = safely(async () => {
+    const action = document.createElement('button');
+    action.type = 'button'; action.className = 'board-action';
+    action.textContent = ctx.status === 'connected' ? 'Déconnecter' :
+      ctx.reconnect?.waiting ? 'Annuler' :
+      ctx.status === 'reconnecting' ? 'Reconnexion…' :
+      ctx.status === 'connecting' ? 'Connexion…' : 'Reconnecter';
+    action.title = ctx.status === 'connected' ? 'Déconnecter uniquement le port USB de ' + ctx.id :
+      ctx.reconnect?.waiting ? 'Annuler la reconnexion de ' + ctx.id :
+      'Reconnecter ' + ctx.id + ' à son port précédemment sélectionné';
+    action.setAttribute('aria-label', action.textContent + ' ' + ctx.id);
+    action.disabled = ctx.disconnecting || ctx.busy || ctx.engine?.busy || ctx.agent?.active ||
+      ctx.agent?.awaitingResult || ctx.reconnect?.running || ctx.status === 'connecting' ||
+      ctx.status === 'reconnecting';
+    action.onclick = safely(async () => {
       if (ctx.status === 'connected') {
         if (ctx.agent?.active || ctx.agent?.awaitingResult || ctx.engine?.busy || inFlight.has(ctx.id))
           throw new Error('Opération en cours');
@@ -211,7 +222,7 @@ function renderActiveCards() {
       await refreshDevices(false);
       renderDevices();
     });
-    row.append(name, chip, status, grantMarker, quickRevoke);
+    row.append(name, chip, status, action, grantMarker, quickRevoke);
     if (ctx.status === 'disconnected') {
       const forget = document.createElement('button');
       forget.type = 'button'; forget.className = 'board-forget';
