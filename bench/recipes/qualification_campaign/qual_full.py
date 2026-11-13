@@ -14,6 +14,8 @@ UART_BAUD = 115200
 READ_REGIONS = (("flash-start", 0x00000000), ("partition-table", 0x00008000), ("middle", 0x00800000),
                 ("below-16MiB", 0x00FFF000), ("above-16MiB", 0x01000000), ("last-sector", 0x01FFF000))
 D_SECTORS = (("D1", 0x00800000), ("D2", 0x01000000), ("D3", 0x01FFF000))
+WRITE_ORDER = ("D1", "D3", "D2")                    # D3 (above 16 MiB, alias 0x00FFF000 not critical) proves the write addressing before D2 (alias = sector 0) is ever engaged
+BLOCK = 0x10000                                     # the largest region an erase could cover by mistake (64 KiB block erase)
 WRITE_STEPS = ("pattern-A", "blank", "pattern-B", "restore")        # see pattern_a / blank / pattern_b; 'restore' writes back the sector of BACKUP-A
 
 
@@ -36,6 +38,20 @@ def pattern_b(address):
 def alias(address):
     """The sector an address would hit if the 24-bit flash addressing wrapped at 16 MiB (D2 -> sector 0, the bootloader). A write that landed there would not be seen by its own readback."""
     return address ^ 0x1000000
+
+
+def erase_block(address):
+    return address & ~(BLOCK - 1)
+
+
+def block_critical(address, table):
+    """First boot-critical sector inside the 64-KiB block that holds `address`: (offset, why) or None. Safety net for an erase wider than planned."""
+    start = erase_block(address)
+    for offset in range(start, start + BLOCK, SECTOR):
+        critical, why = boot_critical(offset, table)
+        if critical:
+            return offset, why
+    return None
 
 
 def blank():

@@ -130,6 +130,7 @@ def test_a_complete_campaign_passes_and_leaves_the_card_unchanged(sim, tmp_path)
     writes = [c for c in cmds if c["command"] == "flash.write"]
     assert len(writes) == 12 and all(c["args"]["uart_baud"] == 115200 and c["args"]["return_console"] is True for c in writes)
     assert sorted({c["args"]["images"][0]["address"] for c in writes}) == [a for _, a in qf.D_SECTORS]
+    assert [c["args"]["images"][0]["address"] for c in writes][::4] == [0x800000, 0x1FFF000, 0x1000000], "order D1 -> D3 -> D2"
     assert all(c["args"]["uart_baud"] == 115200 for c in cmds if c["command"] == "flash.read")
     assert not [c for c in cmds if c["command"] in ("flash.erase", "reset", "boot.download")]
     assert client.device("board")["reservation"] is None and not client.device("board")["quarantined"]
@@ -192,3 +193,22 @@ def test_a_write_sector_identical_to_its_wrap_alias_is_blocked_before_any_write(
     run, reports = run_recipe(tmp_path, url)
     assert reports["PC-11"]["status"] == "BLOCKED", run.stdout[-1500:]
     assert not [c for c in commands(tmp_path) if c["command"] == "flash.write"]
+
+
+def test_write_order_and_block_guard_are_pure_properties():
+    assert qf.WRITE_ORDER == ("D1", "D3", "D2") and qf.erase_block(0x1FFF000) == 0x1FF0000 and qf.erase_block(0x1000000) == 0x1000000
+    table = [{"type": 0, "subtype": 0x10, "offset": 0x1FF0000, "size": 0x8000, "label": "app"}]
+    assert qf.block_critical(0x1FFF000, table)[0] == 0x1FF0000 and qf.block_critical(0x1FFF000, []) is None
+    assert qf.block_critical(0x1000000, table) is None and qf.block_critical(0x8000, [])[0] == 0x0       # the boot block is always critical
+
+
+@pytest.mark.slow_integration
+def test_a_d3_write_that_wraps_at_16_mib_is_caught_before_d2_and_sector_0_is_never_written(sim, tmp_path):
+    url, client = sim(env={"SIM_WRAP_WRITES": "1"})
+    run, reports = run_recipe(tmp_path, url)
+    assert reports["PC-11"]["status"] == "FAIL", run.stdout[-1500:]
+    writes = [c["args"]["images"][0]["address"] for c in commands(tmp_path) if c["command"] == "flash.write"]
+    assert writes == [0x800000] * 4 + [0x1FFF000], "D1 completes, D3 stops at its first write, D2 is never engaged"
+    assert 0x1000000 not in writes and 0x0 not in writes
+    with client.reserve("board", ttl=60) as board:                               # the simulated wrap hit the alias 0xFFF000, never sector 0
+        assert board.read_flash(address=0, size=4096, return_console=False) == expected_flash(P4)[:4096]

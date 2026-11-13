@@ -109,6 +109,8 @@ class SimDevice:
                 raise SimFailure('flash_write_failed', {'phase': 'flash_write', 'error_type': 'Error'})        # SIMULATES a write that fails definitively
             for i, data in images:
                 start = i['address']
+                if os.environ.get('SIM_WRAP_WRITES') == '1':
+                    start &= 0xFFFFFF                             # SIMULATES a write path whose address wraps at 16 MiB (erase and program land on the alias); reads stay correct
                 lo, hi = start // 4096 * 4096, (start + len(data) + 4095) // 4096 * 4096
                 self.flash[lo:hi] = b'\xff' * (hi-lo)
                 stored = self.flip(data, 7) if os.environ.get('SIM_WRITE_CORRUPT_AT') == str(self.writes_done) else data      # SIMULATES a write that stores other bytes

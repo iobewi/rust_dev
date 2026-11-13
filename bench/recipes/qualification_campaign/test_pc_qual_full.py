@@ -36,7 +36,7 @@ from .backup import assemble, build_manifest as backup_manifest, free_space_prob
 from .evidence import record_storage, require_persistent_evidence
 from .harness import Blocked, Outcome, make_campaign, operator_gesture, recorded
 from .pc import gate, loader_state, open_loader_window      # noqa: F401  (loader_state is a fixture)
-from .qual_full import (D_SECTORS, FLASH, JEDEC, READ_REGIONS, SECTOR, UART_BAUD, WRITE_STEPS, alias, blank, boot_critical, compare_files, inventory, partition_table, pattern_a, pattern_b,
+from .qual_full import (BLOCK, D_SECTORS, FLASH, JEDEC, READ_REGIONS, SECTOR, UART_BAUD, WRITE_ORDER, WRITE_STEPS, alias, block_critical, erase_block, blank, boot_critical, compare_files, inventory, partition_table, pattern_a, pattern_b,
                         plan_checks, sha256_file)
 from .readonly import record_transport, retained_reads, start_or_block
 from .session import build_manifest as campaign_manifest
@@ -240,33 +240,55 @@ def test_pc11_p4_full_qualification(bench_client, qual_session, pytestconfig, lo
             progress("phase D: erase / program / read back / restore")
             image = a["path"]
 
-            def reference(address):
+            def reference(address, size=SECTOR):
                 with image.open("rb") as stream:
                     stream.seek(address)
-                    return stream.read(SECTOR)
+                    return stream.read(size)
 
             def neighbours(address):
                 return [x for x in (address - SECTOR, address + SECTOR) if 0 <= x <= FLASH - SECTOR]
 
-            writes = len(D_SECTORS) * len(WRITE_STEPS)
+            order = sorted(D_SECTORS, key=lambda item: WRITE_ORDER.index(item[0]))       # D1, D3, D2
             left = bench_client.device(cfg["board_id"])["privileged_seconds"]
             if left < (2 * WRITE_TIMEOUT + 90) * 2:
                 raise Blocked(f"the local grant ({left} s) is too short to write: no write was made")
+            table = inv["partition_table"]
             baseline = {}
-            for label, address in D_SECTORS:
+
+            def watched(address):
+                """64-KiB blocks that an erase could cover by mistake: the sector's own block and the block of its 16-MiB alias."""
+                return sorted({erase_block(address), erase_block(alias(address))})
+
+            for label, address in order:
                 twin = alias(address)                                          # 16-MiB wrap guard: never write where a wrapped address could land on a boot sector unseen
                 if reference(address) == reference(twin):
-                    critical, why = boot_critical(twin, inv["partition_table"])
+                    critical, why = boot_critical(twin, table)
                     if critical or set(reference(twin)) != {0xFF}:
                         raise Blocked(f"{label} {address:#x} holds the same bytes as {twin:#x} ({why if critical else 'not blank'}): a 16-MiB address wrap could not be excluded; no write was made")
-                for target in [address] + neighbours(address) + [twin]:
-                    data, rec = read(target, SECTOR, f"D-{label}-before-{target:08x}")
-                    assert data == reference(target), f"D: {label} sector {target:#x} differs from BACKUP-A before any write; nothing was written"
-                    baseline[target] = rec["sha256"]
+                for block in watched(address):
+                    if label == "D2" and block == erase_block(twin):
+                        continue                                               # the alias block of D2 is the boot block: D2 is only engaged after D3 proved the addressing, and sector 0 stays watched
+                    found = block_critical(block, table)
+                    if found and not (block == erase_block(address) and found[0] == address):
+                        raise Blocked(f"{label}: the 64-KiB block {block:#x} (own block or block of the 16-MiB alias) holds a boot-critical sector at {found[0]:#x} ({found[1]}): no write was made")
+                for target in [address] + neighbours(address) + [twin, 0]:
+                    if target not in baseline:
+                        data, rec = read(target, SECTOR, f"D-{label}-before-{target:08x}")
+                        assert data == reference(target), f"D: {label} sector {target:#x} differs from BACKUP-A before any write; nothing was written"
+                        baseline[target] = rec["sha256"]
+                for block in watched(address):
+                    key = (block, BLOCK)
+                    if key not in baseline:
+                        data, rec = read(block, BLOCK, f"D-{label}-block-before-{block:08x}")
+                        assert data == reference(block, BLOCK), f"D: {label} block {block:#x} differs from BACKUP-A before any write; nothing was written"
+                        baseline[key] = rec["sha256"]
                 assert pattern_a(address) != reference(address) and pattern_b(address) != reference(address), f"D: {label} already holds a test pattern; nothing would be proven"
             out.restoration = "sectors D1-D3 may hold test patterns or blanks; restore explicitly from BACKUP-A (" + str(image) + ")"      # set BEFORE the first mutation
-            steps = []
-            for label, address in D_SECTORS:
+            steps, completed = [], []
+            for label, address in order:
+                if label == "D2":
+                    assert completed == ["D1", "D3"], "D: D2 (alias = sector 0) is engaged only after D1 and D3 passed every step with their alias and blocks intact"
+                twin = alias(address)
                 for step in WRITE_STEPS:
                     data = {"pattern-A": pattern_a, "pattern-B": pattern_b, "blank": lambda _a: blank(), "restore": reference}[step](address)
                     wrote = program(address, data, f"D-{label}-{step}-write")
@@ -274,20 +296,26 @@ def test_pc11_p4_full_qualification(bench_client, qual_session, pytestconfig, lo
                     assert back == data, f"D: {label} {step}: the readback differs from the bytes written"
                     if step == "blank":
                         assert back == blank() and set(back) == {0xFF}, f"D: {label}: the sector is not 0xFF after the erase"
-                    if step == "pattern-A":
-                        twin_now, twin_rec = read(alias(address), SECTOR, f"D-{label}-alias-after-{step}")
-                        assert twin_now == reference(alias(address)), f"D: {label}: the 16-MiB alias {alias(address):#x} changed after the first write (address wrap): stop, restore explicitly from BACKUP-A"
+                    for guard in sorted({twin, 0}):                              # the 16-MiB alias and sector 0 stay watched after EVERY write
+                        seen, _ = read(guard, SECTOR, f"D-{label}-{step}-guard-{guard:08x}")
+                        assert seen == reference(guard), f"D: {label} {step}: sector {guard:#x} (16-MiB alias / boot sector) changed after the write (address wrap?): stop, restore explicitly from BACKUP-A"
                     steps.append({"sector": label, "address": address, "step": step, "expected_sha256": hashlib.sha256(data).hexdigest(), "readback_sha256": rec["sha256"], "write": wrote})
-                    progress(f"phase D {label} {step}: written and read back equal")
+                    progress(f"phase D {label} {step}: written, read back equal, alias and sector 0 intact")
+                for block in watched(address):                                   # blocks an erase could have covered, back to BACKUP-A before the next sector is engaged
+                    data, rec = read(block, BLOCK, f"D-{label}-block-after-{block:08x}")
+                    assert data == reference(block, BLOCK) and rec["sha256"] == baseline[(block, BLOCK)], f"D: {label}: block {block:#x} differs from BACKUP-A after its sequence: stop, no further sector is engaged"
+                completed.append(label)
             final = {}
-            for label, address in D_SECTORS:
-                for target in [address] + neighbours(address) + [alias(address)]:
+            for label, address in order:
+                for target in [address] + neighbours(address) + [alias(address), 0]:
+                    if f"{target:#x}" in final:
+                        continue
                     data, rec = read(target, SECTOR, f"D-{label}-final-{target:08x}")
                     assert data == reference(target) and rec["sha256"] == baseline[target], f"D: {label} {target:#x} differs from its initial content after the campaign"
                     final[f"{target:#x}"] = rec["sha256"]
-            case.write("phase-D.json", {"sectors": [[n, a_] for n, a_ in D_SECTORS], "initial_sha256": {f"{k:#x}": v for k, v in baseline.items()}, "steps": steps, "final_sha256": final,
-                                        "note": "initial content shown by SHA-256 only; neighbours of every sector re-read after the campaign"})
-            out.restoration = "restored: every write sector and its neighbours read back equal to BACKUP-A"
+            case.write("phase-D.json", {"order": [n for n, _ in order], "sectors": [[n, a_] for n, a_ in order], "initial_sha256": {(f"{k:#x}" if isinstance(k, int) else f"{k[0]:#x}+{k[1]}"): v for k, v in baseline.items()},
+                                        "steps": steps, "final_sha256": final, "note": "initial content shown by SHA-256 only; neighbours, 16-MiB aliases, sector 0 and the 64-KiB blocks re-read"})
+            out.restoration = "restored: every write sector, its neighbours, its alias and its 64-KiB blocks read back equal to BACKUP-A"
             mark("D", "PASS")
             state["phase"] = "done"
 
