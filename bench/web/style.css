@@ -105,8 +105,11 @@
 /* manual-download:end */
 
 /* Per-board grant display. State is sourced only from each board's live agent. */
-.active-board .board-grant { grid-column:1; grid-row:3; min-width:0; font-size:0.7rem; color:var(--muted); }
+.active-board .board-grant { grid-column:1; grid-row:3; display:flex; align-items:center; gap:0.35rem; min-width:0; min-height:26px; font-size:0.72rem; color:var(--muted); font-variant-numeric:tabular-nums; }
+.active-board .board-grant-icon { width:16px; height:16px; fill:none; stroke:currentColor; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; flex:none; }
 .active-board .board-grant[data-active="true"] { color:var(--warning); font-weight:600; }
+.active-board .board-grant-revoke { grid-column:2; grid-row:3; justify-self:end; font-size:0.7rem; padding:0.18rem 0.4rem; min-height:26px; }
+.active-board .board-grant-revoke:hover:not(:disabled) { color:var(--warning); }
 .card-permissions #grant-state { margin:0 0 8px; font-size:12px; }
 .card-permissions #authorization-settings { display:flex; flex-direction:column; align-items:stretch; gap:8px; }
 .card-permissions #authorization-settings label { display:flex; flex-direction:column; align-items:stretch; gap:4px; font-size:12px; }
