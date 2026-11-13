@@ -374,9 +374,9 @@ test(`local browser session and direct control over ${usbJtag?'USB Serial/JTAG':
   await page.click('#console-auto-size');
   assert.ok(Math.abs(await page.locator('#uart-log').evaluate(node=>node.getBoundingClientRect().height)-900*.55)<5);
   assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
-  await page.waitForFunction(()=>!document.querySelector('[data-device="board"] .board-status').disabled);
+  await page.waitForFunction(()=>!document.querySelector('[data-device="board"] .board-action').disabled);
   const closesBefore=await page.evaluate(()=>window.__serialPort.closeCalls||0);
-  await page.click('[data-device="board"] .board-status');
+  await page.click('[data-device="board"] .board-action');
   await page.waitForFunction(()=>document.querySelector('[data-device="board"] .board-status')?.textContent==='Déconnectée');
   assert.equal(await page.title(),'IOBEWI Device Lab');
   assert.equal(await page.locator('#card-details').isVisible(),true);
@@ -437,7 +437,7 @@ test(`local browser session and direct control over ${usbJtag?'USB Serial/JTAG':
   });
   await page.waitForFunction(()=>document.querySelector('[data-device="board"] .board-status')?.textContent==='Reconnexion en attente');
   assert.equal(await page.locator('[data-device="board"]').count(),1);
-  await page.click('[data-device="board"] .board-status');
+  await page.click('[data-device="board"] .board-action');
   await page.waitForFunction(()=>document.querySelector('[data-device="board"] .board-status')?.textContent==='Déconnectée');
   // The free-ID picker only exposes unused IDs. The disconnected board still owns its port.
   assert.deepEqual(await page.locator('#add-device-id option').allTextContents(),['board-b']);
@@ -674,7 +674,7 @@ test('Device Lab UI owns two mocked Web Serial ports simultaneously and isolates
    const devices=(await (await fetch('/api/v1/devices')).json()).devices;
    return devices.find(d=>d.id==='board')?.connected&&devices.find(d=>d.id==='board-b')?.connected;
   });
-  await page.click('[data-device="board"] .board-status');
+  await page.click('[data-device="board"] .board-action');
   await page.waitForFunction(()=>document.querySelector('[data-device="board"] .board-status')?.textContent==='Déconnectée');
   assert.equal(await page.locator('[data-device="board-b"] .board-status').textContent(),'Connectée');
   assert.deepEqual(await page.evaluate(()=>window.testPorts.map(p=>p.closeCalls)),[closesAfterAttach[0]+1,closesAfterAttach[1]]);
