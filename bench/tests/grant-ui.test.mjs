@@ -17,7 +17,7 @@ test('grant actions live directly below identification for the selected card', (
 
 test('each active board displays a separate live grant marker', () => {
   assert.match(ui, /grantMarker\.className = 'board-grant'/);
-  assert.match(ui, /row\.append\(name, chip, status, grantMarker, quickRevoke\)/);
+  assert.match(ui, /row\.append\(name, chip, status, action, grantMarker, quickRevoke\)/);
   assert.match(ui, /grantIcon\.setAttribute\('class', 'board-grant-icon'\)/);
   assert.match(ui, /grantClock\.className = 'board-grant-time'/);
   assert.match(ui, /grantIcon\.append\(grantSymbol\)/);
@@ -52,4 +52,13 @@ test('quick revocation is bound to its tile, not the currently selected card', (
   assert.doesNotMatch(handler, /selected\(\)/);
   assert.match(ui, /revoke\.hidden = !active/);
   assert.match(ui, /active \? '#icon-unlock' : '#icon-lock'/);
+});
+
+test('USB state and USB action are independent elements of the same board tile', () => {
+  assert.match(ui, /const status = document\.createElement\('span'\)/);
+  assert.match(ui, /status\.setAttribute\('role', 'status'\)/);
+  assert.match(ui, /const action = document\.createElement\('button'\)/);
+  assert.match(ui, /action\.className = 'board-action'/);
+  assert.match(ui, /action\.onclick = safely\(async \(\) =>/);
+  assert.match(ui, /action\.textContent = ctx\.status === 'connected' \? 'Déconnecter'/);
 });
