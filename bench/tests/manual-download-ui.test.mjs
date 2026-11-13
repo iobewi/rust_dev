@@ -54,3 +54,11 @@ test('the UART loader speed is captured before USB selection and reapplied only 
   assert.match(ui, /hardware\.loaderBaud = ctx\.options\?\.loaderBaud \?\? null/);
   assert.match(ui, /boards\.add\(id, port, \{ http_origins, manualDownload, loaderBaud \}\)/);
 });
+
+
+test('the USB picker is locked before awaiting selection and cancellation releases the lock', () => {
+  const add = ui.slice(ui.indexOf('async function addCard('), ui.indexOf("hook('add-device'"));
+  assert.ok(add.indexOf('usbBusy = true') < add.indexOf('await navigator.serial.requestPort()'));
+  assert.ok(add.indexOf('try {') < add.indexOf('await navigator.serial.requestPort()'));
+  assert.match(add, /finally \{ usbBusy = false;/);
+});

@@ -562,10 +562,10 @@ async function addCard(id) {
   // Capture the choice before any await. Other boards must never inherit it on reconnect.
   const manualDownload = $('manual-download')?.checked === true;
   const loaderBaud = $('loader-baud').value ? Number($('loader-baud').value) : null;
-  // requestPort must be called directly from the click activation, before any await.
-  const port = await navigator.serial.requestPort();
+  // Lock before the picker await; requestPort still runs in the click activation.
   usbBusy = true; renderActiveCards();
   try {
+    const port = await navigator.serial.requestPort();
     esptoolDeps ||= await import('https://unpkg.com/esptool-js@0.7.0/bundle.js');
     const http_origins = $('http-origins').value.split(',').map(v => v.trim()).filter(Boolean)
       .map(v => new URL(v).origin);

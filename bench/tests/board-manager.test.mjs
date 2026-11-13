@@ -318,3 +318,37 @@ test('invalid UART speed does not allocate a board context', async () => {
   const a = await manager.add('a', ports[0]);
   assert.equal(a.engine.loaderBaud, null);
 });
+
+
+for (const phase of ['identity', 'openConsole']) {
+  test(`cancelling a reconnect during ${phase} prevents registration and closes only that board`, async () => {
+    const { manager, ports, actions } = lab();
+    const a = await manager.add('a', ports[0]);
+    const b = await manager.add('b', ports[1]);
+    const bEngine = b.engine;
+    let resume, reached;
+    const gate = new Promise(resolve => { resume = resolve; });
+    const started = new Promise(resolve => { reached = resolve; });
+    const create = manager.createEngine;
+    manager.createEngine = (...args) => {
+      const engine = create(...args), original = engine[phase].bind(engine);
+      engine[phase] = async () => { reached(); await gate; return original(); };
+      return engine;
+    };
+    manager.lost(ports[0]);
+    const pending = a.reconnect.attempt(a.reconnect.version);
+    await started;
+    manager.cancelReconnect('a');
+    resume();
+    await pending;
+    assert.equal(a.status, 'disconnected');
+    assert.equal(a.engine, null);
+    assert.equal(a.agent, null);
+    assert.equal(a.reconnect.waiting, false);
+    assert.equal(a.reconnect.running, false);
+    assert.equal(actions.filter(x => x === 'connect:a').length, 1, 'no replacement agent registered');
+    assert.equal(b.status, 'connected');
+    assert.strictEqual(b.engine, bEngine);
+    assert.equal(actions.filter(x => x === 'close:b').length, 0);
+  });
+}

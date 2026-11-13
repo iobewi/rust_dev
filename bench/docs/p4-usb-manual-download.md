@@ -49,3 +49,8 @@ Validation logicielle ciblée : tests `manual-download`, `manual-download-ui`,
 `board-manager` et `engine`. Les doubles vérifient les décisions du moteur et
 l'isolation des options ; ils ne prouvent ni le câblage réel ni les signaux
 physiques, et ne qualifient pas le comportement d'esptool-js sur la carte.
+
+L'annulation d'une reconnexion pendant l'identification ou l'ouverture de la
+console invalide la tentative : le nouveau moteur est fermé et aucun nouvel
+agent n'est enregistré. Les autres cartes restent connectées. Le sélecteur USB
+est verrouillé avant son attente ; son annulation libère ce verrou.
