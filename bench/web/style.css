@@ -93,3 +93,13 @@
 .add-card-controls select { flex:1; min-width:6rem; }
 .add-card-controls button { flex-shrink:0; }
 @media (max-width: 720px) { .app-brand p { font-size:0.65rem; } }
+
+/* manual-download:start - checkbox « Entrée manuelle » (panneau latéral étroit). Règles limitées à .manual-download : aucun autre contrôle n'est touché.
+   Cause du « point bleu » : `button,input,select{min-width:0}` + `input[type=checkbox]{min-height:0}` laissaient la case se comprimer dans le label flex dès que le texte passe à la ligne. */
+.manual-download { display:flex; align-items:flex-start; gap:8px; flex:1 1 100%; margin-top:2px; padding:6px 4px; font-size:12px; line-height:1.4; cursor:pointer; border-radius:3px; }
+.manual-download:hover { background:var(--toolbar); }
+.manual-download input[type=checkbox] { flex:0 0 18px; width:18px; height:18px; min-width:18px; min-height:18px; max-width:none; margin:1px 0 0; padding:0; accent-color:var(--accent); cursor:pointer; }
+.manual-download input[type=checkbox]:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+.manual-download input[type=checkbox]:disabled, .manual-download input[type=checkbox]:disabled + span { cursor:not-allowed; opacity:.55; }
+.manual-download span { min-width:0; overflow-wrap:anywhere; }
+/* manual-download:end */

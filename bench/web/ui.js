@@ -79,6 +79,7 @@ const boards = new BoardManager({
     const hardware = new EspEngine(port, esptoolDeps, emit,
       held => localStorage.setItem('bench.v1.hold.' + ctx.id, held ? '1' : '0'));
     hardware.hold = localStorage.getItem('bench.v1.hold.' + ctx.id) === '1';
+    hardware.manualDownload = $('manual-download')?.checked === true;     // opt-in, per connection, never remembered
     return hardware;
   },
   makeDevice(ctx, identity, hardware) {
