@@ -1,3 +1,4 @@
+import { normalizeLoaderBaud } from './loader-settings.js';
 import { BoardContexts } from './board-contexts.js';
 import { SerialReconnect } from './serial-reconnect.js';
 
@@ -30,9 +31,10 @@ export class BoardManager {
   list() { return this.contexts.list(); }
 
   async add(id, port, options = {}) {
+    const loaderBaud = normalizeLoaderBaud(options.loaderBaud);
     const ctx = this.contexts.add(id, port);
     // A per-board snapshot survives engine replacement on USB loss/reconnect.
-    ctx.options = { ...options, manualDownload: options.manualDownload === true };
+    ctx.options = { ...options, loaderBaud, manualDownload: options.manualDownload === true };
     ctx.reconnect = this.makeReconnect({
       ports: () => this.ports(),
       idle: () => !ctx.busy && !ctx.disconnecting && !ctx.engine?.busy &&
