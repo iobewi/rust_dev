@@ -13,6 +13,11 @@ test('the checkbox sits inside its label, which is bound to it with for/id, with
   const m = html.match(/<label class="manual-download" for="manual-download"><input id="manual-download" type="checkbox"><span>([^<]+)<\/span><\/label>/);
   assert.ok(m, 'label markup'); assert.match(m[1], /Entrée manuelle/); assert.equal((html.match(/id="manual-download"/g) || []).length, 1);
   assert.ok(html.indexOf('add-card-controls') < html.indexOf('id="manual-download"'), 'it lives in the add-card controls');
+  assert.equal(m[1], 'Entrée manuelle', 'only the compact label stays visible');
+  assert.match(html, /class="manual-download-row"/);
+  assert.match(html, /aria-describedby="help-manual-download"/);
+  assert.match(html, /id="help-manual-download" class="help-popup" role="tooltip"/);
+  assert.match(html, /BOOT \+ RESET/);
 });
 
 test('the page reads the checkbox when the card engine is created (opt-in per connection, never remembered)', () => {
@@ -40,4 +45,11 @@ test('the block is the only place where this checkbox is styled and the global c
   const outside = css.replace(block, '').replace('/* manual-download:end */', '');
   assert.ok(!/manual-download/.test(outside));
   assert.ok(outside.includes('input[type=checkbox]{min-height:0;margin:0}'));
+});
+
+test('manual entry help bubble remains keyboard accessible without changing checkbox semantics', () => {
+  assert.match(html, /class="help manual-download-help"><button type="button" class="help-trigger" aria-label="Aide : entrée manuelle"/);
+  assert.match(block, /\.manual-download-row \.help-popup \{[^}]*right:0/);
+  assert.match(block, /\.manual-download-row \.manual-download \{[^}]*align-items:center/);
+  assert.equal((html.match(/id="help-manual-download"/g) || []).length, 1);
 });
