@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 
 const html = readFileSync(new URL('../web/index.html', import.meta.url), 'utf8');
 const ui = readFileSync(new URL('../web/ui.js', import.meta.url), 'utf8');
+const css = readFileSync(new URL('../web/style.css', import.meta.url), 'utf8');
 
 test('grant actions live directly below identification for the selected card', () => {
   const identification = html.indexOf('id="card-identification-title"');
@@ -61,4 +62,10 @@ test('USB state and USB action are independent elements of the same board tile',
   assert.match(ui, /action\.className = 'board-action'/);
   assert.match(ui, /action\.onclick = safely\(async \(\) =>/);
   assert.match(ui, /action\.textContent = ctx\.status === 'connected' \? 'Déconnecter'/);
+});
+
+test('Remove stays next to the grant indicator, directly below USB reconnect', () => {
+  assert.match(css, /\.active-board \.board-action \{ grid-column:2; grid-row:2;/);
+  assert.match(css, /\.active-board \.board-grant \{ grid-column:1; grid-row:3;/);
+  assert.match(css, /\.active-board \.board-forget \{ grid-column:2; grid-row:3;/);
 });
