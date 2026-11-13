@@ -42,6 +42,10 @@ def test_patterns_are_deterministic_complementary_and_addressed():
     assert qf.plan_checks() is True
 
 
+def test_the_wrap_alias_of_d2_is_the_boot_sector():
+    assert [qf.alias(a) for _, a in qf.D_SECTORS] == [0x1800000, 0x0, 0xFFF000] and all(qf.alias(qf.alias(a)) == a for _, a in qf.D_SECTORS)
+
+
 def test_write_sectors_are_the_three_expected_ones():
     assert qf.D_SECTORS == (("D1", 0x800000), ("D2", 0x1000000), ("D3", 0x1FFF000))
     assert qf.WRITE_STEPS == ("pattern-A", "blank", "pattern-B", "restore") and qf.UART_BAUD == 115200
@@ -180,3 +184,11 @@ def test_without_a_local_grant_nothing_is_submitted(sim, tmp_path):
     run, reports = run_recipe(tmp_path, url, {"operator_timeout_s": 5})
     assert reports["PC-11"]["status"] == "BLOCKED", run.stdout[-1500:]
     assert not [c for c in commands(tmp_path) if c["command"].startswith("flash.")]
+
+
+@pytest.mark.slow_integration
+def test_a_write_sector_identical_to_its_wrap_alias_is_blocked_before_any_write(sim, tmp_path):
+    url, client = sim(env={"SIM_FLASH_PATTERN": "blank"})                # D2 and the boot sector hold the same bytes: a 16-MiB wrap cannot be excluded
+    run, reports = run_recipe(tmp_path, url)
+    assert reports["PC-11"]["status"] == "BLOCKED", run.stdout[-1500:]
+    assert not [c for c in commands(tmp_path) if c["command"] == "flash.write"]

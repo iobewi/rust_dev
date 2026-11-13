@@ -24,3 +24,6 @@ L'opérateur arme UN grant local au début (≥ `grant_seconds`−300 s observé
 
 ## Contrôles logiciels
 `bench/python/tests/test_pc_qual_full.py` (14 tests : motifs, session, campagne complète PASS carte inchangée, relecture corrompue, écriture en échec, sauvegardes différentes, 6 cas BLOCKED, sans grant) et `bench/tests/stub-variant.test.mjs` (`flash.write` avec `uart_baud`).
+
+## Garde contre le rebouclage d'adresse à 16 Mio
+Avant toute écriture, chaque secteur D est comparé au secteur qu'un rebouclage d'adresse atteindrait (`alias` : D2 → secteur 0, l'amorce). Contenu identique et alias critique ou non vierge : BLOCKED. Après la première écriture de chaque secteur, l'alias est relu et doit rester égal à BACKUP-A ; les alias sont aussi relus à la fin.

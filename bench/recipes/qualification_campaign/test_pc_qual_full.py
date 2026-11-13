@@ -36,7 +36,7 @@ from .backup import assemble, build_manifest as backup_manifest, free_space_prob
 from .evidence import record_storage, require_persistent_evidence
 from .harness import Blocked, Outcome, make_campaign, operator_gesture, recorded
 from .pc import gate, loader_state, open_loader_window      # noqa: F401  (loader_state is a fixture)
-from .qual_full import (D_SECTORS, FLASH, JEDEC, READ_REGIONS, SECTOR, UART_BAUD, WRITE_STEPS, blank, boot_critical, compare_files, inventory, partition_table, pattern_a, pattern_b,
+from .qual_full import (D_SECTORS, FLASH, JEDEC, READ_REGIONS, SECTOR, UART_BAUD, WRITE_STEPS, alias, blank, boot_critical, compare_files, inventory, partition_table, pattern_a, pattern_b,
                         plan_checks, sha256_file)
 from .readonly import record_transport, retained_reads, start_or_block
 from .session import build_manifest as campaign_manifest
@@ -254,7 +254,12 @@ def test_pc11_p4_full_qualification(bench_client, qual_session, pytestconfig, lo
                 raise Blocked(f"the local grant ({left} s) is too short to write: no write was made")
             baseline = {}
             for label, address in D_SECTORS:
-                for target in [address] + neighbours(address):
+                twin = alias(address)                                          # 16-MiB wrap guard: never write where a wrapped address could land on a boot sector unseen
+                if reference(address) == reference(twin):
+                    critical, why = boot_critical(twin, inv["partition_table"])
+                    if critical or set(reference(twin)) != {0xFF}:
+                        raise Blocked(f"{label} {address:#x} holds the same bytes as {twin:#x} ({why if critical else 'not blank'}): a 16-MiB address wrap could not be excluded; no write was made")
+                for target in [address] + neighbours(address) + [twin]:
                     data, rec = read(target, SECTOR, f"D-{label}-before-{target:08x}")
                     assert data == reference(target), f"D: {label} sector {target:#x} differs from BACKUP-A before any write; nothing was written"
                     baseline[target] = rec["sha256"]
@@ -269,11 +274,14 @@ def test_pc11_p4_full_qualification(bench_client, qual_session, pytestconfig, lo
                     assert back == data, f"D: {label} {step}: the readback differs from the bytes written"
                     if step == "blank":
                         assert back == blank() and set(back) == {0xFF}, f"D: {label}: the sector is not 0xFF after the erase"
+                    if step == "pattern-A":
+                        twin_now, twin_rec = read(alias(address), SECTOR, f"D-{label}-alias-after-{step}")
+                        assert twin_now == reference(alias(address)), f"D: {label}: the 16-MiB alias {alias(address):#x} changed after the first write (address wrap): stop, restore explicitly from BACKUP-A"
                     steps.append({"sector": label, "address": address, "step": step, "expected_sha256": hashlib.sha256(data).hexdigest(), "readback_sha256": rec["sha256"], "write": wrote})
                     progress(f"phase D {label} {step}: written and read back equal")
             final = {}
             for label, address in D_SECTORS:
-                for target in [address] + neighbours(address):
+                for target in [address] + neighbours(address) + [alias(address)]:
                     data, rec = read(target, SECTOR, f"D-{label}-final-{target:08x}")
                     assert data == reference(target) and rec["sha256"] == baseline[target], f"D: {label} {target:#x} differs from its initial content after the campaign"
                     final[f"{target:#x}"] = rec["sha256"]

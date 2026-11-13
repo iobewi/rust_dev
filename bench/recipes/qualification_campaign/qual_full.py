@@ -33,6 +33,11 @@ def pattern_b(address):
     return bytes(b ^ 0xFF for b in pattern_a(address))
 
 
+def alias(address):
+    """The sector an address would hit if the 24-bit flash addressing wrapped at 16 MiB (D2 -> sector 0, the bootloader). A write that landed there would not be seen by its own readback."""
+    return address ^ 0x1000000
+
+
 def blank():
     return b"\xff" * SECTOR
 
