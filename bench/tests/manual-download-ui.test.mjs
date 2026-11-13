@@ -11,12 +11,17 @@ const block = css.slice(css.indexOf('/* manual-download:start'), css.indexOf('/*
 
 test('the checkbox sits inside its label, which is bound to it with for/id, with the text in a span (the whole label is clickable)', () => {
   const m = html.match(/<label class="manual-download" for="manual-download"><input id="manual-download" type="checkbox"><span>([^<]+)<\/span><\/label>/);
-  assert.ok(m, 'label markup'); assert.match(m[1], /Entrée manuelle/); assert.equal((html.match(/id="manual-download"/g) || []).length, 1);
+  assert.ok(m, 'label markup'); assert.match(m[1], /[Ee]ntrée manuelle/);
+  assert.match(m[1], /carte ajoutée uniquement/); assert.equal((html.match(/id="manual-download"/g) || []).length, 1);
   assert.ok(html.indexOf('add-card-controls') < html.indexOf('id="manual-download"'), 'it lives in the add-card controls');
 });
 
-test('the page reads the checkbox when the card engine is created (opt-in per connection, never remembered)', () => {
-  assert.match(ui, /hardware\.manualDownload = \$\('manual-download'\)\?\.checked === true;/);
+test('the checkbox is captured for the new board; engines use only its own context', () => {
+  assert.match(ui, /const manualDownload = \$\('manual-download'\)\?\.checked === true;/);
+  assert.match(ui, /boards\.add\(id, port, \{ http_origins, manualDownload \}\)/);
+  assert.match(ui, /hardware\.manualDownload = ctx\.options\?\.manualDownload === true;/);
+  assert.match(ui, /\$\('manual-download'\)\.checked = false;/);
+  assert.doesNotMatch(ui, /hardware\.manualDownload = \$\('manual-download'\)/);
   assert.ok(!/localStorage[^;]*manual-download/.test(ui));
 });
 
