@@ -158,7 +158,30 @@ function renderActiveCards() {
     grantMarker.className = 'board-grant';
     grantMarker.setAttribute('role', 'status');
     grantMarker.setAttribute('aria-label', 'Grant de ' + ctx.id);
-    grantMarker.textContent = 'Sans grant';
+    // Compact visual state; the countdown remains visible for a live grant.
+    const grantIcon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    grantIcon.setAttribute('class', 'board-grant-icon');
+    grantIcon.setAttribute('aria-hidden', 'true');
+    const grantSymbol = document.createElementNS('http://www.w3.org/2000/svg', 'use');
+    grantIcon.append(grantSymbol);
+    const grantClock = document.createElement('span');
+    grantClock.className = 'board-grant-time';
+    grantMarker.append(grantIcon, grantClock);
+    const quickRevoke = document.createElement('button');
+    quickRevoke.type = 'button';
+    quickRevoke.className = 'board-grant-revoke';
+    quickRevoke.textContent = 'Révoquer';
+    quickRevoke.title = 'Révoquer uniquement le grant de ' + ctx.id;
+    quickRevoke.setAttribute('aria-label', 'Révoquer le grant de ' + ctx.id);
+    quickRevoke.hidden = true;
+    quickRevoke.onclick = safely(() => {
+      // The captured board identity must still own its agent. Never use selected().
+      if (boards.get(ctx.id) !== ctx || !grantRemaining(ctx))
+        throw new Error('Grant indisponible pour cette carte');
+      ctx.agent.grant(0);
+      renderGrantIndicators();
+      renderState();
+    });
     const status = document.createElement('button');
     status.type = 'button'; status.className = 'board-status';
     status.dataset.state = ctx.status;
@@ -188,7 +211,7 @@ function renderActiveCards() {
       await refreshDevices(false);
       renderDevices();
     });
-    row.append(name, chip, status, grantMarker);
+    row.append(name, chip, status, grantMarker, quickRevoke);
     if (ctx.status === 'disconnected') {
       const forget = document.createElement('button');
       forget.type = 'button'; forget.className = 'board-forget';
@@ -228,12 +251,18 @@ function grantRemaining(ctx) {
 function renderGrantIndicators() {
   for (const row of $('active-cards').querySelectorAll('.active-board')) {
     const ctx = boards.get(row.dataset.device), marker = row.querySelector('.board-grant');
-    if (!marker) continue;
+    if (!ctx || !marker) continue;
     const remaining = grantRemaining(ctx);
-    marker.dataset.active = String(remaining > 0);
-    marker.textContent = remaining ? `Grant actif · ${remaining} s` : 'Sans grant';
-    marker.title = remaining ? `Autorisation distante de ${ctx.id} : ${remaining} secondes restantes` :
-      `Aucune autorisation distante active sur ${ctx.id}`;
+    const active = remaining > 0;
+    marker.dataset.active = String(active);
+    marker.querySelector('use').setAttribute('href', active ? '#icon-unlock' : '#icon-lock');
+    marker.querySelector('.board-grant-time').textContent = active ? `${remaining} s` : '';
+    marker.setAttribute('aria-label', active ?
+      `Grant actif sur ${ctx.id} : ${remaining} secondes restantes` :
+      `Aucun grant actif sur ${ctx.id}`);
+    marker.title = marker.getAttribute('aria-label');
+    const revoke = row.querySelector('.board-grant-revoke');
+    revoke.hidden = !active;
   }
 }
 function renderLocalCardChoices(devices) {
