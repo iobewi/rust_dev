@@ -12,7 +12,9 @@ export class EspEngine {
     this.native = usb.usbVendorId === 0x303a;
     this.usbSerialJtag = this.native && usb.usbProductId === 0x1001;
     this.mode = 'off'; this.reader = null; this.loader = null; this.baudrate = 115200;
-    this.flashBaud = 460800; this.hold = false; this.trigger = null; this.tail = new Uint8Array();
+    // A native USB port (303a:*, USB-Serial-JTAG or the ROM's USB-OTG, e.g. 303a:0012 on the ESP32-P4) has no UART speed: esptool-js's baud change after the stub (and the port reopening it implies) is
+    // only for an external UART bridge, and made the loader unreachable on the P4's USB-OTG port.
+    this.flashBaud = this.native ? 115200 : 460800; this.manualDownload = false; this.hold = false; this.trigger = null; this.tail = new Uint8Array();
     this.trace = new Tracer(); this.busy = false; this.phase = 'prepare'; this.readProgress = {};
   }
   provenance() {
@@ -68,7 +70,13 @@ export class EspEngine {
     if (!this.native) return [...caps, 'reset', 'io0', 'boot.download'];
     return this.usbSerialJtag ? [...caps, 'reset'] : caps;
   }
-  async openConsole() {
+  // Native USB port with the operator's explicit opt-in (`manualDownload`, the « Entrée manuelle » checkbox): the operator put the chip in ROM download mode (BOOT held, RESET tapped) and ANY reset takes
+  // it out of it (without an application the port then disappears). So: no reset sequence (esptool-js connects with 'no_reset'), and the loader session stays open (the console is NOT reopened after the
+  // identification or a command: closing and reopening the port is not trusted not to reset the chip). Without the opt-in nothing changes, on any port.
+  keepsLoaderOpen() { return this.manualDownload === true && this.native === true; }
+  entryMode() { return this.keepsLoaderOpen() ? 'no_reset' : 'default_reset'; }
+  async openConsole(explicit = false) {
+    if (!explicit && this.keepsLoaderOpen() && this.mode === 'loader') return;       // only an explicit console command / uart.configure leaves the loader session
     if (this.hold) throw new HardwareError('operator_recovery_required');
     if (this.mode === 'console') return;
     this.event('transport', { detail: 'opening console' });
@@ -121,7 +129,11 @@ export class EspEngine {
     };
     const terminal = { clean() {}, write() {}, writeLine: () => {} };
     this.loader = new ESPLoader({ transport: this.transport, baudrate: this.flashBaud, terminal });
-    try { this.chipDescription = await this.loader.main(); this.mode = 'loader'; }
+    try {
+      const entry = this.entryMode();
+      if (entry === 'no_reset') this.event('transport', { detail: 'loader entry without reset (operator put the chip in ROM download mode)' });
+      this.chipDescription = await this.loader.main(entry); this.mode = 'loader';
+    }
     catch (e) { try { await this.close(); } catch { /* Preserve the original serial failure. */ } throw e; }
     return this.loader;
   }
@@ -243,7 +255,7 @@ export class EspEngine {
           return { response: 'opaque', http_status: 'unknown', verified: false };
         } finally { clearTimeout(timer); }
       }
-      if (command === 'console') { this.setPhase('console', context); await this.openConsole(); return { mode: this.mode }; }
+      if (command === 'console') { this.setPhase('console', context); await this.openConsole(true); return { mode: this.mode }; }
       if (command === 'reset') { const method = await this.reset(); return { reset: true, method, boot_verified: false }; }
       if (command === 'boot.download') {
         const method = await this.bootDownload(args.hold_ms, context);
@@ -258,7 +270,7 @@ export class EspEngine {
       }
       if (command === 'uart.configure') {
         await this.closeConsole(); this.baudrate = args.baudrate;
-        await this.openConsole(); return { baudrate: this.baudrate };
+        await this.openConsole(true); return { baudrate: this.baudrate };
       }
       if (command === 'uart.write') {
         if (this.mode !== 'console') throw new HardwareError('console_required');
