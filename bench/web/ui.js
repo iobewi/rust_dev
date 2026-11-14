@@ -80,7 +80,7 @@ const boards = new BoardManager({
     const hardware = new EspEngine(port, esptoolDeps, emit,
       held => localStorage.setItem('bench.v1.hold.' + ctx.id, held ? '1' : '0'));
     hardware.hold = localStorage.getItem('bench.v1.hold.' + ctx.id) === '1';
-    hardware.manualDownload = $('manual-download')?.checked === true;     // opt-in, per connection, never remembered
+    hardware.manualDownload = ctx.options?.manualDownload === true; // Stable per-board setting, including reconnect.
     return hardware;
   },
   makeDevice(ctx, identity, hardware) {
@@ -153,7 +153,10 @@ function renderActiveCards() {
       $('devices').onchange?.();
     };
     const chip = document.createElement('span');
-    chip.className = 'board-chip'; chip.textContent = displayChip(ctx.identity, info(ctx.id));
+    chip.className = 'board-chip';
+    const chipName = displayChip(ctx.identity, info(ctx.id));
+    chip.textContent = chipName + (ctx.options?.manualDownload ? ' · BOOT manuel' : '');
+    chip.title = ctx.options?.manualDownload ? 'Entrée manuelle configurée uniquement pour cette carte' : chipName;
     const grantMarker = document.createElement('span');
     grantMarker.className = 'board-grant';
     grantMarker.setAttribute('role', 'status');
@@ -622,6 +625,8 @@ async function addCard(id) {
   if (!session?.devices.includes(id)) throw new Error('Identifiant non autorisé');
   if (boards.get(id)) throw new Error('Carte déjà ajoutée dans cette fenêtre');
   if (usbBusy) throw new Error('Sélection USB déjà en cours');
+  // Snapshot the choice before requesting USB. Reconnects use this board's setting.
+  const manualDownload = $('manual-download')?.checked === true;
   // requestPort must be called directly from the click activation, before any await.
   const port = await navigator.serial.requestPort();
   usbBusy = true; renderActiveCards();
@@ -629,7 +634,8 @@ async function addCard(id) {
     esptoolDeps ||= await import('https://unpkg.com/esptool-js@0.7.0/bundle.js');
     const http_origins = $('http-origins').value.split(',').map(v => v.trim()).filter(Boolean)
       .map(v => new URL(v).origin);
-    await boards.add(id, port, { http_origins });
+    await boards.add(id, port, { http_origins, manualDownload });
+    $('manual-download').checked = false;
     renderDevices();
     $('devices').value = id;
     boards.select(id);
