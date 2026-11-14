@@ -9,10 +9,15 @@ const css = readFileSync(new URL('../web/style.css', import.meta.url), 'utf8');
 const ui = readFileSync(new URL('../web/ui.js', import.meta.url), 'utf8');
 const block = css.slice(css.indexOf('/* manual-download:start'), css.indexOf('/* manual-download:end */'));
 
-test('the checkbox sits inside its label, which is bound to it with for/id, with the text in a span (the whole label is clickable)', () => {
-  const m = html.match(/<label class="manual-download" for="manual-download"><input id="manual-download" type="checkbox"><span>([^<]+)<\/span><\/label>/);
-  assert.ok(m, 'label markup'); assert.match(m[1], /Entrée manuelle/); assert.equal((html.match(/id="manual-download"/g) || []).length, 1);
-  assert.ok(html.indexOf('add-card-controls') < html.indexOf('id="manual-download"'), 'it lives in the add-card controls');
+test('compact manual entry label is clickable and owns its hover/focus tooltip', () => {
+  const m = html.match(/<label class="manual-download" for="manual-download"><input id="manual-download" type="checkbox" aria-describedby="help-manual-download"><span>([^<]+)<\/span><span id="help-manual-download" class="manual-download-tooltip" role="tooltip">([^<]+)<\/span><\/label>/);
+  assert.ok(m, 'checkbox and tooltip are inside the same label');
+  assert.equal(m[1], 'Entrée manuelle');
+  assert.match(m[2], /BOOT \+ RESET/);
+  assert.equal((html.match(/id="manual-download"/g) || []).length, 1);
+  assert.equal((html.match(/id="help-manual-download"/g) || []).length, 1);
+  assert.ok(html.indexOf('add-card-controls') < html.indexOf('id="manual-download"'));
+  assert.doesNotMatch(html, /class="manual-download-row"|class="help manual-download-help"/);
 });
 
 test('the page reads the checkbox when the card engine is created (opt-in per connection, never remembered)', () => {
@@ -23,7 +28,7 @@ test('the page reads the checkbox when the card engine is created (opt-in per co
 test('the CSS block exists, sizes the box at 18 px that cannot shrink, aligns it with the text and styles focus, hover and disabled', () => {
   assert.ok(block.length > 200, 'block present');
   assert.match(block, /input\[type=checkbox\]\s*\{[^}]*flex:0 0 18px[^}]*width:18px[^}]*height:18px[^}]*min-width:18px[^}]*min-height:18px/);
-  assert.match(block, /\.manual-download\s*\{[^}]*display:flex[^}]*align-items:flex-start[^}]*cursor:pointer/);
+  assert.match(block, /\.manual-download\s*\{[^}]*display:flex[^}]*align-items:center[^}]*cursor:pointer/);
   assert.match(block, /:focus-visible\s*\{[^}]*outline:2px solid var\(--accent\)/);
   assert.match(block, /:disabled[^{]*\{[^}]*not-allowed/);
   assert.match(block, /\.manual-download:hover/);
@@ -40,4 +45,10 @@ test('the block is the only place where this checkbox is styled and the global c
   const outside = css.replace(block, '').replace('/* manual-download:end */', '');
   assert.ok(!/manual-download/.test(outside));
   assert.ok(outside.includes('input[type=checkbox]{min-height:0;margin:0}'));
+});
+
+test('tooltip opens from the label hover or checkbox keyboard focus without a help button', () => {
+  assert.match(block, /\.manual-download:hover \.manual-download-tooltip, \.manual-download:focus-within \.manual-download-tooltip \{ display:block; \}/);
+  assert.match(block, /\.manual-download \.manual-download-tooltip \{[^}]*pointer-events:none/);
+  assert.doesNotMatch(html, /Aide : entrée manuelle/);
 });

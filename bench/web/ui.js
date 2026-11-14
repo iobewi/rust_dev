@@ -22,6 +22,7 @@ const isWorking = () => inFlight.has(selected());
 let reconnect = { waiting: false, running: false, stop() {}, forget() {} };
 let esptoolDeps;
 const boardBusy = new Map();
+const grantDurations = new Map(); // UI-only grant duration choice, scoped by board ID.
 let knownDevices = [], imagePlan = [], artifactList = [], confirmation;
 let format = 'text', paused = false, pausedAt = Infinity, renderPending = false, selectedOperation, lastConsoleKey;
 let streamController, streamGeneration = 0, refreshPromise, sessionOpened = false;
@@ -153,18 +154,57 @@ function renderActiveCards() {
     };
     const chip = document.createElement('span');
     chip.className = 'board-chip'; chip.textContent = displayChip(ctx.identity, info(ctx.id));
-    const status = document.createElement('button');
-    status.type = 'button'; status.className = 'board-status';
+    const grantMarker = document.createElement('span');
+    grantMarker.className = 'board-grant';
+    grantMarker.setAttribute('role', 'status');
+    grantMarker.setAttribute('aria-label', 'Grant de ' + ctx.id);
+    // Compact visual state; the countdown remains visible for a live grant.
+    const grantIcon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    grantIcon.setAttribute('class', 'board-grant-icon');
+    grantIcon.setAttribute('aria-hidden', 'true');
+    const grantSymbol = document.createElementNS('http://www.w3.org/2000/svg', 'use');
+    grantIcon.append(grantSymbol);
+    const grantClock = document.createElement('span');
+    grantClock.className = 'board-grant-time';
+    grantMarker.append(grantIcon, grantClock);
+    const quickRevoke = document.createElement('button');
+    quickRevoke.type = 'button';
+    quickRevoke.className = 'board-grant-revoke';
+    quickRevoke.textContent = 'Révoquer';
+    quickRevoke.title = 'Révoquer uniquement le grant de ' + ctx.id;
+    quickRevoke.setAttribute('aria-label', 'Révoquer le grant de ' + ctx.id);
+    quickRevoke.hidden = true;
+    quickRevoke.onclick = safely(() => {
+      // The captured board identity must still own its agent, independently of UI selection.
+      if (boards.get(ctx.id) !== ctx || !grantRemaining(ctx))
+        throw new Error('Grant indisponible pour cette carte');
+      ctx.agent.grant(0);
+      renderGrantIndicators();
+      renderState();
+    });
+    // USB status is informational; its neighboring button performs the action.
+    const status = document.createElement('span');
+    status.className = 'board-status';
+    status.setAttribute('role', 'status');
+    status.setAttribute('aria-label', 'État USB de ' + ctx.id);
     status.dataset.state = ctx.status;
     status.textContent = ({ connected: 'Connectée', connecting: 'Connexion…',
       usb_lost: ctx.reconnect?.waiting ? 'Reconnexion en attente' : 'USB perdu',
       reconnecting: 'Reconnexion…', disconnected: 'Déconnectée' })[ctx.status] || 'Indisponible';
-    status.title = ctx.status === 'connected' ? 'Déconnecter uniquement ce port USB' :
-      ctx.reconnect?.waiting ? 'Annuler la reconnexion de cette carte' :
-      'Reconnecter cette carte à son port précédemment sélectionné';
-    status.disabled = ctx.disconnecting || ctx.busy || ctx.engine?.busy || ctx.agent?.active ||
-      ctx.agent?.awaitingResult || ctx.reconnect?.running || ctx.status === 'connecting';
-    status.onclick = safely(async () => {
+    const action = document.createElement('button');
+    action.type = 'button'; action.className = 'board-action';
+    action.textContent = ctx.status === 'connected' ? 'Déconnecter' :
+      ctx.reconnect?.waiting ? 'Annuler' :
+      ctx.status === 'reconnecting' ? 'Reconnexion…' :
+      ctx.status === 'connecting' ? 'Connexion…' : 'Reconnecter';
+    action.title = ctx.status === 'connected' ? 'Déconnecter uniquement le port USB de ' + ctx.id :
+      ctx.reconnect?.waiting ? 'Annuler la reconnexion de ' + ctx.id :
+      'Reconnecter ' + ctx.id + ' à son port précédemment sélectionné';
+    action.setAttribute('aria-label', action.textContent + ' ' + ctx.id);
+    action.disabled = ctx.disconnecting || ctx.busy || ctx.engine?.busy || ctx.agent?.active ||
+      ctx.agent?.awaitingResult || ctx.reconnect?.running || ctx.status === 'connecting' ||
+      ctx.status === 'reconnecting';
+    action.onclick = safely(async () => {
       if (ctx.status === 'connected') {
         if (ctx.agent?.active || ctx.agent?.awaitingResult || ctx.engine?.busy || inFlight.has(ctx.id))
           throw new Error('Opération en cours');
@@ -182,7 +222,7 @@ function renderActiveCards() {
       await refreshDevices(false);
       renderDevices();
     });
-    row.append(name, chip, status);
+    row.append(name, chip, status, action, grantMarker, quickRevoke);
     if (ctx.status === 'disconnected') {
       const forget = document.createElement('button');
       forget.type = 'button'; forget.className = 'board-forget';
@@ -212,6 +252,29 @@ function renderActiveCards() {
   }
   select.disabled = !free.length;
   $('add-device').disabled = !free.length || usbBusy;
+  renderGrantIndicators();
+}
+function grantRemaining(ctx) {
+  return ctx?.status === 'connected' && ctx.agent?.generation &&
+    ctx.agent.socket?.readyState === 1 && ctx.agent.grantUntil > performance.now() ?
+    Math.ceil((ctx.agent.grantUntil - performance.now()) / 1000) : 0;
+}
+function renderGrantIndicators() {
+  for (const row of $('active-cards').querySelectorAll('.active-board')) {
+    const ctx = boards.get(row.dataset.device), marker = row.querySelector('.board-grant');
+    if (!ctx || !marker) continue;
+    const remaining = grantRemaining(ctx);
+    const active = remaining > 0;
+    marker.dataset.active = String(active);
+    marker.querySelector('use').setAttribute('href', active ? '#icon-unlock' : '#icon-lock');
+    marker.querySelector('.board-grant-time').textContent = active ? `${remaining} s` : '';
+    marker.setAttribute('aria-label', active ?
+      `Grant actif sur ${ctx.id} : ${remaining} secondes restantes` :
+      `Aucun grant actif sur ${ctx.id}`);
+    marker.title = marker.getAttribute('aria-label');
+    const revoke = row.querySelector('.board-grant-revoke');
+    revoke.hidden = !active;
+  }
 }
 function renderLocalCardChoices(devices) {
   boards.contexts.setAllowed(devices);
@@ -306,7 +369,7 @@ function indicator(name, label, icon, tone = 'neutral') {
   $('status-label-' + name).textContent = label;
   button.dataset.tone = tone;
   button.querySelector('use').setAttribute('href', '#icon-' + icon);
-  button.setAttribute('aria-label', ({ card: 'Carte', usb: 'USB', agent: 'Agent', control: 'Pilotage', permissions: 'Autorisations', wake: 'Veille' }[name]) + ' : ' + label);
+  button.setAttribute('aria-label', ({ card: 'Carte', usb: 'USB', agent: 'Agent', control: 'Pilotage', wake: 'Veille' }[name]) + ' : ' + label);
 }
 function statusDetails(name = null) {
   document.querySelectorAll('[data-status]').forEach(button => {
@@ -471,9 +534,15 @@ function renderState() {
   resetButton.title = usbReset ? 'Redémarre via le contrôleur USB Serial/JTAG, sans piloter EN ou IO0.' : 'Redémarre par EN, en mode console avec un pont UART externe.';
 
   $('control-state').textContent = isWorking() ? 'Opération manuelle en cours' : d?.reservation ? (otherOwner ? 'Pilotée par : ' + d.reservation.owner : 'Déclencheur ou opération en cours') : d?.connected && !d?.localOnly ? 'Disponible · commandes directes' : 'Local · observation';
-  $('grant').disabled = !local || !portConnected || !agent?.generation; $('revoke').disabled = $('grant').disabled;
-  $('grant-state').textContent = local && agent?.grantUntil > performance.now() ? `Opérations distantes autorisées : ${Math.ceil((agent.grantUntil - performance.now()) / 1000)} s` : 'À la demande · aucune autorisation distante active.';
-  $('revoke').hidden = !(local && agent?.grantUntil > performance.now());
+  const remainingGrant = grantRemaining(boards.get(selected()));
+  $('grant-time').value = grantDurations.get(selected()) || '300';
+  $('grant').disabled = !local || !portConnected || !agent?.generation || agent?.socket?.readyState !== 1;
+  $('revoke').disabled = $('grant').disabled;
+  $('grant').hidden = remainingGrant > 0;
+  $('grant-state').textContent = remainingGrant ? `Grant actif sur ${selected()} · ${remainingGrant} s restantes` :
+    `Aucun grant actif sur ${selected() || 'cette carte'}.`;
+  $('revoke').hidden = !remainingGrant;
+  renderGrantIndicators();
   $('release-control').disabled = !local || !agent?.generation || Boolean(ownBusy || isWorking()) || !d?.reservation;
   activity();
   $('safety-state').textContent = local && agent?.awaitingResult ? 'Attente de l’accusé serveur' : blocked ? 'Blocage : récupération opérateur requise' : d ? 'Aucun blocage signalé' : 'Aucun état matériel connu';
@@ -491,8 +560,6 @@ function renderState() {
   const serverLost = $('server-state').textContent === 'liaison interrompue';
   indicator('agent', serverLost ? 'Liaison interrompue' : linked ? 'Agent connecté' : 'Agent hors ligne', linked && !serverLost ? 'link' : 'offline', serverLost ? 'warning' : linked ? 'positive' : 'neutral');
   indicator('control', otherOwner ? 'Occupée · ' + d.reservation.owner : isWorking() || ownBusy || d?.reservation ? 'En cours' : d?.connected ? 'Disponible' : 'En attente', otherOwner ? 'user' : isWorking() || ownBusy || d?.reservation ? 'busy' : 'check', otherOwner || isWorking() || ownBusy || d?.reservation ? 'active' : 'neutral');
-  const granted = local && agent?.grantUntil > performance.now();
-  indicator('permissions', granted ? `Distant autorisé · ${Math.ceil((agent.grantUntil - performance.now()) / 1000)} s` : 'Autorisations', granted ? 'unlock' : 'lock', granted ? 'warning' : 'neutral');
   $('footer-target').textContent = selected() ? `${selected()} · ${$('control-state').textContent}` : 'Aucune carte sélectionnée';
 }
 $('devices').onchange = () => {
@@ -584,8 +651,24 @@ function connectAgent() {
   ctx.agent.reconnectNow();
 }
 hook('agent-connect', connectAgent);
-hook('grant', () => { if (!agent?.generation) throw new Error('Agent local non connecté'); if (confirm(`Autoriser les opérations privilégiées sur ${localDevice.id} pendant ${$('grant-time').selectedOptions[0].textContent} ?`)) { agent.grant(Number($('grant-time').value)); renderState(); } });
-hook('revoke', () => { agent.grant(0); renderState(); });
+$('grant-time').onchange = () => { if (selected()) grantDurations.set(selected(), $('grant-time').value); };
+hook('grant', () => {
+  const id = selected(), ctx = boards.get(id), duration = Number($('grant-time').value);
+  if (!ctx?.agent?.generation || ctx.status !== 'connected' || ctx.agent.socket?.readyState !== 1)
+    throw new Error('Agent local non connecté pour cette carte');
+  if (confirm(`Autoriser les opérations privilégiées sur ${id} pendant ${$('grant-time').selectedOptions[0].textContent} ?`)) {
+    if (boards.get(id) !== ctx || ctx.status !== 'connected' || !ctx.agent?.generation)
+      throw new Error('Carte déconnectée ou remplacée');
+    ctx.agent.grant(duration);
+    renderState();
+  }
+});
+hook('revoke', () => {
+  const ctx = boards.get(selected());
+  if (!ctx?.agent?.generation || ctx.status !== 'connected') throw new Error('Agent local non connecté pour cette carte');
+  ctx.agent.grant(0);
+  renderState();
+});
 hook('release-control', () => { if (confirm('Libérer le pilotage abandonné et révoquer l’autorisation distante ? Une opération en cours empêchera cette action.')) agent.releaseControl(); });
 hook('recover', () => { if (confirm(`Après relecture et vérification de ${localDevice.id}, lever le blocage ? Cela autorisera de nouveaux resets.`)) agent.recover(); });
 
