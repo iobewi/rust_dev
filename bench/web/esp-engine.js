@@ -15,7 +15,7 @@ export class EspEngine {
     this.mode = 'off'; this.reader = null; this.loader = null; this.baudrate = 115200;
     // A native USB port (303a:*, USB-Serial-JTAG or the ROM's USB-OTG, e.g. 303a:0012 on the ESP32-P4) has no UART speed: esptool-js's baud change after the stub (and the port reopening it implies) is
     // only for an external UART bridge, and made the loader unreachable on the P4's USB-OTG port.
-    this.flashBaud = this.native ? 115200 : 460800; this.loaderBaud = null; this.manualDownload = false; this.hold = false; this.trigger = null; this.tail = new Uint8Array();
+    this.flashBaud = this.native ? 115200 : 460800; this.loaderBaud = null; this.manualDownload = false; this.identityChecks = 0; this.hold = false; this.trigger = null; this.tail = new Uint8Array();
     this.trace = new Tracer(); this.busy = false; this.phase = 'prepare'; this.readProgress = {};
   }
   provenance() {
@@ -130,6 +130,7 @@ export class EspEngine {
     };
     const terminal = { clean() {}, write() {}, writeLine: () => {} };
     this.loader = new ESPLoader({ transport: this.transport, baudrate, terminal });
+    this.identityChecks = 0; // Diagnostic rank scoped to this loader session.
     try {
       const entry = this.entryMode();
       if (entry === 'no_reset') this.event('transport', { detail: 'loader entry without reset (operator put the chip in ROM download mode)' });
@@ -139,9 +140,16 @@ export class EspEngine {
     return this.loader;
   }
   async identity() {
-    const l = await this.openLoader(), id = await l.readFlashId();
+    const l = await this.openLoader();
+    this.identityChecks += 1;
+    const id = await l.readFlashId();
     const code = id >>> 16 & 255;
-    if (code < 12 || code > 26) throw new Error('Unknown flash capacity');
+    if (code < 12 || code > 26) {
+      throw new HardwareError('flash_capacity_unknown', {
+        phase: 'identify', jedec_id: id >>> 0,
+        identify_index: this.identityChecks, loader_stub: l.IS_STUB ? 1 : 0,
+      });
+    }
     const chip = family(this.chipDescription.replace(/\s*\(.*$/, ''));
     return { chip, flash_size: 2 ** code, flash_id: id, mac: await l.chip.readMac(l) };
   }
