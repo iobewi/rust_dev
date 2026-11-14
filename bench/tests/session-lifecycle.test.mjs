@@ -30,15 +30,15 @@ test('system wake lock release is visible and can be retried on visibility chang
  assert.equal(x.requests(),1);assert.match(x.states.at(-1),/interrompue/);await x.wake.update(true,true);assert.equal(x.requests(),2);
 });
 function reconnection() {
- const port={},other={},calls=[],states=[];let idle=true,available=[other];
- const reconnect=new SerialReconnect({ports:async()=>available,idle:()=>idle,attach:async(...args)=>calls.push(args),state:s=>states.push(s),schedule:()=>1,cancel(){}});
+ const port={},other={},calls=[],guards=[],states=[];let idle=true,available=[other];
+ const reconnect=new SerialReconnect({ports:async()=>available,idle:()=>idle,attach:async(port,identity,isCurrent)=>{assert.equal(typeof isCurrent,'function');assert.equal(isCurrent(),true);calls.push([port,identity]);guards.push(isCurrent);},state:s=>states.push(s),schedule:()=>1,cancel(){}});
  const identity={mac:'card-a'};reconnect.remember(port,identity);
- return {reconnect,port,other,identity,calls,states,idle:v=>idle=v,ports:v=>available=v};
+ return {reconnect,port,other,identity,calls,guards,states,idle:v=>idle=v,ports:v=>available=v};
 }
 test('USB reconnect never selects another authorized port and waits for active hardware',async()=>{
  const x=reconnection();x.reconnect.disconnected(x.port);await x.reconnect.attempt();assert.equal(x.calls.length,0);
  x.ports([x.port,x.other]);x.idle(false);await x.reconnect.attempt();assert.equal(x.calls.length,0);
- x.idle(true);await x.reconnect.attempt();assert.deepEqual(x.calls,[[x.port,x.identity]]);assert.equal(x.reconnect.waiting,false);
+ x.idle(true);await x.reconnect.attempt();assert.deepEqual(x.calls,[[x.port,x.identity]]);assert.equal(x.reconnect.waiting,false);assert.equal(x.guards[0](),false,'completed attempt is no longer current');
 });
 test('explicit disconnect cancels reconnect and an identity mismatch stops retries',async()=>{
  const x=reconnection();x.ports([x.port]);x.reconnect.disconnected(x.port);x.reconnect.stop();await x.reconnect.attempt();assert.equal(x.calls.length,0);
@@ -57,4 +57,20 @@ test('journal is bounded and excludes arbitrary errors, credentials and payloads
 test('forgetting a voluntarily disconnected port prevents delayed events from restarting it',async()=>{
  const x=reconnection();x.ports([x.port]);x.reconnect.forget();x.reconnect.disconnected(x.port);await x.reconnect.attempt();
  assert.equal(x.reconnect.waiting,false);assert.equal(x.reconnect.port,null);assert.equal(x.calls.length,0);
+});
+
+
+test('cancellation invalidates the attachment guard before its asynchronous completion',async()=>{
+ const x=reconnection();let resolve,entered,guard;
+ const started=new Promise(r=>entered=r),gate=new Promise(r=>resolve=r);
+ x.reconnect.attach=async(port,identity,isCurrent)=>{
+  assert.strictEqual(port,x.port);assert.strictEqual(identity,x.identity);
+  guard=isCurrent;assert.equal(guard(),true);entered();await gate;
+ };
+ x.ports([x.port]);x.reconnect.disconnected(x.port);
+ const pending=x.reconnect.attempt();await started;
+ x.reconnect.stop();assert.equal(guard(),false);resolve();await pending;
+ assert.equal(x.reconnect.waiting,false);assert.equal(x.reconnect.running,false);
+ assert.equal(x.states.includes('usb_connected'),false);
+ assert.equal(x.states.includes('reconnect_failed'),false);
 });
