@@ -22,7 +22,7 @@ test('compact manual entry label is clickable and owns its hover/focus tooltip',
 
 test('per-board manual option is captured during add and reused on reconnect', () => {
   assert.match(ui, /const manualDownload = \$\('manual-download'\)\?\.checked === true;/);
-  assert.match(ui, /boards\.add\(id, port, \{ http_origins, manualDownload \}\)/);
+  assert.match(ui, /boards\.add\(id, port, \{ http_origins, manualDownload, loaderBaud \}\)/);
   assert.match(ui, /hardware\.manualDownload = ctx\.options\?\.manualDownload === true;/);
   assert.match(ui, /\$\('manual-download'\)\.checked = false;/);
   assert.doesNotMatch(ui, /hardware\.manualDownload = \$\('manual-download'\)/);
@@ -55,4 +55,17 @@ test('tooltip opens from the label hover or checkbox keyboard focus without a he
   assert.match(block, /\.manual-download:hover \.manual-download-tooltip, \.manual-download:focus-within \.manual-download-tooltip \{ display:block; \}/);
   assert.match(block, /\.manual-download \.manual-download-tooltip \{[^}]*pointer-events:none/);
   assert.doesNotMatch(html, /Aide : entrée manuelle/);
+});
+
+test('UART loader speed is captured before USB selection and stored per board', () => {
+  assert.equal((html.match(/id="loader-baud"/g) || []).length, 1);
+  assert.ok(ui.indexOf("const loaderBaud = $('loader-baud')") < ui.indexOf('const port = await navigator.serial.requestPort()'));
+  assert.match(ui, /hardware\.loaderBaud = ctx\.options\?\.loaderBaud \?\? null/);
+  assert.match(ui, /boards\.add\(id, port, \{ http_origins, manualDownload, loaderBaud \}\)/);
+});
+test('the USB picker is locked before await, and finally releases it', () => {
+  const add = ui.slice(ui.indexOf('async function addCard('), ui.indexOf("hook('add-device'"));
+  assert.ok(add.indexOf('usbBusy = true') < add.indexOf('await navigator.serial.requestPort()'));
+  assert.ok(add.indexOf('try {') < add.indexOf('await navigator.serial.requestPort()'));
+  assert.match(add, /finally \{ usbBusy = false;/);
 });

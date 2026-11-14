@@ -39,12 +39,15 @@ test('opt-in on a native USB port (303a:0012 ROM USB-OTG, 303a:1001 USB-Serial-J
   }
 });
 
-test('the opt-in never applies to an external UART bridge: it keeps the reset sequence', async () => {
+test('manual entry on an external UART bridge selects no_reset and holds the loader', async () => {
   for (const [vid, pid] of [[0x1a86, 0x55d3], [0x10c4, 0xea60], [0x0403, 0x6001]]) {
     const x = setup({ vid, pid, manual: true });
     await x.engine.openLoader();
-    assert.deepEqual(x.log.modes, ['default_reset'], `${vid.toString(16)}:${pid.toString(16)}`);
-    assert.equal(x.engine.keepsLoaderOpen(), false);
+    assert.deepEqual(x.log.modes, ['no_reset'], `${vid.toString(16)}:${pid.toString(16)}`);
+    assert.equal(x.engine.keepsLoaderOpen(), true);
+    await x.engine.openConsole();
+    assert.equal(x.engine.mode, 'loader');
+    assert.deepEqual(x.log.opened, []);
   }
 });
 
@@ -80,5 +83,26 @@ test('without the opt-in the console is reopened as before, on every port', asyn
     assert.equal(x.engine.keepsLoaderOpen(), false);
     await x.engine.openConsole();
     assert.equal(x.engine.mode, 'console');
+  }
+});
+
+
+test('a board can select a slower UART loader speed; native USB stays at 115200', async () => {
+  for (const [vid, pid, requested, expected] of [[0x1a86, 0x55d3, 115200, 115200], [0x10c4, 0xea60, 230400, 230400], [0x303a, 0x0012, 921600, 115200]]) {
+    const x = setup({ vid, pid, manual: true });
+    x.engine.loaderBaud = requested;
+    await x.engine.identity();
+    assert.deepEqual(x.log.baud, [expected]);
+    assert.deepEqual(x.log.modes, ['no_reset']);
+  }
+});
+
+test('an invalid loader speed is refused before opening or closing a port', async () => {
+  for (const value of [0, -1, 115200.5, '115200', NaN, 3000000]) {
+    const x = setup();
+    x.engine.loaderBaud = value;
+    await assert.rejects(x.engine.openLoader(), /loader_baud_invalid/);
+    assert.deepEqual(x.log.baud, []);
+    assert.deepEqual(x.log.opened, []);
   }
 });

@@ -11,7 +11,7 @@ function lab() {
     allowed: ['a', 'b'], ports: async () => ports,
     createEngine(ctx, port, event) {
       const engine = {
-        port, manualDownload: ctx.options.manualDownload, busy: false, hold: holds.get(ctx.id) || false, mode: 'console',
+        port, loaderBaud: ctx.options.loaderBaud, manualDownload: ctx.options.manualDownload, busy: false, hold: holds.get(ctx.id) || false, mode: 'console',
         async identity() { actions.push('identity:' + ctx.id); return { chip: 'esp32s3', flash_size: 4194304, flash_id: ctx.id }; },
         async openConsole() { actions.push('open:' + ctx.id); },
         async close() { actions.push('close:' + ctx.id); },
@@ -291,3 +291,64 @@ test('per-board manual download setting survives explicit reconnect and defaults
   await manager.reconnect('b');
   assert.equal(b.engine.manualDownload, false);
 });
+
+
+test('UART loader speed survives automatic and explicit reconnect without leaking between boards', async () => {
+  const { manager, ports } = lab();
+  const a = await manager.add('a', ports[0], { manualDownload: true, loaderBaud: 115200 });
+  const b = await manager.add('b', ports[1], { loaderBaud: 921600 });
+  manager.lost(ports[1]);
+  await b.reconnect.attempt(b.reconnect.version);
+  assert.equal(b.engine.loaderBaud, 921600);
+  assert.equal(a.engine.loaderBaud, 115200);
+  assert.equal(b.engine.manualDownload, false);
+  manager.cancelReconnect('b');
+  await manager.disconnect('a');
+  await manager.reconnect('a');
+  assert.equal(a.engine.loaderBaud, 115200);
+  assert.equal(a.engine.manualDownload, true);
+  assert.equal(b.engine.loaderBaud, 921600);
+  assert.notStrictEqual(a.options, b.options);
+});
+
+test('invalid UART speed does not allocate a board context', async () => {
+  const { manager, ports } = lab();
+  await assert.rejects(manager.add('a', ports[0], { loaderBaud: 42 }), /loader_baud_invalid/);
+  assert.equal(manager.get('a'), null);
+  const a = await manager.add('a', ports[0]);
+  assert.equal(a.engine.loaderBaud, null);
+});
+
+
+for (const phase of ['identity', 'openConsole']) {
+  test(`cancelling a reconnect during ${phase} prevents registration and closes only that board`, async () => {
+    const { manager, ports, actions } = lab();
+    const a = await manager.add('a', ports[0]);
+    const b = await manager.add('b', ports[1]);
+    const bEngine = b.engine;
+    let resume, reached;
+    const gate = new Promise(resolve => { resume = resolve; });
+    const started = new Promise(resolve => { reached = resolve; });
+    const create = manager.createEngine;
+    manager.createEngine = (...args) => {
+      const engine = create(...args), original = engine[phase].bind(engine);
+      engine[phase] = async () => { reached(); await gate; return original(); };
+      return engine;
+    };
+    manager.lost(ports[0]);
+    const pending = a.reconnect.attempt(a.reconnect.version);
+    await started;
+    manager.cancelReconnect('a');
+    resume();
+    await pending;
+    assert.equal(a.status, 'disconnected');
+    assert.equal(a.engine, null);
+    assert.equal(a.agent, null);
+    assert.equal(a.reconnect.waiting, false);
+    assert.equal(a.reconnect.running, false);
+    assert.equal(actions.filter(x => x === 'connect:a').length, 1, 'no replacement agent registered');
+    assert.equal(b.status, 'connected');
+    assert.strictEqual(b.engine, bEngine);
+    assert.equal(actions.filter(x => x === 'close:b').length, 0);
+  });
+}

@@ -1,3 +1,4 @@
+import { effectiveLoaderBaud } from './loader-settings.js';
 // Hardware only: no DOM, REST, project readiness rules or verdicts.
 import { HardwareError, hardwareError } from './hardware-errors.js';
 import { makeBenchTransport } from './bench-transport.js';
@@ -14,7 +15,7 @@ export class EspEngine {
     this.mode = 'off'; this.reader = null; this.loader = null; this.baudrate = 115200;
     // A native USB port (303a:*, USB-Serial-JTAG or the ROM's USB-OTG, e.g. 303a:0012 on the ESP32-P4) has no UART speed: esptool-js's baud change after the stub (and the port reopening it implies) is
     // only for an external UART bridge, and made the loader unreachable on the P4's USB-OTG port.
-    this.flashBaud = this.native ? 115200 : 460800; this.manualDownload = false; this.hold = false; this.trigger = null; this.tail = new Uint8Array();
+    this.flashBaud = this.native ? 115200 : 460800; this.loaderBaud = null; this.manualDownload = false; this.hold = false; this.trigger = null; this.tail = new Uint8Array();
     this.trace = new Tracer(); this.busy = false; this.phase = 'prepare'; this.readProgress = {};
   }
   provenance() {
@@ -70,10 +71,9 @@ export class EspEngine {
     if (!this.native) return [...caps, 'reset', 'io0', 'boot.download'];
     return this.usbSerialJtag ? [...caps, 'reset'] : caps;
   }
-  // Native USB port with the operator's explicit opt-in (`manualDownload`, the « Entrée manuelle » checkbox): the operator put the chip in ROM download mode (BOOT held, RESET tapped) and ANY reset takes
-  // it out of it (without an application the port then disappears). So: no reset sequence (esptool-js connects with 'no_reset'), and the loader session stays open (the console is NOT reopened after the
-  // identification or a command: closing and reopening the port is not trusted not to reset the chip). Without the opt-in nothing changes, on any port.
-  keepsLoaderOpen() { return this.manualDownload === true && this.native === true; }
+  // Manual entry also supports a UART bridge with no DTR/RTS wiring. Only an
+  // explicit console action may leave the loader after this operator opt-in.
+  keepsLoaderOpen() { return this.manualDownload === true; }
   entryMode() { return this.keepsLoaderOpen() ? 'no_reset' : 'default_reset'; }
   async openConsole(explicit = false) {
     if (!explicit && this.keepsLoaderOpen() && this.mode === 'loader') return;       // only an explicit console command / uart.configure leaves the loader session
@@ -117,6 +117,7 @@ export class EspEngine {
   }
   async openLoader() {
     if (this.loader) return this.loader;
+    const baudrate = effectiveLoaderBaud(this.native, this.loaderBaud, this.flashBaud);
     await this.closeConsole();
     this.event('transport', { detail: 'opening loader' });
     const { ESPLoader, Transport, ESPError } = this.deps;
@@ -128,7 +129,7 @@ export class EspEngine {
       if (name === 'read-end') this.lastRead = { ...this.lastRead, last_read_ms: detail.ms, last_packet_bytes: detail.bytes };
     };
     const terminal = { clean() {}, write() {}, writeLine: () => {} };
-    this.loader = new ESPLoader({ transport: this.transport, baudrate: this.flashBaud, terminal });
+    this.loader = new ESPLoader({ transport: this.transport, baudrate, terminal });
     try {
       const entry = this.entryMode();
       if (entry === 'no_reset') this.event('transport', { detail: 'loader entry without reset (operator put the chip in ROM download mode)' });

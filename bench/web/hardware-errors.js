@@ -2,7 +2,7 @@
 export class HardwareError extends Error {
   constructor(code, detail = {}) { super(code); this.code = code; this.detail = detail; }
 }
-const codes = new Set(['capacity', 'console_required', 'external_uart_required', 'partition_table_invalid', 'physical_identity_changed',
+const codes = new Set(['loader_baud_invalid', 'capacity', 'console_required', 'external_uart_required', 'partition_table_invalid', 'physical_identity_changed',
   'operator_recovery_required', 'signal_release_failed', 'serial_disconnected', 'serial_timeout', 'serial_partial_packet', 'serial_invalid_packet', 'short_flash_read', 'artifact_transfer_failed', 'artifact_integrity_failed',
   'agent_disconnected', 'reservation_expired', 'trigger_not_owned', 'grant_expired', 'execution_deadline_exceeded', 'command_start_expired']);
 const phases = new Set(['prepare', 'identify', 'flash_read', 'artifact_upload', 'artifact_download', 'flash_write', 'flash_erase', 'console', 'control']);
@@ -25,6 +25,7 @@ export function hardwareError(error, disconnected = false, details = {}) {
   return out;
 }
 export const diagnostic = code => ({
+  loader_baud_invalid: 'Vitesse du chargeur UART invalide.',
   serial_disconnected: 'Port série déconnecté pendant l’opération.',
   serial_timeout: 'Lecture série interrompue : aucun nouvel octet avant le délai de silence.',
   serial_partial_packet: 'Lecture série interrompue : paquet incomplet avant le délai de silence.',
