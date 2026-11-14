@@ -11,7 +11,7 @@ function lab() {
     allowed: ['a', 'b'], ports: async () => ports,
     createEngine(ctx, port, event) {
       const engine = {
-        port, busy: false, hold: holds.get(ctx.id) || false, mode: 'console',
+        port, manualDownload: ctx.options.manualDownload, busy: false, hold: holds.get(ctx.id) || false, mode: 'console',
         async identity() { actions.push('identity:' + ctx.id); return { chip: 'esp32s3', flash_size: 4194304, flash_id: ctx.id }; },
         async openConsole() { actions.push('open:' + ctx.id); },
         async close() { actions.push('close:' + ctx.id); },
@@ -257,4 +257,37 @@ test('M40-11b: selecting B during a long operation on A keeps its captured targe
   assert.equal(target.device, 'a'); assert.equal(target.generation, 'gen-a-1'); assert.strictEqual(target.context, a);
   assert.equal(manager.contexts.target('a').generation, 'gen-a-1');
   assert.deepEqual(actions.filter(x => x.startsWith('close:') || x.startsWith('disconnect:')), []);
+});
+
+test('per-board manual download setting survives automatic reconnect without leaking to another board', async () => {
+  const { manager, ports } = lab();
+  const a = await manager.add('a', ports[0], { manualDownload: true });
+  const b = await manager.add('b', ports[1], { manualDownload: false });
+  assert.equal(a.options.manualDownload, true);
+  assert.equal(b.options.manualDownload, false);
+  manager.lost(ports[1]);
+  await b.reconnect.attempt(b.reconnect.version);
+  assert.equal(b.status, 'connected');
+  assert.equal(b.engine.manualDownload, false);
+  assert.equal(a.engine.manualDownload, true);
+  manager.cancelReconnect('b');
+  manager.lost(ports[0]);
+  await a.reconnect.attempt(a.reconnect.version);
+  assert.equal(a.engine.manualDownload, true);
+  assert.equal(b.engine.manualDownload, false);
+  manager.cancelReconnect('a');
+});
+
+test('per-board manual download setting survives explicit reconnect and defaults to false', async () => {
+  const { manager, ports } = lab();
+  const a = await manager.add('a', ports[0], { manualDownload: true });
+  const b = await manager.add('b', ports[1]);
+  assert.equal(b.options.manualDownload, false);
+  assert.equal(b.engine.manualDownload, false);
+  await manager.disconnect('a');
+  await manager.reconnect('a');
+  assert.equal(a.engine.manualDownload, true);
+  await manager.disconnect('b');
+  await manager.reconnect('b');
+  assert.equal(b.engine.manualDownload, false);
 });
