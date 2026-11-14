@@ -20,8 +20,12 @@ test('compact manual entry label is clickable and owns its hover/focus tooltip',
   assert.doesNotMatch(html, /class="manual-download-row"|class="help manual-download-help"/);
 });
 
-test('the page reads the checkbox when the card engine is created (opt-in per connection, never remembered)', () => {
-  assert.match(ui, /hardware\.manualDownload = \$\('manual-download'\)\?\.checked === true;/);
+test('per-board manual option is captured during add and reused on reconnect', () => {
+  assert.match(ui, /const manualDownload = \$\('manual-download'\)\?\.checked === true;/);
+  assert.match(ui, /boards\.add\(id, port, \{ http_origins, manualDownload \}\)/);
+  assert.match(ui, /hardware\.manualDownload = ctx\.options\?\.manualDownload === true;/);
+  assert.match(ui, /\$\('manual-download'\)\.checked = false;/);
+  assert.doesNotMatch(ui, /hardware\.manualDownload = \$\('manual-download'\)/);
   assert.ok(!/localStorage[^;]*manual-download/.test(ui));
 });
 
