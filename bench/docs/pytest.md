@@ -64,6 +64,17 @@ Les tests Node et Playwright sont également exécutés par la CI ; voir
 `.github/workflows/bench.yml`. Une CI non déclenchée, absente ou en échec
 doit être signalée : L1/L2 ne valent pas CI globale verte.
 
+**CI conteneur — environnement reproductible** : le job `container` du
+workflow `.github/workflows/devcontainer.yml` construit et ouvre le
+devcontainer, exécute `bench-container-smoke` avant et après recréation,
+et vérifie la persistance des volumes privés. Le smoke couvre la disponibilité
+des toolchains ESP/Rust, Python et Node, l'import effectif du client depuis
+`/workspace/bench/python` et l'ouverture d'un journal SQLite isolé. Il
+**n'exécute pas** la suite générale pytest, Node ou unittest : ces tests
+relèvent de `software` et ne doivent pas être rejoués localement pour
+préparer la CI. Les jobs se déclenchent suivant leurs propres filtres
+de chemins ; une CI absente ne peut pas être considérée comme verte.
+
 **H — qualification matérielle**, indépendante de L1/L2/L3 : sélectionner
 une recette pytest précise et son matériel déclaré, obtenir avant toute
 commande les consentements applicables, scopes, réservations et grants
