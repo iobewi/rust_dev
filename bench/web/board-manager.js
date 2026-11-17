@@ -189,9 +189,11 @@ export class BoardManager {
     if (ctx.sessionRecovering) throw new Error('session_recovery_pending');
     if (!['connected', 'recovery_required'].includes(ctx.status))
       throw new Error('board_not_connected');
-    // Automatic recovery may only enter the ROM without driving EN/IO0.
+    // Active commands, pending results and privileged sessions must never be
+    // silently recovered. Stop accepting offers on the stale generation.
     if (automatic && (!ctx.options.manualDownload || ctx.engine?.hold ||
         ctx.agent?.grantUntil > (typeof performance !== 'undefined' ? performance.now() : 0))) {
+      ctx.agent?.disconnect();
       ctx.status = 'recovery_required';
       this.onEvent(ctx, 'recovery', { stage: 'operator_required' });
       this.onState(ctx);
@@ -204,6 +206,7 @@ export class BoardManager {
         // but never close its transport or replay a command.
         if (ctx.agent?.active || ctx.agent?.awaitingResult || ctx.engine?.busy)
           ctx.engine?.setHold(true);
+        ctx.agent?.disconnect();
         ctx.status = 'recovery_required';
         this.onEvent(ctx, 'recovery', { stage: 'operation_uncertain' });
         this.onState(ctx);
@@ -211,6 +214,7 @@ export class BoardManager {
       }
       throw new Error('board_not_idle');
     }
+    if (!automatic && ctx.engine?.hold) throw new Error('operator_recovery_required');
     ctx.sessionRecovering = true;
     ctx.status = 'reconnecting';
     this.onEvent(ctx, 'recovery', { stage: 'reconnecting' });
