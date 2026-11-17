@@ -100,6 +100,7 @@
 .active-board .board-recover { grid-column:2; grid-row:2; }
 .active-board .board-forget { grid-column:2; grid-row:2; justify-self:end; font-size:0.7rem; padding:0.18rem 0.4rem; }
 .active-board .board-status[data-state="connected"] { color:var(--positive,#48b78a); }
+.active-board .board-status[data-state="connected"]:not(:disabled):is(:hover, :focus-visible) { color:var(--danger,#db6969); }
 .active-board .board-status[data-state="usb_lost"], .active-board .board-status[data-state="reconnecting"], .active-board .board-status[data-state="recovery_required"] { color:var(--warning,#e5b15e); }
 .active-board .board-status[data-state="disconnected"] { color:var(--muted,#8793a4); }
 .add-card-controls { display:flex; flex-wrap:wrap; gap:0.4rem; align-items:center; margin-top:0.55rem; }
