@@ -223,7 +223,13 @@ function renderActiveCards() {
           return;
         await boards.disconnect(ctx.id);
       } else if (ctx.status === 'recovery_required') {
-        await boards.recoverSession(ctx.id);
+        if (info(ctx.id)?.reservation) throw new Error('Réservation active : libérez le pilotage avant la reprise');
+        if (ctx.engine?.hold || ctx.agent?.grantUntil > performance.now())
+          throw new Error('Récupération opérateur ou grant actif : terminez-la avant la reprise');
+        const warning = ctx.options.manualDownload ?
+          'Recréer la session de ' + ctx.id + ' sans reset matériel demandé ?' :
+          'Recréer la session de ' + ctx.id + ' ? Le chargeur pourrait réinitialiser physiquement le MCU.';
+        if (confirm(warning)) await boards.recoverSession(ctx.id);
       } else if (ctx.reconnect?.waiting) {
         boards.cancelReconnect(ctx.id);
       } else {
@@ -234,6 +240,7 @@ function renderActiveCards() {
     });
     // Explicit per-board recovery: reconstruct browser loader and agent only.
     // It can change DTR/RTS for non-manual ports, so never hide that risk.
+    row.append(name, chip, status, action, grantMarker, quickRevoke);
     if (ctx.status === 'connected') {
       const recover = document.createElement('button');
       recover.type = 'button'; recover.className = 'board-action';
@@ -257,7 +264,6 @@ function renderActiveCards() {
       });
       row.append(recover);
     }
-    row.append(name, chip, status, action, grantMarker, quickRevoke);
     if (ctx.status === 'disconnected') {
       const forget = document.createElement('button');
       forget.type = 'button'; forget.className = 'board-forget';
