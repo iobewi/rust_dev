@@ -219,6 +219,10 @@ export class BoardManager {
     if (!automatic && ctx.engine?.hold) throw new Error('operator_recovery_required');
     ctx.sessionRecovering = true;
     ctx.status = 'reconnecting';
+    // Quiesce the stale generation before the first asynchronous step.
+    // Otherwise an offer could arrive while getPorts() is pending.
+    ctx.agent?.disconnect();
+    ctx.engine?.cancelTrigger();
     this.onEvent(ctx, 'recovery', { stage: 'reconnecting' });
     this.onState(ctx);
     try {
