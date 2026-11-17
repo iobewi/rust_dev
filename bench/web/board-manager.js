@@ -180,6 +180,76 @@ export class BoardManager {
     }
   }
 
+
+  // Recover only the named board. No server restart, port substitution or
+  // replay of an operation. attach() tears down the old loader and agent,
+  // checks the physical identity and creates a fresh agent generation.
+  async recoverSession(id, { automatic = false } = {}) {
+    const ctx = this.contexts.require(id);
+    if (ctx.sessionRecovering) throw new Error('session_recovery_pending');
+    if (!['connected', 'recovery_required'].includes(ctx.status))
+      throw new Error('board_not_connected');
+    // Automatic recovery may only enter the ROM without driving EN/IO0.
+    if (automatic && (!ctx.options.manualDownload || ctx.engine?.hold ||
+        ctx.agent?.grantUntil > (typeof performance !== 'undefined' ? performance.now() : 0))) {
+      ctx.status = 'recovery_required';
+      this.onEvent(ctx, 'recovery', { stage: 'operator_required' });
+      this.onState(ctx);
+      return false;
+    }
+    if (ctx.busy || ctx.disconnecting || ctx.engine?.busy || ctx.agent?.active ||
+        ctx.agent?.awaitingResult || ctx.reconnect?.running) {
+      if (automatic) {
+        // A suspended operation has an unknown outcome. Preserve the hold,
+        // but never close its transport or replay a command.
+        if (ctx.agent?.active || ctx.agent?.awaitingResult || ctx.engine?.busy)
+          ctx.engine?.setHold(true);
+        ctx.status = 'recovery_required';
+        this.onEvent(ctx, 'recovery', { stage: 'operation_uncertain' });
+        this.onState(ctx);
+        return false;
+      }
+      throw new Error('board_not_idle');
+    }
+    ctx.sessionRecovering = true;
+    ctx.status = 'reconnecting';
+    this.onEvent(ctx, 'recovery', { stage: 'reconnecting' });
+    this.onState(ctx);
+    try {
+      const granted = await this.ports();
+      if (!granted.includes(ctx.port)) throw new Error('serial_port_not_granted');
+      // Keep the saved identity and per-board UART/manual options. A new
+      // engine cannot inherit stale ESPLoader or WebSocket state.
+      await this.attach(ctx, ctx.port, ctx.identity);
+      this.onEvent(ctx, 'recovery', { stage: 'ready' });
+      return true;
+    } catch (error) {
+      ctx.status = 'recovery_required';
+      this.onEvent(ctx, 'recovery', { stage: 'failed' });
+      this.onState(ctx);
+      throw error;
+    } finally {
+      ctx.sessionRecovering = false;
+      this.onState(ctx);
+    }
+  }
+
+  // The browser does not necessarily emit a Web Serial disconnect after
+  // host sleep. Treat every connected session as stale, independently.
+  async resumeAfterSleep() {
+    const outcomes = [];
+    for (const ctx of this.list()) {
+      if (ctx.status !== 'connected') continue;
+      try {
+        const recovered = await this.recoverSession(ctx.id, { automatic: true });
+        outcomes.push({ id: ctx.id, recovered });
+      } catch {
+        outcomes.push({ id: ctx.id, recovered: false });
+      }
+    }
+    return outcomes;
+  }
+
   // Explicit operator action: never automatically use a different port.
   async reconnect(id) {
     const ctx = this.contexts.require(id);
