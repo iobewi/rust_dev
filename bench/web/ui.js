@@ -916,12 +916,16 @@ navigator.serial?.addEventListener('disconnect', event => {
 // a suspicion, not a proof of sleep. Recover idle manual-download boards
 // without EN/IO0; require operator action for all other states.
 let lastLifecycleTick = Date.now();
-let resumeRunning = false;
+let resumeRunning = false, resumePending = false;
 async function observeHostResume() {
   const now = Date.now(), gap = now - lastLifecycleTick;
   lastLifecycleTick = now;
-  if (gap < 45000 || resumeRunning || document.visibilityState !== 'visible') return;
+  if (gap >= 45000) resumePending = true;
+  // If a long gap is observed while hidden, retain the suspicion until
+  // visibility returns. Otherwise a throttled timer can consume the signal.
+  if (!resumePending || resumeRunning || document.visibilityState !== 'visible') return;
   resumeRunning = true;
+  resumePending = false;
   try {
     const result = await boards.resumeAfterSleep();
     if (result.length) {
