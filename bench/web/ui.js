@@ -189,30 +189,30 @@ function renderActiveCards() {
       renderGrantIndicators();
       renderState();
     });
-    // USB status is informational; its neighboring button performs the action.
-    const status = document.createElement('span');
-    status.className = 'board-status';
-    status.setAttribute('role', 'status');
-    status.setAttribute('aria-label', 'État USB de ' + ctx.id);
+    // One status/action control: status at rest, action on hover or keyboard focus.
+    // The same action remains visible on touch/focus without changing the board.
+    const status = document.createElement('button');
+    status.type = 'button'; status.className = 'board-status board-connection';
     status.dataset.state = ctx.status;
-    status.textContent = ({ connected: 'Connectée', connecting: 'Connexion…',
+    const currentLabel = ({ connected: 'Connectée', connecting: 'Connexion…',
       usb_lost: ctx.reconnect?.waiting ? 'Reconnexion en attente' : 'USB perdu',
       reconnecting: 'Reconnexion…', recovery_required: 'Session à rétablir', disconnected: 'Déconnectée' })[ctx.status] || 'Indisponible';
-    const action = document.createElement('button');
-    action.type = 'button'; action.className = 'board-action';
-    action.textContent = ctx.status === 'connected' ? 'Déconnecter' :
+    const actionLabel = ctx.status === 'connected' ? 'Déconnecter' :
       ctx.reconnect?.waiting ? 'Annuler' :
       ctx.status === 'reconnecting' ? 'Reconnexion…' :
       ctx.status === 'recovery_required' ? 'Rétablir' :
       ctx.status === 'connecting' ? 'Connexion…' : 'Reconnecter';
-    action.title = ctx.status === 'connected' ? 'Déconnecter uniquement le port USB de ' + ctx.id :
-      ctx.reconnect?.waiting ? 'Annuler la reconnexion de ' + ctx.id :
-      'Reconnecter ' + ctx.id + ' à son port précédemment sélectionné';
-    action.setAttribute('aria-label', action.textContent + ' ' + ctx.id);
-    action.disabled = ctx.disconnecting || ctx.busy || ctx.engine?.busy || ctx.agent?.active ||
+    const stateText = document.createElement('span');
+    stateText.className = 'board-connection-state'; stateText.textContent = currentLabel;
+    const actionText = document.createElement('span');
+    actionText.className = 'board-connection-action'; actionText.textContent = actionLabel;
+    status.append(stateText, actionText);
+    status.title = actionLabel + ' ' + ctx.id + ' · état actuel : ' + currentLabel;
+    status.setAttribute('aria-label', actionLabel + ' ' + ctx.id + ' (état : ' + currentLabel + ')');
+    status.disabled = ctx.disconnecting || ctx.busy || ctx.engine?.busy || ctx.agent?.active ||
       ctx.agent?.awaitingResult || ctx.reconnect?.running || ctx.status === 'connecting' ||
-      ctx.status === 'reconnecting';
-    action.onclick = safely(async () => {
+      ctx.status === 'reconnecting' || inFlight.has(ctx.id);
+    status.onclick = safely(async () => {
       if (ctx.status === 'connected') {
         if (ctx.agent?.active || ctx.agent?.awaitingResult || ctx.engine?.busy || inFlight.has(ctx.id))
           throw new Error('Opération en cours');
@@ -240,7 +240,7 @@ function renderActiveCards() {
     });
     // Explicit per-board recovery: reconstruct browser loader and agent only.
     // It can change DTR/RTS for non-manual ports, so never hide that risk.
-    row.append(name, chip, status, action, grantMarker, quickRevoke);
+    row.append(name, chip, status, grantMarker, quickRevoke);
     if (ctx.status === 'connected') {
       const recover = document.createElement('button');
       recover.type = 'button'; recover.className = 'board-action board-recover';
