@@ -247,17 +247,16 @@ export class BoardManager {
   // The browser does not necessarily emit a Web Serial disconnect after
   // host sleep. Treat every connected session as stale, independently.
   async resumeAfterSleep() {
-    const outcomes = [];
-    for (const ctx of this.list()) {
-      if (ctx.status !== 'connected') continue;
+    // Separate ports/controllers are independent: a timed-out ROM on one
+    // board must not delay recovery of another.
+    return Promise.all(this.list().filter(ctx => ctx.status === 'connected').map(async ctx => {
       try {
         const recovered = await this.recoverSession(ctx.id, { automatic: true });
-        outcomes.push({ id: ctx.id, recovered });
+        return { id: ctx.id, recovered };
       } catch {
-        outcomes.push({ id: ctx.id, recovered: false });
+        return { id: ctx.id, recovered: false };
       }
-    }
-    return outcomes;
+    }));
   }
 
   // Explicit operator action: never automatically use a different port.
