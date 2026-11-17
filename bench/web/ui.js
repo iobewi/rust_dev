@@ -243,7 +243,7 @@ function renderActiveCards() {
     row.append(name, chip, status, action, grantMarker, quickRevoke);
     if (ctx.status === 'connected') {
       const recover = document.createElement('button');
-      recover.type = 'button'; recover.className = 'board-action';
+      recover.type = 'button'; recover.className = 'board-action board-recover';
       recover.textContent = 'Réinitialiser session';
       recover.title = 'Recréer la session Web Serial et l’agent de cette carte uniquement, sans redémarrer le serveur';
       recover.setAttribute('aria-label', 'Réinitialiser la session de ' + ctx.id);
