@@ -193,6 +193,8 @@ export class BoardManager {
     // silently recovered. Stop accepting offers on the stale generation.
     if (automatic && (!ctx.options.manualDownload || ctx.engine?.hold ||
         ctx.agent?.grantUntil > (typeof performance !== 'undefined' ? performance.now() : 0))) {
+      if (ctx.agent?.active || ctx.agent?.awaitingResult || ctx.engine?.busy)
+        ctx.engine?.setHold(true);
       ctx.agent?.disconnect();
       ctx.status = 'recovery_required';
       this.onEvent(ctx, 'recovery', { stage: 'operator_required' });
