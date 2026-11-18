@@ -36,6 +36,16 @@ test('readback requires exact length and no fake artifact on short data',async()
  let uploaded=0;x.context.upload=async()=>{uploaded++;};
  await assert.rejects(x.engine.execute('flash.read',{address:0,size:128},x.context));assert.equal(uploaded,0);
 });
+
+test('flash read reports a measured useful transfer rate, not the USB link bitrate', async () => {
+ const x=await setup();
+ x.loader.readFlash=async (_address,size)=>new Uint8Array(size).fill(0x5a);
+ const result=await x.engine.execute('flash.read',{address:0,size:4096},x.context);
+ assert.equal(result.transfer.bytes,4096);
+ assert.ok(Number.isFinite(result.transfer.elapsed_ms));
+ assert.ok(result.transfer.bytes_per_second >= 0);
+});
+
 test('conditional byte trigger crosses chunk boundary and fires once',async()=>{
  const x=await setup(),events=[];x.engine.event=(name,data)=>events.push({name,...data});
  await x.engine.execute('trigger',{data:'YWJj',action:'mark',delay_ms:0,expires_ms:1000},x.context);
