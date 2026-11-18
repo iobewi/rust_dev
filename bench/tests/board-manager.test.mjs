@@ -26,8 +26,8 @@ function lab() {
     createAgent(ctx) {
       const agent = {
         generation: 'gen-' + ctx.id, active: false, awaitingResult: null,
-        connect() { actions.push('connect:' + ctx.id); },
-        disconnect() { actions.push('disconnect:' + ctx.id); },
+        connect() { this.stopped = false; actions.push('connect:' + ctx.id); },
+        disconnect() { this.stopped = true; actions.push('disconnect:' + ctx.id); },
         cancelTrigger() {}, grant() {}, event(type, data) { actions.push('event:' + ctx.id + ':' + type); },
       };
       agents.push(agent);
@@ -403,7 +403,43 @@ test('suspend during pending result preserves hold and refuses automatic replay'
   assert.equal(a.status, 'recovery_required');
   assert.ok(actions.includes('disconnect:a'));
   assert.equal(actions.filter(x => x === 'identity:a').length, 1);
+  const previousAgent = a.agent, previousEngine = a.engine;
+  await manager.recoverSession('a');
+  assert.equal(a.status, 'connected');
+  assert.notStrictEqual(a.engine, previousEngine);
+  assert.notStrictEqual(a.agent, previousAgent);
+  assert.equal(previousAgent.orphanedOperation, 'pending-ack');
+  assert.equal(previousAgent.awaitingResult, null);
+  assert.equal(a.engine.hold, true);
+  assert.equal(a.engine.port, ports[0]);
+  assert.equal(manager.get('b').status, 'recovery_required');
+  assert.equal(actions.filter(x => x === 'identity:b').length, 1);
+});
+
+test('stopped in-flight operation is orphaned on explicit control recovery without releasing hold', async () => {
+  const { manager, ports, actions } = lab();
+  const a = await manager.add('a', ports[0], { manualDownload: true });
+  const b = await manager.add('b', ports[1], { manualDownload: true });
+  a.agent.active = { id: 'uncertain-write' };
+  await manager.resumeAfterSleep();
+  const previous = a.agent;
+  assert.equal(a.status, 'recovery_required');
+  assert.equal(a.engine.hold, true);
+  await manager.recoverSession('a');
+  assert.equal(previous.orphanedOperation, 'uncertain-write');
+  assert.equal(a.status, 'connected');
+  assert.equal(a.engine.hold, true);
+  assert.equal(b.status, 'connected');
+  assert.equal(actions.filter(x => x === 'identity:b').length, 2);
+});
+
+test('live hardware busy still prevents manual session recreation', async () => {
+  const { manager, ports } = lab();
+  const a = await manager.add('a', ports[0], { manualDownload: true });
+  a.engine.busy = true;
+  await manager.resumeAfterSleep();
   await assert.rejects(manager.recoverSession('a'), /board_not_idle/);
+  assert.equal(a.engine.hold, true);
 });
 
 test('active grant blocks automatic session reconstruction without resetting hardware', async () => {
