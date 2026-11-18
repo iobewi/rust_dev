@@ -13,3 +13,10 @@ export function effectiveLoaderBaud(native, requested, fallback = 115200) {
   // For external UART, 115200 is the conservative default: no automatic step-up.
   return native ? 115200 : baud ?? fallback;
 }
+
+/** Effective flash throughput, excluding HTTP artifact download/upload overhead. */
+export function flashTransfer(bytes, elapsedMs) {
+  if (!Number.isSafeInteger(bytes) || bytes < 0 || !Number.isFinite(elapsedMs) || elapsedMs < 0)
+    throw new RangeError('flash_transfer_invalid');
+  return { bytes, elapsed_ms: Math.round(elapsedMs), bytes_per_second: Math.round(bytes * 1000 / Math.max(elapsedMs, 1)) };
+}
