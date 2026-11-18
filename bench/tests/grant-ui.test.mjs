@@ -18,7 +18,7 @@ test('grant actions live directly below identification for the selected card', (
 
 test('each active board displays a separate live grant marker', () => {
   assert.match(ui, /grantMarker\.className = 'board-grant'/);
-  assert.match(ui, /row\.append\(name, chip, status, action, grantMarker, quickRevoke\)/);
+  assert.match(ui, /row\.append\(name, chip, status, grantMarker, quickRevoke\)/);
   assert.match(ui, /grantIcon\.setAttribute\('class', 'board-grant-icon'\)/);
   assert.match(ui, /grantClock\.className = 'board-grant-time'/);
   assert.match(ui, /grantIcon\.append\(grantSymbol\)/);
@@ -44,7 +44,7 @@ test('grant and revoke use card-specific agent, not global selection alias', () 
 
 test('quick revocation is bound to its tile, not the currently selected card', () => {
   const start = ui.indexOf("quickRevoke.onclick = safely(");
-  const end = ui.indexOf("const status = document.createElement('span')", start);
+  const end = ui.indexOf("const status = document.createElement('button')", start);
   assert.ok(start > 0 && end > start);
   const handler = ui.slice(start, end);
   assert.match(handler, /boards\.get\(ctx\.id\) !== ctx/);
@@ -55,17 +55,18 @@ test('quick revocation is bound to its tile, not the currently selected card', (
   assert.match(ui, /active \? '#icon-unlock' : '#icon-lock'/);
 });
 
-test('USB state and USB action are independent elements of the same board tile', () => {
-  assert.match(ui, /const status = document\.createElement\('span'\)/);
-  assert.match(ui, /status\.setAttribute\('role', 'status'\)/);
-  assert.match(ui, /const action = document\.createElement\('button'\)/);
-  assert.match(ui, /action\.className = 'board-action'/);
-  assert.match(ui, /action\.onclick = safely\(async \(\) =>/);
-  assert.match(ui, /action\.textContent = ctx\.status === 'connected' \? 'Déconnecter'/);
+test('USB status and action share an accessible hover/focus control', () => {
+  assert.match(ui, /const status = document\.createElement\('button'\)/);
+  assert.match(ui, /status\.className = 'board-status board-connection'/);
+  assert.match(ui, /status\.append\(stateText, actionText\)/);
+  assert.match(ui, /status\.setAttribute\('aria-label', actionLabel/);
+  assert.match(ui, /status\.onclick = safely\(async \(\) =>/);
+  assert.match(ui, /const actionLabel = ctx\.status === 'connected' \? 'Déconnecter'/);
+  assert.match(css, /\.board-connection:not\(:disabled\):is\(:hover, :focus-visible\)/);
 });
 
-test('Remove stays next to the grant indicator, directly below USB reconnect', () => {
+test('Remove occupies the inactive action slot while grant remains visible per tile', () => {
   assert.match(css, /\.active-board \.board-action \{ grid-column:2; grid-row:2;/);
   assert.match(css, /\.active-board \.board-grant \{ grid-column:1; grid-row:3;/);
-  assert.match(css, /\.active-board \.board-forget \{ grid-column:2; grid-row:3;/);
+  assert.match(css, /\.active-board \.board-forget \{ grid-column:2; grid-row:2;/);
 });
