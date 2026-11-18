@@ -2,6 +2,14 @@
 
 *Contrôle et qualification de systèmes embarqués.* Une seule fenêtre de navigateur pilote **plusieurs cartes** par Web Serial ; un serveur Python expose ces cartes par une API REST/WebSocket à des clients externes (scripts, pytest, assistants). Le navigateur détient les ports USB ; le serveur ne touche jamais au matériel. Le banc transporte des octets et des résultats matériels, sans interpréter les logs ni décider des verdicts de qualification : ceux-ci appartiennent aux projets clients.
 
+
+### Débit du chargeur et diagnostic du transport
+
+- **Pont USB-UART (CH340, CP210x, FTDI, PL2303 ou interface inconnue)** : le chargeur utilise **115 200 bauds par défaut**, sans tentative automatique de montée en débit. Un réglage manuel explicite reste possible pour une carte donnée.
+- **USB natif Espressif (USB Serial/JTAG ou USB-OTG)** : les données transitent directement par USB. La valeur nominale `115200` fournie à esptool-js ne limite pas le débit USB ; aucun changement de vitesse UART n'est demandé.
+- Dans **Identification**, IDLab affiche l'interface détectée, le débit du chargeur, celui de la console, et le **débit utile du dernier transfert flash** (Kio/s), quand il est mesurable. Ce dernier inclut le coût des opérations de lecture/écriture flash et n'est **pas** la vitesse physique du bus USB.
+- La classification des interfaces repose sur le VID/PID retourné par Web Serial : elle est indicative et ne remplace pas une validation matérielle.
+
 ## Fonctionnalités de la v1
 
 - Une fenêtre, plusieurs cartes Web Serial : un agent, un moteur matériel et un contexte indépendants par carte.
