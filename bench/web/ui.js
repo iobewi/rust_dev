@@ -574,7 +574,7 @@ function renderState() {
   $('card-commands').dataset.mode = local ? engine?.mode || 'off' : 'remote';
   $('chip-info').textContent = d?.chip || '—'; $('flash-info').textContent = d?.flash_size ? `${hex(d.flash_size)} · ${d.flash_size} octets` : '—';
   $('rdid-info').textContent = local && localDevice.flash_id != null ? hex(localDevice.flash_id) : '—';
-  $('interface-info').textContent = local ? engine?.usbSerialJtag ? 'USB Serial/JTAG' : engine?.native ? 'USB natif (OTG ou non identifié)' : 'UART externe' : 'Agent du banc';
+  $('interface-info').textContent = local ? engine?.usbSerialJtag ? 'USB Serial/JTAG' : engine?.native ? 'USB natif (OTG ou non identifié)' : engine?.provenance().transport === 'external_uart' ? 'UART externe' : 'Port série non identifié' : 'Agent du banc';
   $('loader-speed-info').textContent = local && engine ? engine.native ?
     'USB direct · 115 200 nominal (sans UART)' :
     `${effectiveLoaderBaud(false, engine.loaderBaud, engine.flashBaud).toLocaleString('fr-FR')} bauds UART` : '—';
