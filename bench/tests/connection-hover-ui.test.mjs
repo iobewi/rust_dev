@@ -26,3 +26,10 @@ test('session recovery remains a separate per-board action', () => {
   assert.match(ui, /await boards\.recoverSession\(ctx\.id\)/);
   assert.match(css, /\.board-recover \{ grid-column:2; grid-row:2; \}/);
 });
+
+test('stopped held sessions retain a reachable explicit control-recovery action', () => {
+  assert.match(ui, /const stoppedRecovery = ctx\.status === 'recovery_required' && ctx\.agent\?\.stopped/);
+  assert.match(ui, /\(inFlight\.has\(ctx\.id\) && !stoppedRecovery\)/);
+  assert.match(ui, /Le blocage et toute opération incertaine seront conservés/);
+  assert.doesNotMatch(ui, /Récupération opérateur ou grant actif : terminez-la avant la reprise/);
+});
