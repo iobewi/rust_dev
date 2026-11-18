@@ -26,8 +26,8 @@ function lab() {
     createAgent(ctx) {
       const agent = {
         generation: 'gen-' + ctx.id, active: false, awaitingResult: null,
-        connect() { actions.push('connect:' + ctx.id); },
-        disconnect() { actions.push('disconnect:' + ctx.id); },
+        connect() { this.stopped = false; actions.push('connect:' + ctx.id); },
+        disconnect() { this.stopped = true; actions.push('disconnect:' + ctx.id); },
         cancelTrigger() {}, grant() {}, event(type, data) { actions.push('event:' + ctx.id + ':' + type); },
       };
       agents.push(agent);
@@ -352,3 +352,119 @@ for (const phase of ['identity', 'openConsole']) {
     assert.equal(actions.filter(x => x === 'close:b').length, 0);
   });
 }
+
+
+test('host resume rebuilds only idle manual-download session with exact port and new agent', async () => {
+  const { manager, ports, actions } = lab();
+  const a = await manager.add('a', ports[0], { manualDownload: true, loaderBaud: 115200 });
+  const b = await manager.add('b', ports[1], { manualDownload: false });
+  const stale = a.engine, oldAgent = a.agent, unchanged = b.engine;
+  const results = await manager.resumeAfterSleep();
+  assert.deepEqual(results, [{ id: 'a', recovered: true }, { id: 'b', recovered: false }]);
+  assert.equal(a.status, 'connected');
+  assert.notStrictEqual(a.engine, stale);
+  assert.notStrictEqual(a.agent, oldAgent);
+  assert.strictEqual(a.engine.port, ports[0]);
+  assert.equal(a.engine.manualDownload, true);
+  assert.equal(a.engine.loaderBaud, 115200);
+  assert.equal(b.status, 'recovery_required');
+  assert.strictEqual(b.engine, unchanged);
+  assert.equal(actions.includes('close:b'), false);
+  assert.equal(actions.filter(x => x === 'identity:a').length, 2);
+  assert.equal(actions.filter(x => x === 'identity:b').length, 1);
+  assert.ok(actions.includes('disconnect:a'));
+  assert.ok(actions.includes('disconnect:b'));
+});
+
+test('explicit session recovery affects only the named board and uses its previous identity', async () => {
+  const { manager, ports, actions } = lab();
+  const a = await manager.add('a', ports[0], { manualDownload: false });
+  const b = await manager.add('b', ports[1], { manualDownload: true });
+  const previous = a.agent, bEngine = b.engine;
+  const ok = await manager.recoverSession('a');
+  assert.equal(ok, true);
+  assert.notStrictEqual(a.agent, previous);
+  assert.equal(a.status, 'connected');
+  assert.strictEqual(b.engine, bEngine);
+  assert.equal(actions.filter(x => x === 'identity:a').length, 2);
+  assert.equal(actions.filter(x => x === 'identity:b').length, 1);
+});
+
+test('suspend during pending result preserves hold and refuses automatic replay', async () => {
+  const { manager, ports, actions } = lab();
+  const a = await manager.add('a', ports[0], { manualDownload: true });
+  await manager.add('b', ports[1], { manualDownload: false });
+  a.agent.awaitingResult = { id: 'pending-ack' };
+  const same = a.engine;
+  const result = await manager.resumeAfterSleep();
+  assert.equal(result[0].recovered, false);
+  assert.strictEqual(a.engine, same);
+  assert.equal(a.engine.hold, true);
+  assert.equal(a.status, 'recovery_required');
+  assert.ok(actions.includes('disconnect:a'));
+  assert.equal(actions.filter(x => x === 'identity:a').length, 1);
+  const previousAgent = a.agent, previousEngine = a.engine;
+  await manager.recoverSession('a');
+  assert.equal(a.status, 'connected');
+  assert.notStrictEqual(a.engine, previousEngine);
+  assert.notStrictEqual(a.agent, previousAgent);
+  assert.equal(previousAgent.orphanedOperation, 'pending-ack');
+  assert.equal(previousAgent.awaitingResult, null);
+  assert.equal(a.engine.hold, true);
+  assert.equal(a.engine.port, ports[0]);
+  assert.equal(manager.get('b').status, 'recovery_required');
+  assert.equal(actions.filter(x => x === 'identity:b').length, 1);
+});
+
+test('stopped in-flight operation is orphaned on explicit control recovery without releasing hold', async () => {
+  const { manager, ports, actions } = lab();
+  const a = await manager.add('a', ports[0], { manualDownload: true });
+  const b = await manager.add('b', ports[1], { manualDownload: true });
+  a.agent.active = { id: 'uncertain-write' };
+  await manager.resumeAfterSleep();
+  const previous = a.agent;
+  assert.equal(a.status, 'recovery_required');
+  assert.equal(a.engine.hold, true);
+  await manager.recoverSession('a');
+  assert.equal(previous.orphanedOperation, 'uncertain-write');
+  assert.equal(a.status, 'connected');
+  assert.equal(a.engine.hold, true);
+  assert.equal(b.status, 'connected');
+  assert.equal(actions.filter(x => x === 'identity:b').length, 2);
+});
+
+test('live hardware busy still prevents manual session recreation', async () => {
+  const { manager, ports } = lab();
+  const a = await manager.add('a', ports[0], { manualDownload: true });
+  a.engine.busy = true;
+  await manager.resumeAfterSleep();
+  await assert.rejects(manager.recoverSession('a'), /board_not_idle/);
+  assert.equal(a.engine.hold, true);
+});
+
+test('active grant blocks automatic session reconstruction without resetting hardware', async () => {
+  const { manager, ports, actions } = lab();
+  const a = await manager.add('a', ports[0], { manualDownload: true });
+  a.agent.grantUntil = performance.now() + 120000;
+  const engine = a.engine;
+  await manager.resumeAfterSleep();
+  assert.equal(a.status, 'recovery_required');
+  assert.strictEqual(a.engine, engine);
+  assert.equal(actions.filter(x => x === 'identity:a').length, 1);
+  a.agent.grantUntil = 0;
+  await manager.recoverSession('a');
+  assert.equal(a.status, 'connected');
+});
+
+test('port not granted after sleep never switches to the other board', async () => {
+  const { manager, ports } = lab();
+  const a = await manager.add('a', ports[0], { manualDownload: true });
+  const b = await manager.add('b', ports[1], { manualDownload: false });
+  const bEngine = b.engine;
+  ports.splice(0, 1);
+  const result = await manager.resumeAfterSleep();
+  assert.equal(result[0].recovered, false);
+  assert.equal(a.status, 'recovery_required');
+  assert.strictEqual(b.engine, bEngine);
+  assert.equal(b.status, 'recovery_required');
+});

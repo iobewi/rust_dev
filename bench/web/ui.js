@@ -114,6 +114,9 @@ const boards = new BoardManager({
       append('SYS', event.detail, ctx.id);
       if (event.detail === 'opening console') logAgent({ stage: 'console', device: ctx.id });
       if (event.detail === 'opening loader') logAgent({ stage: 'loader', device: ctx.id });
+    } else if (type === 'recovery') {
+      append('SYS', 'Session ' + ctx.id + ' : ' + event.stage, ctx.id);
+      logAgent({ stage: 'session_' + event.stage, device: ctx.id });
     } else if (type === 'usb_lost') {
       append('PERTE', 'Port USB déconnecté', ctx.id);
       logAgent({ stage: 'usb_lost', device: ctx.id });
@@ -186,29 +189,32 @@ function renderActiveCards() {
       renderGrantIndicators();
       renderState();
     });
-    // USB status is informational; its neighboring button performs the action.
-    const status = document.createElement('span');
-    status.className = 'board-status';
-    status.setAttribute('role', 'status');
-    status.setAttribute('aria-label', 'État USB de ' + ctx.id);
+    // One status/action control: status at rest, action on hover or keyboard focus.
+    // The same action remains visible on touch/focus without changing the board.
+    const status = document.createElement('button');
+    status.type = 'button'; status.className = 'board-status board-connection';
     status.dataset.state = ctx.status;
-    status.textContent = ({ connected: 'Connectée', connecting: 'Connexion…',
+    const currentLabel = ({ connected: 'Connectée', connecting: 'Connexion…',
       usb_lost: ctx.reconnect?.waiting ? 'Reconnexion en attente' : 'USB perdu',
-      reconnecting: 'Reconnexion…', disconnected: 'Déconnectée' })[ctx.status] || 'Indisponible';
-    const action = document.createElement('button');
-    action.type = 'button'; action.className = 'board-action';
-    action.textContent = ctx.status === 'connected' ? 'Déconnecter' :
+      reconnecting: 'Reconnexion…', recovery_required: 'Session à rétablir', disconnected: 'Déconnectée' })[ctx.status] || 'Indisponible';
+    const actionLabel = ctx.status === 'connected' ? 'Déconnecter' :
       ctx.reconnect?.waiting ? 'Annuler' :
       ctx.status === 'reconnecting' ? 'Reconnexion…' :
+      ctx.status === 'recovery_required' ? 'Rétablir' :
       ctx.status === 'connecting' ? 'Connexion…' : 'Reconnecter';
-    action.title = ctx.status === 'connected' ? 'Déconnecter uniquement le port USB de ' + ctx.id :
-      ctx.reconnect?.waiting ? 'Annuler la reconnexion de ' + ctx.id :
-      'Reconnecter ' + ctx.id + ' à son port précédemment sélectionné';
-    action.setAttribute('aria-label', action.textContent + ' ' + ctx.id);
-    action.disabled = ctx.disconnecting || ctx.busy || ctx.engine?.busy || ctx.agent?.active ||
-      ctx.agent?.awaitingResult || ctx.reconnect?.running || ctx.status === 'connecting' ||
-      ctx.status === 'reconnecting';
-    action.onclick = safely(async () => {
+    const stateText = document.createElement('span');
+    stateText.className = 'board-connection-state'; stateText.textContent = currentLabel;
+    const actionText = document.createElement('span');
+    actionText.className = 'board-connection-action'; actionText.textContent = actionLabel;
+    status.append(stateText, actionText);
+    status.title = actionLabel + ' ' + ctx.id + ' · état actuel : ' + currentLabel;
+    status.setAttribute('aria-label', actionLabel + ' ' + ctx.id + ' (état : ' + currentLabel + ')');
+    const stoppedRecovery = ctx.status === 'recovery_required' && ctx.agent?.stopped;
+    status.disabled = ctx.sessionRecovering || ctx.disconnecting || ctx.busy || ctx.engine?.busy ||
+      ((ctx.agent?.active || ctx.agent?.awaitingResult) && !stoppedRecovery) ||
+      ctx.reconnect?.running || ctx.status === 'connecting' ||
+      ctx.status === 'reconnecting' || (inFlight.has(ctx.id) && !stoppedRecovery);
+    status.onclick = safely(async () => {
       if (ctx.status === 'connected') {
         if (ctx.agent?.active || ctx.agent?.awaitingResult || ctx.engine?.busy || inFlight.has(ctx.id))
           throw new Error('Opération en cours');
@@ -218,6 +224,17 @@ function renderActiveCards() {
             !confirm('Déconnecter ' + ctx.id + ' malgré son état de sécurité ou sa réservation ? La déconnexion ne lève pas la quarantaine.'))
           return;
         await boards.disconnect(ctx.id);
+      } else if (ctx.status === 'recovery_required') {
+        if (ctx.agent?.grantUntil > performance.now())
+          throw new Error('Grant actif : révoquez-le ou attendez son expiration avant la reprise');
+        const reservation = info(ctx.id)?.reservation ?
+          ' La réservation serveur reste en place et aucune opération ne sera rejouée.' : '';
+        const uncertainty = ctx.engine?.hold || ctx.agent?.active || ctx.agent?.awaitingResult ?
+          ' Le blocage et toute opération incertaine seront conservés ; une récupération opérateur restera nécessaire.' : '';
+        const warning = ctx.options.manualDownload ?
+          'Rétablir la connexion de contrôle de ' + ctx.id + ' sans reset matériel demandé ?' + uncertainty + reservation :
+          'Rétablir la connexion de contrôle de ' + ctx.id + ' ? Le chargeur pourrait réinitialiser physiquement le MCU.' + uncertainty + reservation;
+        if (confirm(warning)) await boards.recoverSession(ctx.id);
       } else if (ctx.reconnect?.waiting) {
         boards.cancelReconnect(ctx.id);
       } else {
@@ -226,7 +243,32 @@ function renderActiveCards() {
       await refreshDevices(false);
       renderDevices();
     });
-    row.append(name, chip, status, action, grantMarker, quickRevoke);
+    // Explicit per-board recovery: reconstruct browser loader and agent only.
+    // It can change DTR/RTS for non-manual ports, so never hide that risk.
+    row.append(name, chip, status, grantMarker, quickRevoke);
+    if (ctx.status === 'connected') {
+      const recover = document.createElement('button');
+      recover.type = 'button'; recover.className = 'board-action board-recover';
+      recover.textContent = 'Réinitialiser session';
+      recover.title = 'Recréer la session Web Serial et l’agent de cette carte uniquement, sans redémarrer le serveur';
+      recover.setAttribute('aria-label', 'Réinitialiser la session de ' + ctx.id);
+      recover.disabled = Boolean(ctx.sessionRecovering || ctx.disconnecting || ctx.engine?.busy ||
+        ctx.agent?.active || ctx.agent?.awaitingResult || ctx.reconnect?.running || inFlight.has(ctx.id));
+      recover.onclick = safely(async () => {
+        if (boards.get(ctx.id) !== ctx) throw new Error('Carte remplacée');
+        if (info(ctx.id)?.reservation) throw new Error('Réservation active : libérez le pilotage avant la reprise');
+        if (ctx.agent?.grantUntil > performance.now())
+          throw new Error('Grant actif : révoquez-le ou attendez son expiration avant la reprise');
+        const warning = ctx.options.manualDownload ?
+          'Réinitialiser la session logicielle de ' + ctx.id + ' ? Aucun ordre de reset matériel ne sera envoyé.' :
+          'Réinitialiser la session de ' + ctx.id + ' ? Le chargeur peut piloter les signaux DTR/RTS et provoquer un reset de la carte.';
+        if (!confirm(warning)) return;
+        await boards.recoverSession(ctx.id);
+        await refreshDevices(false);
+        renderDevices();
+      });
+      row.append(recover);
+    }
     if (ctx.status === 'disconnected') {
       const forget = document.createElement('button');
       forget.type = 'button'; forget.className = 'board-forget';
@@ -874,6 +916,42 @@ navigator.serial?.addEventListener('disconnect', event => {
   renderDevices();
 });
 
+// Host sleep may leave the same authorized SerialPort visible while the
+// esptool-js loader and WebSocket are stale. A long scheduling gap is only
+// a suspicion, not a proof of sleep. Recover idle manual-download boards
+// without EN/IO0; require operator action for all other states.
+let lastLifecycleTick = Date.now();
+let resumeRunning = false, resumePending = false;
+async function observeHostResume() {
+  const now = Date.now(), gap = now - lastLifecycleTick;
+  lastLifecycleTick = now;
+  if (gap >= 45000) resumePending = true;
+  // If a long gap is observed while hidden, retain the suspicion until
+  // visibility returns. Otherwise a throttled timer can consume the signal.
+  if (!resumePending || resumeRunning || document.visibilityState !== 'visible') return;
+  resumeRunning = true;
+  resumePending = false;
+  try {
+    const result = await boards.resumeAfterSleep();
+    if (result.length) {
+      append('SYS', 'Interruption du poste détectée (' + Math.round(gap / 1000) +
+        ' s) : reprise par carte, aucune commande rejouée.');
+      renderActiveCards();
+      renderState();
+    }
+  } finally { resumeRunning = false; }
+}
+setInterval(() => { observeHostResume().catch(error => feedback(errorText(error))); }, 5000);
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible')
+    observeHostResume().catch(error => feedback(errorText(error)));
+});
+window.addEventListener('pageshow', event => {
+  if (event.persisted) {
+    lastLifecycleTick = Math.min(lastLifecycleTick, Date.now() - 45000);
+    observeHostResume().catch(error => feedback(errorText(error)));
+  }
+});
 let refreshTimer;
 async function backgroundRefresh() {
   if (sessionOpened) await refreshDevices(false).catch(async error => { $('server-state').textContent = 'liaison interrompue'; feedback(errorText(error)); if (error.message === 'unauthenticated') { session = null; await openSession().catch(() => {}); } });
