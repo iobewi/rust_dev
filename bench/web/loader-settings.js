@@ -7,8 +7,9 @@ export function normalizeLoaderBaud(value) {
   return value;
 }
 
-export function effectiveLoaderBaud(native, requested, fallback = 460800) {
+export function effectiveLoaderBaud(native, requested, fallback = 115200) {
   const baud = normalizeLoaderBaud(requested);
-  // Native USB has no UART clock; do not request an esptool baud-rate change.
+  // Native USB carries packets directly, regardless of the nominal CDC baud.
+  // For external UART, 115200 is the conservative default: no automatic step-up.
   return native ? 115200 : baud ?? fallback;
 }
