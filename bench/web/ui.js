@@ -277,6 +277,7 @@ function renderActiveCards() {
       forget.textContent = 'Retirer'; forget.title = 'Oublier le port dans cette fenêtre sans supprimer les preuves serveur';
       forget.onclick = safely(async () => {
         await boards.forget(ctx.id);
+        flashRates.delete(ctx.id);
         renderDevices();
       });
       row.append(forget);
@@ -689,6 +690,7 @@ async function addCard(id) {
     const http_origins = $('http-origins').value.split(',').map(v => v.trim()).filter(Boolean)
       .map(v => new URL(v).origin);
     await boards.add(id, port, { http_origins, manualDownload, loaderBaud });
+    flashRates.delete(id); // A reused logical ID must not inherit a previous board's throughput.
     $('loader-baud').value = '';
     $('manual-download').checked = false;
     renderDevices();
