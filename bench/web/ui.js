@@ -213,7 +213,7 @@ function renderActiveCards() {
     status.disabled = ctx.sessionRecovering || ctx.disconnecting || ctx.busy || ctx.engine?.busy ||
       ((ctx.agent?.active || ctx.agent?.awaitingResult) && !stoppedRecovery) ||
       ctx.reconnect?.running || ctx.status === 'connecting' ||
-      ctx.status === 'reconnecting' || inFlight.has(ctx.id);
+      ctx.status === 'reconnecting' || (inFlight.has(ctx.id) && !stoppedRecovery);
     status.onclick = safely(async () => {
       if (ctx.status === 'connected') {
         if (ctx.agent?.active || ctx.agent?.awaitingResult || ctx.engine?.busy || inFlight.has(ctx.id))
@@ -225,14 +225,15 @@ function renderActiveCards() {
           return;
         await boards.disconnect(ctx.id);
       } else if (ctx.status === 'recovery_required') {
-        if (info(ctx.id)?.reservation) throw new Error('Réservation active : libérez le pilotage avant la reprise');
         if (ctx.agent?.grantUntil > performance.now())
           throw new Error('Grant actif : révoquez-le ou attendez son expiration avant la reprise');
+        const reservation = info(ctx.id)?.reservation ?
+          ' La réservation serveur reste en place et aucune opération ne sera rejouée.' : '';
         const uncertainty = ctx.engine?.hold || ctx.agent?.active || ctx.agent?.awaitingResult ?
           ' Le blocage et toute opération incertaine seront conservés ; une récupération opérateur restera nécessaire.' : '';
         const warning = ctx.options.manualDownload ?
-          'Rétablir la connexion de contrôle de ' + ctx.id + ' sans reset matériel demandé ?' + uncertainty :
-          'Rétablir la connexion de contrôle de ' + ctx.id + ' ? Le chargeur pourrait réinitialiser physiquement le MCU.' + uncertainty;
+          'Rétablir la connexion de contrôle de ' + ctx.id + ' sans reset matériel demandé ?' + uncertainty + reservation :
+          'Rétablir la connexion de contrôle de ' + ctx.id + ' ? Le chargeur pourrait réinitialiser physiquement le MCU.' + uncertainty + reservation;
         if (confirm(warning)) await boards.recoverSession(ctx.id);
       } else if (ctx.reconnect?.waiting) {
         boards.cancelReconnect(ctx.id);
