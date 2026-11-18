@@ -68,5 +68,5 @@ test('USB status and action share an accessible hover/focus control', () => {
 test('Remove occupies the inactive action slot while grant remains visible per tile', () => {
   assert.match(css, /\.active-board \.board-action \{ grid-column:2; grid-row:2;/);
   assert.match(css, /\.active-board \.board-grant \{ grid-column:1; grid-row:3;/);
-  assert.match(css, /\.active-board \.board-forget \{ grid-column:2; grid-row:3;/);
+  assert.match(css, /\.active-board \.board-forget \{ grid-column:2; grid-row:2;/);
 });
