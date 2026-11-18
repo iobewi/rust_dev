@@ -120,7 +120,7 @@ test(`local browser session and direct control over ${usbJtag?'USB Serial/JTAG':
   assert.equal(await page.title(),'IDLab — IOBEWI Device Lab');
   assert.equal(await page.locator('header h1').textContent(),'IDLab');
   assert.equal(await page.locator('.app-brand-fullname').textContent(),'IOBEWI Device Lab');
-  assert.equal(await page.locator('.app-brand p').textContent(),'Contrôle et qualification de systèmes embarqués');
+  assert.equal(await page.locator('.app-brand p:not(.app-brand-fullname)').textContent(),'Contrôle et qualification de systèmes embarqués');
   assert.equal(await page.locator('.local-card-group,.usb-group').count(),0);
   assert.equal(await page.locator('#active-cards').isVisible(),true);
   assert.equal(await page.locator('#active-cards .active-board').count(),0);
