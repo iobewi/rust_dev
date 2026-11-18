@@ -1,4 +1,4 @@
-# IOBEWI Device Lab · v1.0.0
+# IDLab — IOBEWI Device Lab · v1.0.0
 
 *Contrôle et qualification de systèmes embarqués.* Une seule fenêtre de navigateur pilote **plusieurs cartes** par Web Serial ; un serveur Python expose ces cartes par une API REST/WebSocket à des clients externes (scripts, pytest, assistants). Le navigateur détient les ports USB ; le serveur ne touche jamais au matériel. Le banc transporte des octets et des résultats matériels, sans interpréter les logs ni décider des verdicts de qualification : ceux-ci appartiennent aux projets clients.
 

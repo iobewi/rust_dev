@@ -10,7 +10,7 @@ import { ConsoleBuffer } from './console-buffer.js';
 import { address, hex, flashPlan, displayChip } from './ui-model.js';
 
 const $ = id => document.getElementById(id);
-document.title = 'IOBEWI Device Lab';
+document.title = 'IDLab — IOBEWI Device Lab';
 const terminal = new Set(['completed', 'failed', 'expired', 'cancelled', 'indeterminate']);
 const safeCommands = new Set(['identify', 'partitions', 'flash.read', 'mark']);
 const actions = { 'try-partition-address': 'partitions', read: 'flash.read', write: 'flash.write', erase: 'flash.erase', send: 'uart.write',
