@@ -201,8 +201,13 @@ export class BoardManager {
       this.onState(ctx);
       return false;
     }
-    if (ctx.busy || ctx.disconnecting || ctx.engine?.busy || ctx.agent?.active ||
-        ctx.agent?.awaitingResult || ctx.reconnect?.running) {
+    // A stopped generation may still retain an active/pending result. It is
+    // not an executing transport: explicit recovery can orphan that result,
+    // while retaining the durable hold. Never interrupt live hardware work.
+    const staleStopped = !automatic && ctx.status === 'recovery_required' && ctx.agent?.stopped;
+    if (ctx.busy || ctx.disconnecting || ctx.engine?.busy ||
+        ((ctx.agent?.active || ctx.agent?.awaitingResult) && !staleStopped) ||
+        ctx.reconnect?.running) {
       if (automatic) {
         // A suspended operation has an unknown outcome. Preserve the hold,
         // but never close its transport or replay a command.
@@ -216,7 +221,8 @@ export class BoardManager {
       }
       throw new Error('board_not_idle');
     }
-    if (!automatic && ctx.engine?.hold) throw new Error('operator_recovery_required');
+    if (!automatic && ctx.agent?.grantUntil > (typeof performance !== 'undefined' ? performance.now() : 0))
+      throw new Error('grant_active');
     ctx.sessionRecovering = true;
     ctx.status = 'reconnecting';
     // Quiesce the stale generation before the first asynchronous step.
@@ -228,6 +234,16 @@ export class BoardManager {
     try {
       const granted = await this.ports();
       if (!granted.includes(ctx.port)) throw new Error('serial_port_not_granted');
+      // Retire only a stopped generation, after validating the exact port.
+      // The outcome stays uncertain and hold survives the new engine.
+      if (staleStopped && (ctx.agent?.active || ctx.agent?.awaitingResult)) {
+        ctx.engine?.setHold(true);
+        const pending = ctx.agent.awaitingResult || ctx.agent.active;
+        ctx.agent.orphanedOperation = pending?.id || ctx.agent.orphanedOperation;
+        ctx.agent.awaitingResult = null;
+        ctx.agent.active = false;
+        ctx.agent.activity?.();
+      }
       // Keep the saved identity and per-board UART/manual options. A new
       // engine cannot inherit stale ESPLoader or WebSocket state.
       await this.attach(ctx, ctx.port, ctx.identity);
