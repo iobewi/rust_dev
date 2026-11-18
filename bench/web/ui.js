@@ -747,15 +747,17 @@ function renderOperations() {
 }
 function recordOperation(op, started) {
   const previous = operationLog.get(op.id);
+  let newRate = false;
   if (op.state === 'completed' && ['flash.read', 'flash.write'].includes(op.command) &&
       Number.isFinite(op.result?.transfer?.bytes_per_second) && op.result.transfer.bytes_per_second >= 0) {
     flashRates.set(op.device, { ...op.result.transfer, command: op.command });
+    newRate = true;
   }
   operationLog.set(op.id, { ...previous, id: op.id, device: op.device, command: op.command, state: op.state, snapshot: op,
     started: previous?.started || started, finished: terminal.has(op.state) ? previous?.finished || performance.now() : null });
   while (operationLog.size > 200) operationLog.delete(operationLog.keys().next().value);
   if (op.device === selected()) {
-    renderOperations(); renderState();
+    renderOperations(); if (newRate) renderState();
     if (!selectedOperation || selectedOperation === op.id) json(op);
   }
 }
