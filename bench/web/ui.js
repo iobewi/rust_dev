@@ -4,6 +4,7 @@ import { BoardManager } from './board-manager.js';
 import { AgentJournal } from './agent-journal.js';
 import { Agent } from './agent.js';
 import { EspEngine } from './esp-engine.js';
+import { effectiveLoaderBaud } from './loader-settings.js';
 import { BenchClient } from './api-client.js';
 import { b64, unb64, manifestPlan } from './protocol.js';
 import { ConsoleBuffer } from './console-buffer.js';
@@ -29,6 +30,7 @@ let streamController, streamGeneration = 0, refreshPromise, sessionOpened = fals
 let session, sessionPromise;
 const partitionSuggestions = new Map();
 const captures = new Map(), cursors = new Map(), operationLog = new Map(), partitionCache = new Map();
+const flashRates = new Map(); // Measured useful flash rates per logical board; never USB line speed.
 const api = () => new BenchClient();
 const selected = () => $('devices').value;
 const info = id => knownDevices.find(d => d.id === (id || selected()));
@@ -572,6 +574,14 @@ function renderState() {
   $('chip-info').textContent = d?.chip || '—'; $('flash-info').textContent = d?.flash_size ? `${hex(d.flash_size)} · ${d.flash_size} octets` : '—';
   $('rdid-info').textContent = local && localDevice.flash_id != null ? hex(localDevice.flash_id) : '—';
   $('interface-info').textContent = local ? engine?.usbSerialJtag ? 'USB Serial/JTAG' : engine?.native ? 'USB natif (OTG ou non identifié)' : 'UART externe' : 'Agent du banc';
+  $('loader-speed-info').textContent = local && engine ? engine.native ?
+    'USB direct · 115 200 nominal (sans UART)' :
+    `${effectiveLoaderBaud(false, engine.loaderBaud, engine.flashBaud).toLocaleString('fr-FR')} bauds UART` : '—';
+  $('console-speed-info').textContent = local && engine ? engine.native ?
+    'USB direct · sans débit UART physique' : `${engine.baudrate.toLocaleString('fr-FR')} bauds UART` : '—';
+  const transfer = flashRates.get(selected());
+  $('transfer-rate-info').textContent = local && transfer ?
+    `${(transfer.bytes_per_second / 1024).toLocaleString('fr-FR', { maximumFractionDigits: 1 })} Kio/s · ${transfer.command === 'flash.read' ? 'lecture' : 'écriture'} utile` : '—';
   const resetButton = $('reset-device'), usbReset = local && engine?.usbSerialJtag;
   $('card-reset-actions').hidden = !capability.has('reset');
   resetButton.hidden = !capability.has('reset');
@@ -737,11 +747,15 @@ function renderOperations() {
 }
 function recordOperation(op, started) {
   const previous = operationLog.get(op.id);
+  if (op.state === 'completed' && ['flash.read', 'flash.write'].includes(op.command) &&
+      Number.isFinite(op.result?.transfer?.bytes_per_second) && op.result.transfer.bytes_per_second >= 0) {
+    flashRates.set(op.device, { ...op.result.transfer, command: op.command });
+  }
   operationLog.set(op.id, { ...previous, id: op.id, device: op.device, command: op.command, state: op.state, snapshot: op,
     started: previous?.started || started, finished: terminal.has(op.state) ? previous?.finished || performance.now() : null });
   while (operationLog.size > 200) operationLog.delete(operationLog.keys().next().value);
   if (op.device === selected()) {
-    renderOperations();
+    renderOperations(); renderState();
     if (!selectedOperation || selectedOperation === op.id) json(op);
   }
 }
