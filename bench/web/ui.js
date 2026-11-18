@@ -209,8 +209,10 @@ function renderActiveCards() {
     status.append(stateText, actionText);
     status.title = actionLabel + ' ' + ctx.id + ' · état actuel : ' + currentLabel;
     status.setAttribute('aria-label', actionLabel + ' ' + ctx.id + ' (état : ' + currentLabel + ')');
-    status.disabled = ctx.disconnecting || ctx.busy || ctx.engine?.busy || ctx.agent?.active ||
-      ctx.agent?.awaitingResult || ctx.reconnect?.running || ctx.status === 'connecting' ||
+    const stoppedRecovery = ctx.status === 'recovery_required' && ctx.agent?.stopped;
+    status.disabled = ctx.sessionRecovering || ctx.disconnecting || ctx.busy || ctx.engine?.busy ||
+      ((ctx.agent?.active || ctx.agent?.awaitingResult) && !stoppedRecovery) ||
+      ctx.reconnect?.running || ctx.status === 'connecting' ||
       ctx.status === 'reconnecting' || inFlight.has(ctx.id);
     status.onclick = safely(async () => {
       if (ctx.status === 'connected') {
@@ -224,11 +226,13 @@ function renderActiveCards() {
         await boards.disconnect(ctx.id);
       } else if (ctx.status === 'recovery_required') {
         if (info(ctx.id)?.reservation) throw new Error('Réservation active : libérez le pilotage avant la reprise');
-        if (ctx.engine?.hold || ctx.agent?.grantUntil > performance.now())
-          throw new Error('Récupération opérateur ou grant actif : terminez-la avant la reprise');
+        if (ctx.agent?.grantUntil > performance.now())
+          throw new Error('Grant actif : révoquez-le ou attendez son expiration avant la reprise');
+        const uncertainty = ctx.engine?.hold || ctx.agent?.active || ctx.agent?.awaitingResult ?
+          ' Le blocage et toute opération incertaine seront conservés ; une récupération opérateur restera nécessaire.' : '';
         const warning = ctx.options.manualDownload ?
-          'Recréer la session de ' + ctx.id + ' sans reset matériel demandé ?' :
-          'Recréer la session de ' + ctx.id + ' ? Le chargeur pourrait réinitialiser physiquement le MCU.';
+          'Rétablir la connexion de contrôle de ' + ctx.id + ' sans reset matériel demandé ?' + uncertainty :
+          'Rétablir la connexion de contrôle de ' + ctx.id + ' ? Le chargeur pourrait réinitialiser physiquement le MCU.' + uncertainty;
         if (confirm(warning)) await boards.recoverSession(ctx.id);
       } else if (ctx.reconnect?.waiting) {
         boards.cancelReconnect(ctx.id);
@@ -252,8 +256,8 @@ function renderActiveCards() {
       recover.onclick = safely(async () => {
         if (boards.get(ctx.id) !== ctx) throw new Error('Carte remplacée');
         if (info(ctx.id)?.reservation) throw new Error('Réservation active : libérez le pilotage avant la reprise');
-        if (ctx.agent?.grantUntil > performance.now() || ctx.engine?.hold)
-          throw new Error('Grant ou récupération opérateur active : terminez-la avant la reprise');
+        if (ctx.agent?.grantUntil > performance.now())
+          throw new Error('Grant actif : révoquez-le ou attendez son expiration avant la reprise');
         const warning = ctx.options.manualDownload ?
           'Réinitialiser la session logicielle de ' + ctx.id + ' ? Aucun ordre de reset matériel ne sera envoyé.' :
           'Réinitialiser la session de ' + ctx.id + ' ? Le chargeur peut piloter les signaux DTR/RTS et provoquer un reset de la carte.';
