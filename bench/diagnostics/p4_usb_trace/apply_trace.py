@@ -108,8 +108,8 @@ def patch(root):
         raise ValueError("Expected esp-flasher-stub with populated esp-stub-lib submodule")
 
     patch_file(root, usb, [
-        ('uint8_t stub_lib_usb_otg_tx_one_char(uint8_t c)\n{',
-         TRACE_COUNTERS + '\nuint8_t stub_lib_usb_otg_tx_one_char(uint8_t c)\n{'),
+        ('uint8_t stub_lib_usb_otg_tx_one_char(uint8_t c)\n{\n    s_cdcacm_txbuf[s_cdcacm_txpos++] = c;',
+         TRACE_COUNTERS + '\nuint8_t stub_lib_usb_otg_tx_one_char(uint8_t c)\n{\n    s_cdcacm_txbuf[s_cdcacm_txpos++] = c;'),
         ('''    esp_rom_cdc_acm_fifo_fill(uart_acm_dev, s_cdcacm_txbuf, s_cdcacm_txpos);
     s_cdcacm_txpos = 0;''',
          '''    uint32_t t0 = idlab_cycle32();
