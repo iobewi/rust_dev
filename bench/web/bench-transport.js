@@ -36,6 +36,17 @@ export function makeBenchTransport(Transport, ESPError, env = {}) {
       this.stats = { reads: 0, readMs: 0, timeouts: 0, bytesIn: 0, closes: 0 };
     }
     _ev(name, detail) { if (this.onEvent) { try { this.onEvent(name, detail); } catch (e) {} } }
+    // Counters only: no changes to the flash protocol, ACKs, retries or timeouts.
+    beginFlashReadProfile() {
+      this.flashReadProfile = { packets: 0, payload_bytes: 0, read_ms: 0,
+        waiting_ms: 0, write_calls: 0, write_ms: 0 };
+    }
+    endFlashReadProfile() {
+      const profile = this.flashReadProfile || null;
+      this.flashReadProfile = null;
+      return profile ? { ...profile, read_ms: Math.round(profile.read_ms),
+        waiting_ms: Math.round(profile.waiting_ms), write_ms: Math.round(profile.write_ms) } : null;
+    }
     _arrived(n) { this._init(); this.stats.bytesIn += n; this._firstByteAt = this._firstByteAt ?? now(); }
     _wake() { for (const w of [...this._waiters]) w(); }
     _take() { const b = this._buf || EMPTY; this._buf = EMPTY; return b; }
@@ -70,11 +81,18 @@ export function makeBenchTransport(Transport, ESPError, env = {}) {
       this._init();
       if (this._closed || !this.device?.writable) throw new SerialFault('closed', 'serial output unavailable');
       const writer = this.device.writable.getWriter();
+      const t0 = this.flashReadProfile ? now() : null;
       try { await writer.write(this.slipWriter(data)); }
       catch (error) {
         if (error?.name === 'NetworkError') { this.abort('closed', 'serial write interrupted'); throw new SerialFault('closed', 'serial write interrupted'); }
         throw error;
-      } finally { writer.releaseLock(); }
+      } finally {
+        if (t0 !== null && this.flashReadProfile) {
+          this.flashReadProfile.write_calls++;
+          this.flashReadProfile.write_ms += now() - t0;
+        }
+        writer.releaseLock();
+      }
     }
 
     _waitData(ms) {
@@ -96,7 +114,18 @@ export function makeBenchTransport(Transport, ESPError, env = {}) {
         if (length === partial.length) { const grown = new Uint8Array(Math.max(256, length * 2)); grown.set(partial); partial = grown; }
         partial[length++] = byte;
       };
-      const finish = (outcome) => { this.stats.readMs += now() - t0; this._ev("read-end", { outcome, ms: now() - t0, bytes: got }); };
+      const finish = (outcome) => {
+        const elapsed = now() - t0;
+        this.stats.readMs += elapsed;
+        if (this.flashReadProfile) {
+          this.flashReadProfile.read_ms += elapsed;
+          if (outcome === 'packet') {
+            this.flashReadProfile.packets++;
+            this.flashReadProfile.payload_bytes += length;
+          }
+        }
+        this._ev("read-end", { outcome, ms: elapsed, bytes: got });
+      };
       for (;;) {
         const chunk = this._take();
         if (chunk.length === 0) {
@@ -109,7 +138,9 @@ export function makeBenchTransport(Transport, ESPError, env = {}) {
               partial === null ? `réponse absente : aucun octet reçu en ${timeout} ms` : `réponse incomplète : paquet commencé, fin non reçue en ${timeout} ms`,
               { limit: timeout });
           }
-          await this._waitData(left);
+          const waitStart = this.flashReadProfile ? now() : null;
+          try { await this._waitData(left); }
+          finally { if (waitStart !== null && this.flashReadProfile) this.flashReadProfile.waiting_ms += now() - waitStart; }
           continue;
         }
         if (got === 0) this._ev("first-byte", { after: now() - t0 });
