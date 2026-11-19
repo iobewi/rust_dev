@@ -20,7 +20,7 @@ L'écart d'environ 20,9 s doit être réparti entre : lecture flash, calcul MD5,
 1. **Accord écrit de l'opérateur** nommant la carte (`esp32-local`), le scénario (cette recette), et le SHA-256 exact du JSON et de l'ELF instrumentés.
 2. Le dossier de preuves du build (`build-manifest.json`, `static-qualification.json`) indique `qualified_statically: true` ; ses SHA-256 correspondent à ceux de l'accord.
 3. Tous les tests de `QUALIFICATION.md` section 7 passent sur le commit utilisé ; le commit a été relu.
-4. Le mode diagnostic est **intégré** à IDLab (voir `QUALIFICATION.md` section 6) ; sans cela, l'étape 3 ci-dessous ne peut pas être lancée via IDLab.
+4. Le mode diagnostic est **intégré** à IDLab (commande `diagnostic.p4_usb_trace`, `QUALIFICATION.md` section 6) **dans la version réellement servie** : ce n'est pas le cas du serveur actuellement déployé ; son déploiement exige l'accord explicite de l'opérateur.
 5. Réservation de la carte par le client, grant local donné par l'opérateur, aucune autre session ouverte, carte non en quarantaine, aucune opération en attente.
 6. Un **nouveau** dossier de preuves, vide, par exécution ; les anciens ne sont jamais réutilisés ni modifiés.
 
@@ -29,9 +29,10 @@ Chaque étape est précédée d'une vérification de l'état (réservation, gran
 
 1. **A1 — lecteur standard.** `flash.read`, `reader: reference`, région ci-dessus. Relever durée, MD5 et SHA-256 des données.
 2. **D — MD5 seul.** `flash.read`, `reader: md5-only`, même région. Relever durée et MD5 (aucune donnée transférée).
-3. **T — lecteur instrumenté.** Chargement RAM du stub diagnostique (`loadDiagnosticStub`), puis `readFlashWithP4StubTrace` : sonde `0xE0`, lecture `0xDF`, MD5 final, compteurs `0xE0`.
-   Relever durée, MD5, SHA-256 des données et le rapport IDT1. Le chargement exige le consentement, le SHA-256, la puce, la révision et une session ROM.
-4. **Retour au fonctionnement normal.** `retireDiagnosticStub()` efface l'état navigateur ; le stub reste en RAM jusqu'à un **reset approuvé par l'opérateur** (procédure standard d'IDLab). Aucun reset automatique.
+3. **T — lecteur instrumenté**, par la commande `diagnostic.p4_usb_trace` (panneau « Diagnostic USB OTG P4 » ou `idlab_recipe.py --execute`).
+   Geste préalable **de l'opérateur** : P4 en mode ROM (BOOT + reset), entrée manuelle activée, grant local. IDLab ne fait aucun reset. Le consentement dédié est donné pour la carte, ce SHA-256 et cette région, à usage unique.
+   Relever durée, MD5, SHA-256 des données, le rapport IDT1 (cycles bruts conservés, fréquence supposée indiquée comme telle) et les identifiants d'opération.
+4. **Retour au fonctionnement normal.** La carte reste en quarantaine (`diagnostic_resident`) : seule `mark` est acceptée. L'opérateur fait sa **récupération locale** puis son propre reset ; le stub RAM disparaît au reset. Aucun reset automatique.
 5. **A2 — lecteur standard à nouveau**, après ce retour, pour vérifier la stabilité. Même mesure que A1.
 
 L'ordre A1, D, T, A2 est conservé. Si A1 et A2 diffèrent de plus de 10 %, aucune conclusion n'est tirée avant répétition.

@@ -37,7 +37,7 @@ Les binaires restent dans ce dossier de preuves, **hors du dépôt** (seuls les 
 - Opcode 0xE0 : réponse standard contenant les compteurs au format IDT1 (64 octets). Ne jamais injecter des compteurs au milieu du flux flash.
   La sonde échoue fermée si le compteur de cycles n'avance pas.
 - Les deux opcodes sont dans la plage plugin amont `0xD5`–`0xEF` : ils en masquent deux emplacements ; l'image ne doit jamais être combinée à des plugins.
-- Le client `bench/web/p4-stub-trace.js` n'est pas intégré à l'interface, exige une marque de stub explicite et vérifie une réponse IDT1 avant toute lecture.
+- Le client `bench/web/p4-stub-trace.js` n'est atteint que par la commande dédiée `diagnostic.p4_usb_trace` (jamais par `flash.read`), exige une marque de stub explicite et vérifie une réponse IDT1 avant toute lecture.
   Le chargeur `bench/web/p4-stub-loader.js` charge l'image en RAM seulement, avec consentement, SHA-256, puce, révision et session ROM vérifiés.
 
 Format little-endian de 64 octets :
