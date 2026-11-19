@@ -47,6 +47,7 @@ class P4HttpTests(unittest.IsolatedAsyncioTestCase):
                             'provenance': {'transport': transport, 'transport_basis': 'inferred_from_webserial_vid_pid'}}})
         reply = await ws.receive_json()
         self.assertEqual(reply['type'], 'registered')
+        self.registration = reply
         return ws, reply['generation']
 
     async def p4(self):
@@ -199,6 +200,7 @@ class P4HttpTests(unittest.IsolatedAsyncioTestCase):
                                                ['identify', 'flash.read', 'partitions', 'mark', 'flash.write', CMD])
         dev = await self.device()
         self.assertTrue(dev['quarantined'] and dev['diagnostic_resident'])
+        self.assertTrue(self.registration['diagnostic_resident'] and self.registration['quarantined'])   # what a reloaded agent is told
         r = await self.client.post('/api/v1/leases', json={'device': 'p4', 'ttl': 60}, headers=ALICE)
         lease = (await r.json()).get('id', self.lease)
         r = await self.client.post('/api/v1/operations', headers=ALICE, json={'lease': lease, 'command': 'flash.read', 'args': {'address': 0x8000, 'size': 4096}})

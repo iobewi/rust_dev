@@ -239,3 +239,27 @@ test('agent recovery after the diagnostic carries the engine proof; without a re
   x = make(false); await x.agent.recover(); assert.deepEqual(x.sent, [['recover', {}]]);
   x = make('fail'); await assert.rejects(x.agent.recover()); assert.deepEqual(x.sent, []);
 });
+
+test('page reload: a fresh engine learns diagnostic_resident from the server registration and then must prove the ROM return', async () => {
+  const { Agent } = await import('../web/agent.js');
+  const sent = [], engine = new EspEngine({ getInfo: () => ({}) }, {}, () => {}, () => {});   // rebuilt engine: diagnosticResident === false
+  assert.equal(engine.diagnosticResident, false);
+  let proofs = 0; engine.verifyRomReturn = async () => { proofs++; return true; };
+  const agent = Object.create(Agent.prototype);
+  Object.assign(agent, { engine, active: null, awaitingResult: null, log() {}, onState() {}, event: (n, d) => sent.push([n, d]) });
+  await agent.message({ type: 'registered', device: 'p4', generation: 'g2', quarantined: true, diagnostic_resident: true });
+  assert.equal(engine.hold, true); assert.equal(engine.diagnosticResident, true);
+  await agent.recover();
+  assert.equal(proofs, 1); assert.deepEqual(sent, [['recover', { rom_verified: true }]]);
+});
+
+test('registration without the resident flag is never a basis to lift a quarantine', async () => {
+  const { Agent } = await import('../web/agent.js');
+  const sent = [], engine = new EspEngine({ getInfo: () => ({}) }, {}, () => {}, () => {});
+  const agent = Object.create(Agent.prototype);
+  Object.assign(agent, { engine, active: null, awaitingResult: null, log() {}, onState() {}, event: (n, d) => sent.push([n, d]) });
+  await agent.message({ type: 'registered', device: 'p4', generation: 'g2', quarantined: true });
+  await assert.rejects(agent.recover(), /diagnostic_state_unknown/); assert.deepEqual(sent, []);
+  await agent.message({ type: 'registered', device: 'p4', generation: 'g3', quarantined: false, diagnostic_resident: false });
+  engine.setHold(false); await agent.recover(); assert.deepEqual(sent, [['recover', {}]]);
+});
