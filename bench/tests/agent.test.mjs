@@ -114,11 +114,11 @@ test('engine guards unsafe operations while quarantined',async()=>{
  await assert.rejects(engine.execute('uart.write',{data:'AA=='},{}));
 });
 test('operator recovery is refused while hardware is active',()=>{
- const x=setup();x.agent.active={};assert.throws(()=>x.agent.recover());
+ const x=setup();x.agent.active={};return assert.rejects(()=>x.agent.recover());
 });
 
 test('operator hold is cleared only after server recovery acknowledgement',async()=>{
- const x=setup();x.engine.hold=true;x.agent.recover();assert.equal(x.engine.hold,true);
+ const x=setup();x.engine.hold=true;await x.agent.recover();assert.equal(x.engine.hold,true);
  await x.agent.message({type:'recovered',generation:'old'});assert.equal(x.engine.hold,true);
  await x.agent.message({type:'recovered',generation:'gen'});assert.equal(x.engine.hold,false);
 });

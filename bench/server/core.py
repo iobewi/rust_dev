@@ -6,11 +6,13 @@ import time
 import uuid
 from functools import wraps
 from collections import deque
-from protocol import (CAPABILITIES, MAX_ARTIFACT, PROGRAM, Fault,
+from protocol import (CAPABILITIES, MAX_ARTIFACT, P4_TRACE, PROGRAM, Fault,
                       binary, integer, number, require, validate_command, local_origin,
                       trigger_disarm, requires_grant)
 
 TERMINAL = {'completed', 'failed', 'expired', 'cancelled', 'indeterminate'}
+# While a board is quarantined, only operations that re-read its state may run.
+QUARANTINE_ALLOWED = {'identify', 'partitions', 'flash.read', 'mark'}
 
 
 def uid():
@@ -34,8 +36,9 @@ def checkpoint(method):
 
 
 class Broker:
-    def __init__(self, clock=time.monotonic, max_events=2048, state_dir=None, lock_timeout=0):
+    def __init__(self, clock=time.monotonic, max_events=2048, state_dir=None, lock_timeout=0, p4_stub_allowlist=()):
         self.clock, self.max_events = clock, max_events
+        self.p4_stub_allowlist = frozenset(p4_stub_allowlist)
         self.agents, self.devices, self.leases, self.operations, self.artifacts = {}, {}, {}, {}, {}
         self.artifact_bytes = 0
         self.upload_reserved = 0
@@ -101,11 +104,26 @@ class Broker:
             'provenance': copy.deepcopy(provenance), 'provenance_source': 'agent_reported',
             'http_origins': origins, 'chip': data['chip'], 'flash_size': data['flash_size'], 'capabilities': caps,
             'grant_until': 0, 'recovered_at': None, 'quarantined': bool(old and old['quarantined']) or data.get('hold') is True,
+            'diagnostic_resident': bool(old and old.get('diagnostic_resident')),
             'events': old['events'] if old else deque(maxlen=self.max_events),
             'seq': old['seq'] if old else 0, 'source_seq': 0,
         }
         self.event(device_id, 'connected', {'generation': generation})
         return generation
+
+    def quarantine_allows(self, d, command):
+        """Allowed commands while quarantined. After the P4 diagnostic the chip may still run the
+        diagnostic stub in RAM: nothing that talks to the loader may run (a standard read through it
+        would no longer be a standard read), only the operator's own recovery clears this."""
+        if not d['quarantined']:
+            return True
+        if d.get('diagnostic_resident'):
+            return command == 'mark'
+        return command in QUARANTINE_ALLOWED
+
+    def diagnostic_active(self, device):
+        return any(o['device'] == device and o['command'] == P4_TRACE and (o['state'] in {'queued', 'offered', 'running'} or o['unsettled'])
+                   for o in self.operations.values())
 
     def view(self, d):
         reservation = next((lease for lease in self.leases.values() if lease['device'] == d['id'] and lease['active'] and lease['until'] > self.clock()), None)
@@ -286,11 +304,16 @@ class Broker:
         lease = self.lease(body.get('lease'), owner)
         d = self.device(lease['device'])
         require(d['connected'], 'device_unavailable', 'Device offline', 409)
-        require(not d['quarantined'] or body.get('command') in {'identify', 'partitions', 'flash.read', 'mark'},
+        require(self.quarantine_allows(d, body.get('command')),
                 'device_quarantined', 'Read back and recover locally before control or programming', 409)
         name, args = body.get('command'), body.get('args', {})
+        # The diagnostic runs alone on its board: nothing may be queued behind it or ahead of it.
+        require(not self.diagnostic_active(d['id']), 'diagnostic_in_progress', 'A diagnostic is running on this board', 409)
+        if name == P4_TRACE:
+            require(not any(o['device'] == d['id'] and (o['state'] in {'queued', 'offered', 'running'} or o['unsettled'])
+                            for o in self.operations.values()), 'device_busy', 'Another operation is pending on this board', 409)
         require('control' in scopes, 'forbidden', 'Control permission required', 403)
-        validate_command(name, args, d, self.artifacts)
+        validate_command(name, args, d, self.artifacts, self.p4_stub_allowlist)
         local_control = local_agent is not None and local_agent == d['agent']
         if trigger_disarm(name, args) and not local_control:
             require(d.get('trigger_lease') == lease['id'], 'trigger_not_owned',
@@ -308,7 +331,7 @@ class Broker:
               'epoch': self.epoch, 'agent': d['agent'], 'command': name, 'args': copy.deepcopy(args), 'state': 'queued', 'created': self.clock(),
               'deadline': self.clock() + ttl, 'timeout': timeout, 'error': None, 'result': None,
               'cancel_requested': False, 'unsettled': False, 'local_control': local_control, 'requires_settle': False, 'settled': False,
-              'artifact_ids': [i['artifact'] for i in args.get('images', [])]}
+              'artifact_ids': [i['artifact'] for i in args.get('images', [])] + ([args['stub_artifact']] if name == P4_TRACE else [])}
         self.operations[key] = op
         return self.operation(key, owner)
 
@@ -329,7 +352,7 @@ class Broker:
             return None
         for op in self.operations.values():
             if op['device'] == device and op['state'] == 'queued':
-                if d['quarantined'] and op['command'] not in {'identify', 'partitions', 'flash.read', 'mark'}:
+                if not self.quarantine_allows(d, op['command']):
                     op['state'], op['error'] = 'cancelled', {'code': 'device_quarantined'}
                     continue
                 op['state'] = 'offered'
@@ -347,8 +370,7 @@ class Broker:
         require(op is not None, 'not_found', 'Unknown operation', 404)
         d = self.device(op['device'])
         require(d['agent'] == agent and d['generation'] == op['generation'], 'stale_agent', 'Agent generation changed', 409)
-        require(not d['quarantined'] or op['command'] in {'identify', 'partitions', 'flash.read', 'mark'},
-                'device_quarantined', 'Device requires recovery', 409)
+        require(self.quarantine_allows(d, op['command']), 'device_quarantined', 'Device requires recovery', 409)
         require(op['state'] == 'offered', 'not_executable', 'Command no longer executable', 409)
         self.lease(op['lease'], op['owner'])
         if trigger_disarm(op['command'], op['args']) and not op['local_control']:
@@ -358,6 +380,11 @@ class Broker:
             require(d['grant_until'] > self.clock(), 'grant_required', 'Grant expired', 403)
         op['start_remaining_ms'] = max(0, (op['deadline'] - self.clock()) * 1000)
         op['state'], op['unsettled'], op['requires_settle'] = 'running', True, True
+        if op['command'] == P4_TRACE:
+            # From the moment the agent starts, the chip may run the diagnostic stub: recorded durably,
+            # cleared only by the operator's local recovery.
+            d['diagnostic_resident'] = True
+            self.event(d['id'], 'diagnostic_started', {'id': key})
         op['deadline'] = self.clock() + op['timeout']
         return {'type': 'execute', 'id': key, 'remaining_ms': op['start_remaining_ms'],
                 'deadline_ms': self.clock() * 1000 + op['start_remaining_ms'],
@@ -386,7 +413,7 @@ class Broker:
                 d['trigger_lease'] = None if trigger_disarm(op['command'], op['args']) else op['lease']
         else:
             op['late_result'] = {'state': state, 'result': message.get('result'), 'error': message.get('error')}
-        if state == 'indeterminate' or message.get('hold') is True:
+        if state == 'indeterminate' or message.get('hold') is True or op['command'] == P4_TRACE:
             d['quarantined'] = True
         self.event(d['id'], 'operation', {'id': op['id'], 'state': op['state']})
         return {'type': 'result_ack', 'id': op['id'], 'device': d['id'], 'generation': d['generation'],
@@ -458,9 +485,14 @@ class Broker:
             d['quarantined'] = True
             self.event(d['id'], 'quarantined', {})
         elif kind == 'recover':
+            # Operator confirmation is not proof: after the diagnostic the agent must have observed a ROM session
+            # (no stub running) itself. Without that proof the board stays quarantined and resident.
+            require(not d.get('diagnostic_resident') or message.get('rom_verified') is True,
+                    'rom_proof_required', 'Put the board in ROM mode: the agent must verify the diagnostic stub is gone', 409)
             require(not any(o['device'] == d['id'] and o['unsettled'] for o in self.operations.values()),
                     'still_running', 'Hardware execution is still unsettled', 409)
             d['quarantined'] = False
+            d['diagnostic_resident'] = False
             d['recovered_at'] = time.time()
             for op in self.operations.values():
                 if op['device'] == d['id'] and (op['state'] == 'indeterminate' or op.get('reconciliation_required')):

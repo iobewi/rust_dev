@@ -274,7 +274,7 @@ class Board:
         if self.pending or self.uncertain:
             raise PendingOperation("Previous outcome is unresolved; no new command submitted")
         self._check_target()
-        if name in {"flash.write", "flash.erase"} and not (self.allow_destructive is True and allow_destructive is True):
+        if name in {"flash.write", "flash.erase", "diagnostic.p4_usb_trace"} and not (self.allow_destructive is True and allow_destructive is True):
             raise BenchError("Destructive command needs run-level opt-in and explicit per-command consent")
         if self.manifest is not None:
             self.manifest.check_command(self, name, args or {})

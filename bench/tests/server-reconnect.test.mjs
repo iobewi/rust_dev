@@ -19,7 +19,7 @@ test('server reconnect gets a new generation, revokes grant and never replays pe
  x.sockets[0].close();assert.equal(x.engine.hold,true);assert.equal(x.agent.grantUntil,0);
  x.scheduled.shift()();await x.sockets[1].onopen();
  await x.agent.message({type:'welcome',server_ms:1,epoch:'new'});
- await x.agent.message({type:'registered',generation:'new'});
+ await x.agent.message({type:'registered',generation:'new',diagnostic_resident:false});
  assert.equal(x.agent.orphanedOperation,'completed-but-unacked');
  assert.equal(x.agent.awaitingResult,null);assert.equal(x.agent.pending,null);
  assert.ok(x.sockets[1].sent.every(m=>['auth','register'].includes(m.type)));
