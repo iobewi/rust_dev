@@ -134,10 +134,14 @@ test(`local browser session and direct control over ${usbJtag?'USB Serial/JTAG':
   // UART override must not force the 260px sidebar to scroll horizontally.
   assert.equal(await page.locator('.loader-advanced').getAttribute('open'),null);
   assert.equal(await page.locator('#loader-baud').isVisible(),false);
+  assert.equal(await page.locator('#manual-download').isVisible(),false);
+  assert.equal(await page.locator('#manual-download').isChecked(),false);
   assert.equal(await page.locator('#loader-baud').inputValue(),'');
   const noSidebarOverflow=()=>page.locator('.sidebar-stack').evaluate(node=>node.scrollWidth<=node.clientWidth+1);
   assert.equal(await noSidebarOverflow(),true);
   await page.locator('.loader-advanced summary').click();
+  assert.equal(await page.locator('#manual-download').isVisible(),true);
+  assert.equal(await page.locator('.manual-download > span:first-of-type').textContent(),'Démarrage du chargeur par BOOT + RESET');
   assert.equal(await page.locator('#loader-baud').isVisible(),true);
   assert.equal(await noSidebarOverflow(),true,'expanded advanced UART selector must fit sidebar');
   await page.locator('.loader-advanced summary').click();
