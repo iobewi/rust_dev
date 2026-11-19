@@ -84,7 +84,7 @@ Les agents utilisent REST seulement pour uploader les dumps et télécharger les
 | `reset` | `{}` ; en console, EN sur pont UART ou reset interne USB Serial/JTAG 303a:1001 | Non |
 | `console` | `{}` | Non |
 | `partitions` | `address` défaut 0x8000, `return_console` | Non |
-| `flash.read` | `address`, `size`, `return_console` ; résultat contient `artifact` | Non |
+| `flash.read` | `address`, `size`, `return_console`, `reader` (`reference` par défaut ou `preallocated`) ; résultat contient `artifact`, `transfer.reader` et `transfer.profile` | Non |
 | `flash.write` | `chip`, `images` (1–16), `erase` optionnel, `return_console` | Oui + program + consentement |
 | `flash.erase` | `chip`, `return_console` | Oui + program + consentement |
 | `uart.write` | `data` base64, 1–16 384 octets | Oui |
@@ -147,7 +147,7 @@ L’agent physique authentifié peut envoyer `{"type":"release_control","device"
 
 ### Lecture longue et diagnostic des échecs
 
-Une commande `flash.read` reste une opération unique côté API et produit au plus un artefact complet. L’agent lit la région par blocs séquentiels d’au plus 1 Mio via esptool-js 0.7.0, sans nouvelle identification entre les blocs, sans retry et sans publication de préfixe partiel. La taille exacte de chaque bloc est vérifiée. L’échéance de départ n’est pas réappliquée pendant la lecture démarrée ; les contrôles de connexion, réservation, autorisation applicable et échéance d’exécution restent actifs. L’interface manuelle demande `timeout:600` pour les lectures ; les clients REST choisissent leur timeout dans les limites existantes, sans prolongation automatique.
+Une commande `flash.read` reste une opération unique côté API et produit au plus un artefact complet. Le lecteur `preallocated` reste exclusivement dans l'agent navigateur, utilise le même port Web Serial et les mêmes commandes/ACK que le lecteur `reference`, et remplace uniquement la stratégie de copie en mémoire. L’agent lit la région par blocs séquentiels d’au plus 1 Mio via esptool-js 0.7.0, sans nouvelle identification entre les blocs, sans retry et sans publication de préfixe partiel. La taille exacte de chaque bloc est vérifiée. L’échéance de départ n’est pas réappliquée pendant la lecture démarrée ; les contrôles de connexion, réservation, autorisation applicable et échéance d’exécution restent actifs. L’interface manuelle demande `timeout:600` pour les lectures ; les clients REST choisissent leur timeout dans les limites existantes, sans prolongation automatique.
 
 `error` conserve un `code` et peut ajouter `phase`, `error_type`, `transport_kind`, `elapsed_ms`, `received_bytes`, `expected_bytes`, `block_address`, `block_size`, `serial_reads`, `serial_bytes`, `serial_timeouts`, `silence_limit_ms`, `last_read_ms`, `last_packet_bytes`, `start_remaining_ms`, `execution_remaining_ms`, `lease_remaining_ms`, `grant_remaining_ms`, `visibility`, `http_status`. Ces champs sont filtrés : aucun message arbitraire d’exception, corps HTTP, nom réseau, token ou contenu flash.
 
