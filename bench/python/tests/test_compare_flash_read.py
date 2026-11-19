@@ -42,10 +42,12 @@ class FlashReadComparisonTests(TestCase):
                 self.assertEqual(cmd[cmd.index("read-flash")+1:cmd.index("read-flash")+3],
                                  [hex(module.OFFSET), hex(module.SIZE)])
                 Path(cmd[-1]).write_bytes(data)
-                return SimpleNamespace(returncode=0, stdout="stub connected", stderr="")
+                return SimpleNamespace(returncode=0, stdout="stub connected\\nRead 1048576 bytes from 0x00010000 in 3.2 seconds (2621.4 kbit/s).", stderr="")
             with patch.object(module.subprocess, "run", side_effect=fake_run):
                 report = module.run_b("COM9", folder, "python-test", None)
             self.assertEqual(report["bytes_read"], module.SIZE)
+            self.assertEqual(report["esptool_read_elapsed_s"], 3.2)
+            self.assertEqual(report["esptool_read_bytes_per_second"], round(module.SIZE / 3.2))
             self.assertEqual(report["sha256"], hashlib.sha256(data).hexdigest())
             self.assertEqual(report["integrity"]["integrity_verdict"], "FAIL")
             self.assertTrue((folder / "report-B.json").exists())
