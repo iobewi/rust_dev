@@ -224,7 +224,7 @@ export class Agent {
         // Only report accepted, on-time transfers. A timed-out operation may
         // produce late physical evidence, but its server verdict is not completed.
         if (m.state === 'completed' && pending.transfer) {
-          try { this.onTransfer({ device: this.device.id, operationId: pending.id, command: pending.command, transfer: pending.transfer }); }
+          try { this.onTransfer({ device: this.device.id, generation: pending.generation, operationId: pending.id, command: pending.command, transfer: pending.transfer }); }
           catch { /* UI diagnostics must never block the settled acknowledgement. */ }
         }
         const offer = this.deferredOffer; this.deferredOffer = null;
