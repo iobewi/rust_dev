@@ -44,7 +44,7 @@ export class EspEngine {
       ...(this.flashReadProfile ? { flash_read_profile: readProfileSnapshot(this.flashReadProfile) } : {}), ...this.lastRead };
   }
   setPhase(phase, context) { this.phase = phase; context.report?.(this.diagnostics()); }
-  async readFlash(loader, address, size, context, reader = 'reference') {
+  async readFlash(loader, address, size, context, reader = 'reference', packetSize = 4096) {
     const startedAt = performance.now(); this.lastFlashTransfer = null;
     this.flashReadProfile = { blocks: 0, elapsed_ms: 0, packets: 0, payload_bytes: 0,
       read_ms: 0, waiting_ms: 0, write_calls: 0, write_ms: 0,
@@ -66,7 +66,8 @@ export class EspEngine {
       this.transport?.beginFlashReadProfile?.();
       let block;
       try {
-        const read = reader === 'preallocated' ? (a, b, callback) => readFlashPreallocated(loader, a, b, callback)
+        const read = reader === 'preallocated' || reader === 'packet-diagnostic'
+          ? (a, b, callback) => readFlashPreallocated(loader, a, b, callback, packetSize)
           : (a, b, callback) => loader.readFlash(a, b, callback);
         block = await read(address + offset, blockSize, (_packet, received) => {
         check();
@@ -92,7 +93,7 @@ export class EspEngine {
       data.set(block, offset); this.readProgress.received_bytes = offset + blockSize;
       context.report?.(this.diagnostics()); check();
     }
-    this.lastFlashTransfer = { ...flashTransfer(size, performance.now() - startedAt), reader, profile: readProfileSnapshot(this.flashReadProfile) };
+    this.lastFlashTransfer = { ...flashTransfer(size, performance.now() - startedAt), reader, packet_size: packetSize, profile: readProfileSnapshot(this.flashReadProfile) };
     return data;
   }
   setHold(value) { this.hold = value; this.persistHold(value); }
@@ -350,10 +351,13 @@ export class EspEngine {
         catch { throw new HardwareError('partition_table_invalid'); }
       } else if (command === 'flash.read') {
         const reader = args.reader ?? 'reference';
-        if (!['reference', 'preallocated'].includes(reader)) throw new HardwareError('flash_reader_invalid');
+        if (!['reference', 'preallocated', 'packet-diagnostic'].includes(reader)) throw new HardwareError('flash_reader_invalid');
+        const packetSize = reader === 'packet-diagnostic' ? args.packet_size : 4096;
+        if (reader === 'packet-diagnostic' ? ![1024, 2048, 4096].includes(packetSize) : args.packet_size !== undefined)
+          throw new HardwareError('flash_packet_size_invalid');
         region(args.address, args.size, physical.flash_size);
         this.setPhase('flash_read', context);
-        const data = await this.readFlash(l, args.address, args.size, context, reader);
+        const data = await this.readFlash(l, args.address, args.size, context, reader, packetSize);
         this.setPhase('artifact_upload', context);
         result = { artifact: await context.upload(data), address: args.address, transfer: this.lastFlashTransfer };
       } else if (command === 'flash.write') {
