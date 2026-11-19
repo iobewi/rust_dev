@@ -12,7 +12,7 @@ const block = css.slice(css.indexOf('/* manual-download:start'), css.indexOf('/*
 test('advanced ROM-download entry label is clickable and owns its hover/focus tooltip', () => {
   const m = html.match(/<label class="manual-download" for="manual-download"><input id="manual-download" type="checkbox" aria-describedby="help-manual-download"><span>([^<]+)<\/span><span id="help-manual-download" class="manual-download-tooltip" role="tooltip">([^<]+)<\/span><\/label>/);
   assert.ok(m, 'checkbox and tooltip are inside the same label');
-  assert.equal(m[1], 'Démarrage du chargeur par BOOT + RESET');
+  assert.equal(m[1], 'BOOT manuel');
   assert.match(m[2], /BOOT \+ RESET/);
   assert.equal((html.match(/id="manual-download"/g) || []).length, 1);
   assert.equal((html.match(/id="help-manual-download"/g) || []).length, 1);
