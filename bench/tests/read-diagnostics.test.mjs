@@ -153,3 +153,52 @@ test('transport profiler counts SLIP payloads and ACK writes without changing by
  assert.deepEqual(written,[FakeTransport.frame(new Uint8Array([4,0,0,0]))]);
  assert.equal(tr.endFlashReadProfile(),null);
 });
+
+
+test('bounded timing histograms distinguish stable 90ms cadence from bursts without retaining samples', async () => {
+ const { latencyStats, observeLatency, mergeLatency, summarizeLatency } = await import('../web/flash-read-latency.js');
+ const stable = latencyStats(), bursts = latencyStats();
+ for (let i=0;i<256;i++) observeLatency(stable,90);
+ for (let i=0;i<128;i++) observeLatency(bursts,1);
+ for (let i=0;i<128;i++) observeLatency(bursts,179);
+ const a = summarizeLatency(stable), b = summarizeLatency(bursts);
+ assert.equal(a.count,256);
+ assert.equal(a.mean_ms,90);
+ assert.equal(a.p50_bucket_ms,'≤120');
+ assert.equal(a.p95_bucket_ms,'≤120');
+ assert.equal(b.mean_ms,90,'same mean does not imply same packet cadence');
+ assert.equal(b.p50_bucket_ms,'≤5');
+ assert.equal(b.p95_bucket_ms,'≤200');
+ assert.ok(b.max_ms>a.max_ms);
+ mergeLatency(stable,bursts);
+ assert.equal(summarizeLatency(stable).count,512);
+ assert.equal(stable.buckets.length,8,'histogram size remains constant');
+ assert.equal(Object.hasOwn(a,'samples'),false,'no raw per-packet sample storage');
+});
+
+test('ACK-to-first-byte timing is measured after completed 4-byte ACK, not after a failed write',async()=>{
+ const {BenchTransport}=makeBenchTransport(FakeTransport,ESPError);
+ let tick=0;
+ const {BenchTransport: ClockedTransport}=makeBenchTransport(FakeTransport,ESPError,{now:()=>tick});
+ const tr=new ClockedTransport({writable:{getWriter(){return {async write(){tick+=2;},releaseLock(){}};}}});
+ tr.slipWriter=bytes=>FakeTransport.frame(bytes);
+ tr.beginFlashReadProfile();
+ tick=10;
+ tr.buffer=FakeTransport.frame(new Uint8Array([1,2,3]));
+ assert.deepEqual(await tr.read(100),new Uint8Array([1,2,3]));
+ tick=20;
+ await tr.write(new Uint8Array([3,0,0,0]));
+ tick=110;
+ tr.buffer=FakeTransport.frame(new Uint8Array([4,5]));
+ assert.deepEqual(await tr.read(100),new Uint8Array([4,5]));
+ const profile=tr.endFlashReadProfile();
+ assert.equal(profile.packets,2);
+ assert.equal(profile.timing.packet_interval.count,1);
+ assert.equal(profile.timing.packet_interval.sum_ms,100);
+ assert.equal(profile.timing.ack_to_first_byte.count,1);
+ assert.equal(profile.timing.ack_to_first_byte.sum_ms,88);
+ assert.equal(profile.timing.ack_to_first_byte.buckets[4],1);
+ assert.equal(profile.timing.read_to_first_byte.count,2);
+ assert.equal(profile.timing.frame_receive.count,2);
+ assert.equal(profile.timing.ack_to_first_byte.buckets.length,8);
+});
