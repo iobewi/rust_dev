@@ -293,3 +293,34 @@ L'identité de la carte, l'état du banc et les autorisations habituelles resten
 obligatoires. La méthode B est expérimentale : elle **n'est pas censée corriger
 à elle seule une latence de 90 ms par paquet**, puisqu'elle conserve exactement
 le même protocole de transport.
+
+
+### Diagnostic suivant : trames brutes Web Serial (en amont de SLIP)
+
+Les profils `flash.read` incluent désormais `raw_chunks`, `raw_bytes`,
+`max_raw_chunk_bytes` et, dans `timing` :
+
+- `raw_chunk_interval` : intervalle entre deux mises à disposition de fragments
+  reçus par le `readLoop()` d'esptool-js dans le tampon du transport ;
+- `ack_to_raw_chunk` : temps entre la fin du `write()` Web Serial de l'ACK
+  cumulatif de 4 octets et le premier fragment brut suivant.
+
+Il s'agit d'horodatages **observés côté JavaScript**, avant le décodage
+SLIP et **non d'horodatages physiques du bus USB**. La lecture continue avec le
+même protocole et la même fenêtre ; la taille des fragments dépend du navigateur.
+
+Pour l'investigation sur l'ESP32-P4 : après déploiement explicite du commit validé,
+relever une lecture **A / reference, 1 Mio, 0x8000**, puis éventuellement B au
+même offset si l'intégrité reste identique. Dans
+**Historique des opérations → Inspecter**, conserver le JSON avec
+l'icône de sauvegarde et vérifier surtout `timing.raw_chunk_interval` :
+
+- intervalles bruts eux aussi réguliers autour de 90 ms : la cadence est déjà
+  présente **avant le décodeur SLIP**, mais la cause entre firmware, USB et
+  scheduling navigateur reste indéterminée ;
+- fragments bruts fréquents mais trames SLIP espacées de 90 ms : approfondir
+  en priorité le buffering, le décodage et la segmentation.
+  
+Ne pas conclure à une corrélation causale ACK → envoi : l'ACK peut être en
+concurrence avec d'autres paquets permis par la fenêtre. Cette mesure ne
+change aucun réglage USB, ACK ou commande flash.
