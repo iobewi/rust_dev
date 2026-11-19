@@ -362,3 +362,40 @@ compatible avec un coût fixe par ACK/transaction. Un débit stable
 à toutes tailles orienterait vers un coût lié au volume transmis.
 Les deux résultats nécessitent encore une investigation du stub et
 du chemin USB : ils ne constituent pas une mesure sur le bus physique.
+
+
+### Diagnostic D — isoler le coût de lecture flash, sans stub modifié
+
+**Opérations → Lecture mémoire → D — diagnostic lecture flash (MD5 seule)** :
+sélectionner la région de référence `0x8000`, `0x100000`, puis
+**Lire la flash**. Malgré le libellé du bouton, ce mode appelle
+`ESP_SPI_FLASH_MD5`, commande officielle du stub déjà présent en RAM :
+il lit la région flash et calcule son MD5 sur le P4, mais **ne transfère
+pas le contenu flash, ne sauvegarde aucun artefact et n'écrit pas en NOR**.
+
+Le stub v1.2.2 utilise `stub_lib_flash_read_buff()` dans les deux commandes
+(`READ_FLASH` et `SPI_FLASH_MD5`). L'expérience D permet donc de comparer
+une lecture+MD5 avec une lecture+MD5+SLIP+USB+ACK, même puce et même région.
+Elle évite un nouveau stub et ses risques. Le temps D inclut les coûts
+du calcul MD5, du contrôle de commande et de la réponse, **ce n'est pas
+une mesure du seul temps de lecture SPI**. L'empreinte MD5 n'est pas
+directement comparable à la SHA-256 des sauvegardes précédentes ; répéter
+D deux fois pour vérifier sa stabilité.
+
+Le délai d'attente est volontairement porté à **120 secondes** pour couvrir
+les P4 lents, là où `flashMd5sum()` d'esptool-js 0.7.0 applique
+8 secondes/Mio. D est limité à **1 Mio** par commande, et refuse
+explicitement le mode ROM sans stub. Le résultat contient
+`result.md5` et `result.transfer.elapsed_ms` ; il ne contient
+ni artefact ni `bytes_per_second` (un débit USB serait trompeur).
+
+**Recette proposée :** exécuter A (4 Kio / 1 Mio), D (1 Mio),
+D (1 Mio), A (contrôle), à offset `0x8000`, en conservant
+les JSON. Toutes les opérations restent explicites, séquentielles et
+non destructives, depuis l'interface IDLab uniquement.
+
+- D très inférieur à A (~23 s) : surcoût majeur de SLIP/USB/ACK.
+- D proche de A : coût majeur de la lecture flash/MD5 à vérifier
+  via instrumentation dédiée si nécessaire.
+- D en échec ou non stable : conserver les preuves et suspendre
+  toute conclusion, sans relance automatique.
