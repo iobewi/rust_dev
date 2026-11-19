@@ -11,6 +11,8 @@
 //   partial-packet  bytes arrived, the packet never completed
 //   invalid-packet  SLIP framing error (noise)
 //   closed          the port ended or was lost (device lost, abort(), disconnect())
+import { latencyStats, observeLatency, summarizeLatency } from './flash-read-latency.js';
+
 const EMPTY = new Uint8Array(0);
 
 export function makeBenchTransport(Transport, ESPError, env = {}) {
@@ -39,13 +41,24 @@ export function makeBenchTransport(Transport, ESPError, env = {}) {
     // Counters only: no changes to the flash protocol, ACKs, retries or timeouts.
     beginFlashReadProfile() {
       this.flashReadProfile = { packets: 0, payload_bytes: 0, read_ms: 0,
-        waiting_ms: 0, write_calls: 0, write_ms: 0 };
+        waiting_ms: 0, write_calls: 0, write_ms: 0,
+        packet_interval: latencyStats(), ack_to_first_byte: latencyStats(),
+        read_to_first_byte: latencyStats(), frame_receive: latencyStats(),
+        lastPacketAt: null, lastAckAt: null };
     }
     endFlashReadProfile() {
       const profile = this.flashReadProfile || null;
       this.flashReadProfile = null;
-      return profile ? { ...profile, read_ms: Math.round(profile.read_ms),
-        waiting_ms: Math.round(profile.waiting_ms), write_ms: Math.round(profile.write_ms) } : null;
+      if (!profile) return null;
+      return { packets: profile.packets, payload_bytes: profile.payload_bytes,
+        read_ms: Math.round(profile.read_ms), waiting_ms: Math.round(profile.waiting_ms),
+        write_calls: profile.write_calls, write_ms: Math.round(profile.write_ms),
+        timing: {
+          packet_interval: profile.packet_interval,
+          ack_to_first_byte: profile.ack_to_first_byte,
+          read_to_first_byte: profile.read_to_first_byte,
+          frame_receive: profile.frame_receive,
+        } };
     }
     _arrived(n) { this._init(); this.stats.bytesIn += n; this._firstByteAt = this._firstByteAt ?? now(); }
     _wake() { for (const w of [...this._waiters]) w(); }
@@ -82,7 +95,12 @@ export function makeBenchTransport(Transport, ESPError, env = {}) {
       if (this._closed || !this.device?.writable) throw new SerialFault('closed', 'serial output unavailable');
       const writer = this.device.writable.getWriter();
       const t0 = this.flashReadProfile ? now() : null;
-      try { await writer.write(this.slipWriter(data)); }
+      try {
+        await writer.write(this.slipWriter(data));
+        // During ESP_READ_FLASH, esptool-js sends a 4-byte cumulative ACK.
+        // This timestamp marks completion of its Web Serial write, not USB wire delivery.
+        if (data.length === 4 && this.flashReadProfile) this.flashReadProfile.lastAckAt = now();
+      }
       catch (error) {
         if (error?.name === 'NetworkError') { this.abort('closed', 'serial write interrupted'); throw new SerialFault('closed', 'serial write interrupted'); }
         throw error;
@@ -110,6 +128,7 @@ export function makeBenchTransport(Transport, ESPError, env = {}) {
       this.stats.reads++;
       this._ev("read-start", { timeout });
       let partial = null, length = 0, escaping = false, deadline = t0 + timeout, got = 0;
+      let firstByteAt = null;
       const append = byte => {
         if (length === partial.length) { const grown = new Uint8Array(Math.max(256, length * 2)); grown.set(partial); partial = grown; }
         partial[length++] = byte;
@@ -122,6 +141,7 @@ export function makeBenchTransport(Transport, ESPError, env = {}) {
           if (outcome === 'packet') {
             this.flashReadProfile.packets++;
             this.flashReadProfile.payload_bytes += length;
+            if (firstByteAt !== null) observeLatency(this.flashReadProfile.frame_receive, now() - firstByteAt);
           }
         }
         this._ev("read-end", { outcome, ms: elapsed, bytes: got });
@@ -143,7 +163,18 @@ export function makeBenchTransport(Transport, ESPError, env = {}) {
           finally { if (waitStart !== null && this.flashReadProfile) this.flashReadProfile.waiting_ms += now() - waitStart; }
           continue;
         }
-        if (got === 0) this._ev("first-byte", { after: now() - t0 });
+        if (got === 0) {
+          firstByteAt = now();
+          const p = this.flashReadProfile;
+          if (p) {
+            observeLatency(p.read_to_first_byte, firstByteAt - t0);
+            if (p.lastPacketAt !== null) observeLatency(p.packet_interval, firstByteAt - p.lastPacketAt);
+            if (p.lastAckAt !== null) observeLatency(p.ack_to_first_byte, Math.max(0, firstByteAt - p.lastAckAt));
+            p.lastPacketAt = firstByteAt;
+            p.lastAckAt = null;
+          }
+          this._ev("first-byte", { after: firstByteAt - t0 });
+        }
         got += chunk.length;
         deadline = now() + timeout;
         for (let i = 0; i < chunk.length; i++) {
