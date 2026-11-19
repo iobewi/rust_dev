@@ -26,7 +26,7 @@ export class EspEngine {
     this.mode = 'off'; this.reader = null; this.loader = null; this.baudrate = 115200;
     // A native USB port (303a:*, USB-Serial-JTAG or the ROM's USB-OTG, e.g. 303a:0012 on the ESP32-P4) has no UART speed: esptool-js's baud change after the stub (and the port reopening it implies) is
     // only for an external UART bridge, and made the loader unreachable on the P4's USB-OTG port.
-    this.flashBaud = 115200; this.loaderBaud = null; this.manualDownload = false; this.identityChecks = 0; this.hold = false; this.diagnosticResident = false; this.trigger = null; this.tail = new Uint8Array();
+    this.flashBaud = 115200; this.loaderBaud = null; this.manualDownload = false; this.romOnly = false; this.identityChecks = 0; this.hold = false; this.diagnosticResident = false; this.trigger = null; this.tail = new Uint8Array();
     this.trace = new Tracer(); this.busy = false; this.phase = 'prepare'; this.readProgress = {};
   }
   provenance() {
@@ -101,7 +101,8 @@ export class EspEngine {
   setHold(value) {
     if (value === false && this.diagnosticResident) {
       // Operator recovery after the diagnostic: every handle of the session that talked to the diagnostic stub is stale.
-      this.diagnosticResident = false; this.loader = null;
+      this.diagnosticResident = false;
+      if (this.loader?.IS_STUB === true || this.loader?.__idlabTraceStub) this.loader = null;   // a loader that spoke to the diagnostic stub is stale
     }
     this.hold = value; this.persistHold(value);
   }
@@ -112,10 +113,11 @@ export class EspEngine {
   }
   capabilities() {
     const caps = ['identify', 'partitions', 'flash.read', 'flash.write', 'flash.erase', 'uart.write', 'uart.configure', 'console', 'mark', 'trigger', 'http.request'];
+    // ROM-only connection (explicit operator choice, native USB OTG P4 only): the standard stub is never loaded, so only the
+    // ROM-level identification, markers and the P4 diagnostic exist in this session. Nothing that needs the stub is offered.
+    if (this.romOnly === true) return this.native && !this.usbSerialJtag && /ESP32-P4/i.test(this.chipDescription || '') ? ['identify', 'mark', P4_TRACE] : ['identify', 'mark'];
     if (!this.native) return [...caps, 'reset', 'io0', 'boot.download'];
-    if (this.usbSerialJtag) return [...caps, 'reset'];
-    // Experimental: only a native USB OTG ESP32-P4 whose operator opted in to manual download entry.
-    return this.manualDownload === true && /ESP32-P4/i.test(this.chipDescription || '') ? [...caps, P4_TRACE] : caps;
+    return this.usbSerialJtag ? [...caps, 'reset'] : caps;
   }
   // Manual entry also supports a UART bridge with no DTR/RTS wiring. Only an
   // explicit console action may leave the loader after this operator opt-in.
@@ -163,6 +165,7 @@ export class EspEngine {
   }
   async openLoader() {
     if (this.loader) return this.loader;
+    if (this.romOnly === true) return this.openRomSession();   // connect + detect only: never runStub()
     const baudrate = effectiveLoaderBaud(this.native, this.loaderBaud, this.flashBaud);
     await this.closeConsole();
     this.event('transport', { detail: 'opening loader' });
@@ -185,32 +188,41 @@ export class EspEngine {
     catch (e) { try { await this.close(); } catch { /* Preserve the original serial failure. */ } throw e; }
     return this.loader;
   }
-  // ROM-only session for the diagnostic: connect + detect, never runStub(), never a reset (no_reset entry).
-  // The operator must have put the chip in ROM download mode; if the standard stub still runs, the loader refuses.
+  // ROM-only session: connect + detect, never runStub(), never a reset (no_reset entry). Used as THE connection of a board
+  // added with "ROM seule" and by nothing else: a stub already running (esptool-js loads one in main()) cannot be unloaded.
   async openRomSession() {
-    if (this.manualDownload !== true) throw new HardwareError('manual_download_required');
+    if (this.romOnly !== true) throw new HardwareError('diagnostic_rom_only_required');
     if (this.transport) { await this.transport.disconnect(); this.transport = null; this.loader = null; this.mode = 'off'; }
     await this.closeConsole();
-    this.event('transport', { detail: 'opening ROM-only loader session for the P4 diagnostic (no reset, no stub)' });
+    this.event('transport', { detail: 'opening ROM-only loader session (no reset, no stub)' });
     const { ESPLoader, Transport, ESPError } = this.deps;
     const { BenchTransport } = makeBenchTransport(Transport, ESPError);
     this.transport = new BenchTransport(this.port, false);
+    this.transport.onEvent = (name, detail) => this.trace.ev(name, detail);
     const terminal = { clean() {}, write() {}, writeLine: () => {} };
     this.loader = new ESPLoader({ transport: this.transport, baudrate: 115200, terminal });
-    try { await this.loader.detectChip('no_reset'); this.mode = 'loader'; }
-    catch (e) { try { await this.close(); } catch { /* Preserve the original serial failure. */ } throw e; }
+    this.identityChecks = 0;
+    try {
+      await this.loader.detectChip('no_reset');
+      this.chipDescription = await this.loader.chip.getChipDescription(this.loader);
+      this.mode = 'loader';
+    } catch (e) { try { await this.close(); } catch { /* Preserve the original serial failure. */ } throw e; }
     return this.loader;
   }
-  // Proof that the diagnostic stub is gone: a ROM-only sync (no reset, no stub, nothing written) on the operator-prepared board.
+  // Proof that no stub runs: a fresh ROM sync on the CURRENT ROM-only connection (no reset, no write, port left open).
+  // The sync answer of a ROM is non-zero; a running stub answers zero (esptool-js sets syncStubDetected).
   async verifyRomReturn() {
+    if (this.romOnly !== true) throw new HardwareError('diagnostic_rom_only_required');
     if (this.busy) throw new Error('Device is busy');
     this.busy = true;
     try {
-      const loader = await this.openRomSession();
+      const loader = await this.openLoader();
+      if (loader.IS_STUB === true) throw new HardwareError('diagnostic_stub_still_running');
+      await loader.sync();
       if (loader.IS_STUB === true || loader.syncStubDetected === true) throw new HardwareError('diagnostic_stub_still_running');
       if (loader.chip?.CHIP_NAME !== 'ESP32-P4') throw new HardwareError('diagnostic_chip_unsupported');
       return true;
-    } finally { try { await this.close(); } catch { /* the proof stands or fails on the sync above */ } this.busy = false; }
+    } finally { this.busy = false; }
   }
   async identity() {
     const l = await this.openLoader();
@@ -308,6 +320,7 @@ export class EspEngine {
   }
   async execute(command, args, context) {
     if (this.busy) throw new Error('Device is busy');
+    if (this.romOnly && !['identify', 'mark', P4_TRACE].includes(command)) throw new HardwareError('diagnostic_rom_only_session');
     if (this.diagnosticResident && command !== 'mark') throw new HardwareError('operator_recovery_required');
     if (this.hold && !['identify', 'partitions', 'flash.read', 'flash.write', 'flash.erase', 'mark'].includes(command)) throw new Error('Operator recovery required');
     if (command === P4_TRACE) return this.diagnosticP4(args, context);
@@ -454,7 +467,7 @@ export class EspEngine {
       context.check(); this.setPhase('artifact_download', context);
       const stubBytes = await context.download(args.stub_artifact);
       context.check(); this.setPhase('identify', context);
-      const loader = await this.openRomSession();
+      const loader = await this.openLoader();   // the ROM-only connection itself
       this.baselineTransport = this.transport; this.serialBaseline = { ...this.transport?.stats };
       this.setHold(true); this.diagnosticResident = true; touched = true;
       this.setPhase('flash_read', context);

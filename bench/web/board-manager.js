@@ -34,7 +34,7 @@ export class BoardManager {
     const loaderBaud = normalizeLoaderBaud(options.loaderBaud);
     const ctx = this.contexts.add(id, port);
     // A per-board snapshot survives engine replacement on USB loss/reconnect.
-    ctx.options = { ...options, loaderBaud, manualDownload: options.manualDownload === true };
+    ctx.options = { ...options, loaderBaud, manualDownload: options.manualDownload === true || options.romOnly === true, romOnly: options.romOnly === true };
     ctx.reconnect = this.makeReconnect({
       ports: () => this.ports(),
       idle: () => !ctx.busy && !ctx.disconnecting && !ctx.engine?.busy &&

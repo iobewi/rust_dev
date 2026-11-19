@@ -26,8 +26,8 @@ test('advanced ROM-download entry label is clickable and owns its hover/focus to
 });
 
 test('per-board manual option is captured during add and reused on reconnect', () => {
-  assert.match(ui, /const manualDownload = \$\('manual-download'\)\?\.checked === true;/);
-  assert.match(ui, /boards\.add\(id, port, \{ http_origins, manualDownload, loaderBaud \}\)/);
+  assert.match(ui, /const romOnly = \$\('rom-only'\)\?\.checked === true;\n  const manualDownload = \$\('manual-download'\)\?\.checked === true \|\| romOnly;/);   // ROM seule implies the manual entry
+  assert.match(ui, /boards\.add\(id, port, \{ http_origins, manualDownload, loaderBaud, romOnly \}\)/);
   assert.match(ui, /hardware\.manualDownload = ctx\.options\?\.manualDownload === true;/);
   assert.match(ui, /\$\('manual-download'\)\.checked = false;/);
   assert.doesNotMatch(ui, /hardware\.manualDownload = \$\('manual-download'\)/);
@@ -66,7 +66,7 @@ test('UART loader speed is captured before USB selection and stored per board', 
   assert.equal((html.match(/id="loader-baud"/g) || []).length, 1);
   assert.ok(ui.indexOf("const loaderBaud = $('loader-baud')") < ui.indexOf('const port = await navigator.serial.requestPort()'));
   assert.match(ui, /hardware\.loaderBaud = ctx\.options\?\.loaderBaud \?\? null/);
-  assert.match(ui, /boards\.add\(id, port, \{ http_origins, manualDownload, loaderBaud \}\)/);
+  assert.match(ui, /boards\.add\(id, port, \{ http_origins, manualDownload, loaderBaud, romOnly \}\)/);
 });
 test('the USB picker is locked before await, and finally releases it', () => {
   const add = ui.slice(ui.indexOf('async function addCard('), ui.indexOf("hook('add-device'"));

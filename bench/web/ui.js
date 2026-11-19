@@ -85,6 +85,7 @@ const boards = new BoardManager({
     hardware.hold = localStorage.getItem('bench.v1.hold.' + ctx.id) === '1';
     hardware.loaderBaud = ctx.options?.loaderBaud ?? null;
     hardware.manualDownload = ctx.options?.manualDownload === true; // Stable per-board setting, including reconnect.
+    hardware.romOnly = ctx.options?.romOnly === true;               // ROM-only connection (P4 diagnostic): no stub is ever loaded.
     return hardware;
   },
   makeDevice(ctx, identity, hardware) {
@@ -171,7 +172,7 @@ function renderActiveCards() {
     const chip = document.createElement('span');
     chip.className = 'board-chip';
     const chipName = displayChip(ctx.identity, info(ctx.id));
-    chip.textContent = chipName + (ctx.options?.manualDownload ? ' · BOOT manuel' : '');
+    chip.textContent = chipName + (ctx.options?.romOnly ? ' · ROM seule' : ctx.options?.manualDownload ? ' · BOOT manuel' : '');
     chip.title = ctx.options?.manualDownload ? 'Entrée manuelle configurée uniquement pour cette carte' : chipName;
     const grantMarker = document.createElement('span');
     grantMarker.className = 'board-grant';
@@ -691,7 +692,8 @@ async function addCard(id) {
   if (boards.get(id)) throw new Error('Carte déjà ajoutée dans cette fenêtre');
   if (usbBusy) throw new Error('Sélection USB déjà en cours');
   // Snapshot the choice before requesting USB. Reconnects use this board's setting.
-  const manualDownload = $('manual-download')?.checked === true;
+  const romOnly = $('rom-only')?.checked === true;
+  const manualDownload = $('manual-download')?.checked === true || romOnly;
   const loaderBaud = $('loader-baud').value ? Number($('loader-baud').value) : null;
   // Lock before the USB picker awaits; requestPort still starts in the user gesture.
   usbBusy = true; renderActiveCards();
@@ -700,10 +702,10 @@ async function addCard(id) {
     esptoolDeps ||= await import('https://unpkg.com/esptool-js@0.7.0/bundle.js');
     const http_origins = $('http-origins').value.split(',').map(v => v.trim()).filter(Boolean)
       .map(v => new URL(v).origin);
-    await boards.add(id, port, { http_origins, manualDownload, loaderBaud });
+    await boards.add(id, port, { http_origins, manualDownload, loaderBaud, romOnly });
     flashRates.delete(id); // A reused logical ID must not inherit a previous board's throughput.
     $('loader-baud').value = '';
-    $('manual-download').checked = false;
+    $('manual-download').checked = false; $('rom-only').checked = false;
     renderDevices();
     $('devices').value = id;
     boards.select(id);

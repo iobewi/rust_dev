@@ -29,11 +29,10 @@ Chaque étape est précédée d'une vérification de l'état (réservation, gran
 
 1. **A1 — lecteur standard.** `flash.read`, `reader: reference`, région ci-dessus. Relever durée, MD5 et SHA-256 des données.
 2. **D — MD5 seul.** `flash.read`, `reader: md5-only`, même région. Relever durée et MD5 (aucune donnée transférée).
-3. **T — lecteur instrumenté**, par la commande `diagnostic.p4_usb_trace` (panneau « Diagnostic USB OTG P4 » ou `idlab_recipe.py --execute`).
-   Geste préalable **de l'opérateur** : P4 en mode ROM (BOOT + reset), entrée manuelle activée, grant local. IDLab ne fait aucun reset. Le consentement dédié est donné pour la carte, ce SHA-256 et cette région, à usage unique.
-   Relever durée, MD5, SHA-256 des données, le rapport IDT1 (cycles bruts conservés, fréquence supposée indiquée comme telle) et les identifiants d'opération.
-4. **Retour au fonctionnement normal.** La carte reste en quarantaine (`diagnostic_resident`) : seule `mark` est acceptée. L'opérateur fait sa **récupération locale** puis son propre reset ; le stub RAM disparaît au reset. Aucun reset automatique.
-5. **A2 — lecteur standard à nouveau**, après ce retour, pour vérifier la stabilité. Même mesure que A1.
+3. **T — lecteur instrumenté**, par la commande `diagnostic.p4_usb_trace`. Gestes **de l'opérateur**, dans cet ordre : BOOT + reset sur le P4 ; **retirer la carte de la page, puis la rajouter avec l'option avancée « ROM seule (diagnostic P4) »** (une connexion normale recharge le stub standard et rend T impossible) ; armer le grant local. IDLab ne fait aucun reset. Le consentement dédié est donné pour la carte, ce SHA-256 et cette région, à usage unique.
+   Relever durée, MD5, SHA-256 des données, le rapport IDT1 (cycles bruts, fréquence supposée indiquée comme telle) et les identifiants d'opération.
+4. **Retour au fonctionnement normal.** La carte reste en quarantaine (`diagnostic_resident`) : seule `mark` est acceptée. L'opérateur fait BOOT + reset, **reconnecte en « ROM seule »**, puis clique « Récupération » : l'agent resynchronise la ROM sur cette connexion (sans reset, sans fermer le port) et ne lève la quarantaine que si aucun stub ne répond. Aucun reset automatique.
+5. **A2 — lecteur standard à nouveau**, après ce retour (reconnexion **normale**, option « ROM seule » décochée), pour vérifier la stabilité. Même mesure que A1.
 
 L'ordre A1, D, T, A2 est conservé. Si A1 et A2 diffèrent de plus de 10 %, aucune conclusion n'est tirée avant répétition.
 

@@ -43,3 +43,13 @@ test('wiring: capability-gated, fixed parameters, consent bound to board+SHA, si
 test('the launch button is never enabled by the quarantine exception list of standard commands', () => {
   assert.match(ui, /const safeCommands = new Set\(\['identify', 'partitions', 'flash\.read', 'mark'\]\)/);
 });
+
+test('the "ROM seule" connection option: advanced, unchecked by default, implies manual entry, reset after use, stored per board', () => {
+  const adv = html.slice(html.indexOf('<details class="loader-advanced">'), html.indexOf('</details>', html.indexOf('<details class="loader-advanced">')));
+  assert.match(adv, /<input id="rom-only" type="checkbox">/); assert.doesNotMatch(adv, /<input id="rom-only"[^>]* checked/);
+  assert.match(adv, /sans stub standard/); assert.equal((html.match(/id="rom-only"/g) || []).length, 1);
+  assert.match(ui, /hardware\.romOnly = ctx\.options\?\.romOnly === true/);
+  assert.match(ui, /\$\('rom-only'\)\.checked = false/);
+  const bm = readFileSync(new URL('../web/board-manager.js', import.meta.url), 'utf8');
+  assert.match(bm, /manualDownload: options\.manualDownload === true \|\| options\.romOnly === true, romOnly: options\.romOnly === true/);
+});

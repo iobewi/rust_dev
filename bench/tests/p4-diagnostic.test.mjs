@@ -35,6 +35,7 @@ function simP4({ fault = null, chip = 'ESP32-P4', revision = 302, isStub = false
   const loader = {
     IS_STUB: isStub, ESP_RAM_BLOCK: 64, DEFAULT_TIMEOUT: 1000, calls,
     chip: { CHIP_NAME: chip, getChipRevision: async () => revision },
+    sync: async () => { calls.push(['sync']); loader.syncStubDetected = loader.IS_STUB === true; },
     memBegin: async (...a) => { calls.push(['memBegin', ...a]); if (fault === 'memBegin') throw new Error('lost'); },
     memBlock: async (bytes, seq) => { calls.push(['memBlock', seq]); if (fault === 'load_truncated' && seq === 0) throw new Error('truncated'); },
     memFinish: async entry => { calls.push(['memFinish', entry]); },
@@ -138,9 +139,9 @@ test('losing the lease or the grant while reading is indeterminate (the stub is 
 async function engineWith(loader, { manual = true, desc = 'ESP32-P4 (revision v3.2)', native = true, jtag = false } = {}) {
   const events = [], holds = [];
   const engine = new EspEngine({ getInfo: () => ({}) }, {}, (n, d) => events.push([n, d]), v => holds.push(v));
-  Object.assign(engine, { native, usbSerialJtag: jtag, manualDownload: manual, chipDescription: desc });
+  Object.assign(engine, { native, usbSerialJtag: jtag, manualDownload: manual, romOnly: manual, chipDescription: desc });
   engine.transport = { disconnect: async () => {}, stats: {} };
-  engine.openRomSession = async () => { engine.loader = loader; engine.mode = 'loader'; return loader; };
+  engine.loader = loader; engine.mode = 'loader';   // the ROM-only connection itself (openLoader returns it)
   let completion = null, opened = 0;
   engine.openConsole = async () => { opened++; };
   const context = { check() {}, live: () => true, device, download: async () => stubBytes, upload: async () => ({}), deferCompletion: true,
@@ -162,9 +163,11 @@ test('engine nominal: hold raised before the first write, resident, console neve
   assert.equal(x.engine.hold, true); assert.equal(x.engine.diagnosticResident, true);
   assert.equal(x.holds[0], true); assert.deepEqual(x.completion(), { hold: true, returnConsole: false });
   assert.equal(x.consoleOpens(), 0);
-  for (const command of ['identify', 'partitions', 'flash.read', 'flash.write', P4_TRACE])
-    await assert.rejects(x.engine.execute(command, command === P4_TRACE ? clean(goodArgs()) : { address: 0, size: 4096 }, x.context),
+  for (const command of ['identify', P4_TRACE])
+    await assert.rejects(x.engine.execute(command, command === P4_TRACE ? clean(goodArgs()) : {}, x.context),
       e => e.code === 'operator_recovery_required', command);
+  for (const command of ['partitions', 'flash.read', 'flash.write', 'flash.erase', 'console', 'uart.write'])   // a ROM-only session has no stub: never offered
+    await assert.rejects(x.engine.execute(command, { address: 0, size: 4096 }, x.context), e => e.code === 'diagnostic_rom_only_session', command);
   assert.equal((await x.engine.execute('mark', { label: 'after' }, x.context)).label, 'after');
 });
 
@@ -208,7 +211,7 @@ test('manual download is required: without it the engine refuses before opening 
 });
 
 test('a standard flash.read on another engine instance (another board) is unaffected by a resident diagnostic', async () => {
-  const x = await engineWith(simP4()), other = await engineWith(simP4());
+  const x = await engineWith(simP4()), other = await engineWith(simP4(), { manual: false, desc: 'ESP32-C6', native: false });
   await x.engine.execute(P4_TRACE, clean(goodArgs()), x.context);
   other.engine.identity = async () => ({ chip: 'esp32c6', flash_size: 4194304 });
   other.engine.loader = { readFlash: async (_a, size) => new Uint8Array(size).fill(1) };
@@ -297,9 +300,9 @@ test('local validation refusals and manual-download refusal keep their code and 
   assert.deepEqual([out.code, out.category, out.ram_load, out.phase], ['diagnostic_parameter_not_allowed', 'local_validation', 'not_started', 'diagnostic_stub_load']);
   const y = await engineWith(simP4(), { manual: false }); let f; try { await y.engine.execute(P4_TRACE, clean(goodArgs()), y.context); } catch (err) { f = err; }
   assert.equal(published(f).code, 'diagnostic_unavailable');
-  const z = await engineWith(simP4()); z.engine.openRomSession = async () => { throw Object.assign(new Error('x'), { code: 'manual_download_required' }); };
+  const z = await engineWith(simP4()); z.engine.loader = null; z.engine.openLoader = async () => { throw Object.assign(new Error('x'), { code: 'diagnostic_rom_only_required' }); };
   let g; try { await z.engine.execute(P4_TRACE, clean(goodArgs()), z.context); } catch (err) { g = err; }
-  assert.equal(published(g).code, 'manual_download_required');
+  assert.equal(published(g).code, 'diagnostic_rom_only_required');
 });
 
 test('failures DURING the RAM load are indeterminate with the origin code, "ram_load_failed" and "started"', async () => {
@@ -368,4 +371,113 @@ test('the agent journal shows the exact cause, the RAM-load state and the catego
   for (const needle of ['stub standard', 'Chargement RAM du stub', 'chargement RAM non commencé', 'refused_before_load', 'IdlabDiagnosticError', 'diagnostic.p4_usb_trace'])
     assert.ok(line.includes(needle), needle);
   assert.ok(!line.includes('hunter2'));
+});
+
+// ------------------------------------------------------------------ the REAL connection flow (the defect the first campaign exposed)
+// esptool-js: main() = detectChip + runStub() (the standard stub then RUNS in the chip); detectChip() alone leaves the ROM untouched.
+import { FakeTransport, ESPError } from './fakes.mjs';
+function chipWorld(stubRunning = false) { return { stubRunning, mainCalls: 0, detectModes: [], runStubCalls: 0, loaders: [] }; }
+function esptoolFor(world) {
+  class ESPLoader {
+    constructor() {
+      const sim = simP4(); world.loaders.push(sim);
+      sim.syncStubDetected = false; sim.chip = null;
+      sim.sync = async () => { sim.syncStubDetected = world.stubRunning; };
+      sim.detectChip = async mode => {
+        world.detectModes.push(mode); await sim.sync();
+        sim.chip = { CHIP_NAME: 'ESP32-P4', getChipRevision: async () => 302, getChipDescription: async () => 'ESP32-P4 (revision v3.2)', readMac: async () => 'aa:bb:cc:dd:ee:ff' };
+      };
+      sim.runStub = async () => { world.runStubCalls++; if (!sim.syncStubDetected) world.stubRunning = true; sim.IS_STUB = true; };
+      sim.main = async mode => { world.mainCalls++; await sim.detectChip(mode); await sim.runStub(); return sim.chip.getChipDescription(sim); };
+      sim.readFlashId = async () => 0x164068;
+      const finish = sim.memFinish; sim.memFinish = async e => { await finish(e); world.stubRunning = true; };   // the diagnostic stub now runs
+      return sim;
+    }
+  }
+  return { ESPLoader, Transport: FakeTransport, ESPError };
+}
+async function connect(world, { romOnly }) {
+  const events = [], holds = [];
+  const engine = new EspEngine({ getInfo: () => ({}) }, esptoolFor(world), (n, d) => events.push([n, d]), v => holds.push(v));
+  Object.assign(engine, { native: true, usbSerialJtag: false, manualDownload: true, romOnly });
+  await engine.identity();                       // what board-manager does when a board is added
+  let closed = 0; const t = engine.transport, original = t.disconnect.bind(t); t.disconnect = async () => { closed++; return original(); };
+  const context = { check() {}, live: () => true, device, download: async () => stubBytes, upload: async () => ({}), deferCompletion: true, complete() {}, report() {} };
+  return { engine, context, holds, closes: () => closed };
+}
+
+test('REGRESSION of the field failure: a normal connection leaves the standard stub running, so the diagnostic is not offered and cannot start', async () => {
+  const world = chipWorld(), x = await connect(world, { romOnly: false });
+  assert.deepEqual([world.mainCalls, world.runStubCalls, world.stubRunning], [1, 1, true]);
+  assert.ok(!x.engine.capabilities().includes(P4_TRACE));
+  await assert.rejects(x.engine.execute(P4_TRACE, clean(goodArgs()), x.context), e => e.code === 'diagnostic_unavailable');
+});
+
+test('ROM-only connection: detectChip only, no main(), no runStub(), no stub uploaded; only identify/mark/diagnostic are offered', async () => {
+  const world = chipWorld(), x = await connect(world, { romOnly: true });
+  assert.deepEqual([world.mainCalls, world.runStubCalls, world.stubRunning, world.detectModes], [0, 0, false, ['no_reset']]);
+  assert.deepEqual(x.engine.capabilities(), ['identify', 'mark', P4_TRACE]);
+  const loader = world.loaders[0]; assert.equal(loader.IS_STUB, false);
+  const result = await x.engine.execute(P4_TRACE, clean(goodArgs()), x.context);       // T runs on THE connection, no second sync, no reset
+  assert.equal(result.md5, MD5_ALL); assert.equal(world.detectModes.length, 1); assert.equal(x.closes(), 0);
+  assert.equal(world.stubRunning, true); noForbidden(loader);
+});
+
+test('ROM-only: everything that needs the standard stub is refused locally, nothing is sent to the chip', async () => {
+  const world = chipWorld(), x = await connect(world, { romOnly: true }), sent = world.loaders[0].calls.length;
+  for (const command of ['partitions', 'flash.read', 'flash.write', 'flash.erase', 'console', 'uart.write', 'uart.configure', 'trigger', 'http.request', 'reset', 'io0', 'boot.download'])
+    await assert.rejects(x.engine.execute(command, {}, x.context), e => e.code === 'diagnostic_rom_only_session', command);
+  assert.equal(world.loaders[0].calls.length, sent);
+});
+
+test('a stub still running at T (the operator did not really return to ROM) is an explicit refusal, not hardware_command_failed', async () => {
+  const world = chipWorld(true), x = await connect(world, { romOnly: true });        // the chip answers the sync like a stub
+  let thrown; try { await x.engine.execute(P4_TRACE, clean(goodArgs()), x.context); } catch (e) { thrown = e; }
+  const out = hardwareError(thrown);
+  assert.deepEqual([out.code, out.ram_load, out.category], ['diagnostic_stub_requires_a_rom_session', 'not_started', 'refused_before_load']);
+  assert.equal(x.engine.hold, false); assert.equal(writes(world.loaders[0]).length, 0);
+});
+
+test('FULL SEQUENCE: normal A1/D connection -> BOOT+reset -> ROM-only T -> BOOT+reset -> ROM-only recovery with proof -> normal A2 connection', async () => {
+  const { Agent } = await import('../web/agent.js'), world = chipWorld();
+  const normal1 = await connect(world, { romOnly: false });                 // A1 / D session: the standard stub runs
+  assert.equal(world.stubRunning, true);
+  world.stubRunning = false;                                                  // BOOT + reset: the chip is back in ROM
+  const t = await connect(world, { romOnly: true });
+  const done = await t.engine.execute(P4_TRACE, clean(goodArgs()), t.context);
+  assert.equal(done.stub_resident, true); assert.equal(t.engine.diagnosticResident, true);
+  await assert.rejects(t.engine.verifyRomReturn(), e => e.code === 'diagnostic_stub_still_running');   // same session: never self-recovers
+  world.stubRunning = false;                                                  // BOOT + reset, port re-selected with "ROM seule"
+  const r = await connect(world, { romOnly: true });
+  const sent = [], agent = Object.create(Agent.prototype);
+  Object.assign(agent, { engine: r.engine, active: null, awaitingResult: null, generation: 'g', log() {}, onState() {}, event: (n, d) => sent.push([n, d]) });
+  await agent.message({ type: 'registered', device: 'p4', generation: 'g', quarantined: true, diagnostic_resident: true });
+  assert.equal(r.engine.diagnosticResident, true);
+  const loaderBefore = r.engine.loader;
+  await agent.recover();
+  assert.deepEqual(sent, [['recover', { rom_verified: true }]]);
+  assert.equal(r.closes(), 0, 'the proof never closes the port');
+  await agent.message({ type: 'recovered', generation: 'g' });
+  assert.equal(r.engine.hold, false); assert.equal(r.engine.diagnosticResident, false); assert.equal(r.engine.loader, loaderBefore, 'a fresh ROM loader is kept');
+  world.stubRunning = false;
+  const normal2 = await connect(world, { romOnly: false });                  // A2: standard connection again
+  assert.ok(normal2.engine.capabilities().includes('flash.read') && !normal2.engine.capabilities().includes(P4_TRACE));
+});
+
+test('recovery proof refused while a stub still answers: nothing is sent to the server and the hold stays', async () => {
+  const { Agent } = await import('../web/agent.js'), world = chipWorld(true);
+  const r = await connect(world, { romOnly: true });
+  r.engine.setHold(true); r.engine.diagnosticResident = true;
+  const sent = [], agent = Object.create(Agent.prototype);
+  Object.assign(agent, { engine: r.engine, active: null, awaitingResult: null, generation: 'g', event: (n, d) => sent.push([n, d]) });
+  await assert.rejects(agent.recover(), e => e.code === 'diagnostic_stub_still_running');
+  assert.deepEqual(sent, []); assert.equal(r.engine.hold, true); assert.equal(r.engine.diagnosticResident, true); assert.equal(r.closes(), 0);
+});
+
+test('the recovery proof is a FRESH ROM sync: a stub that starts after the connection is detected', async () => {
+  const world = chipWorld(), x = await connect(world, { romOnly: true });
+  assert.equal(world.loaders[0].syncStubDetected, false);   // ROM at connection time
+  world.stubRunning = true;                                   // something launched a stub afterwards
+  await assert.rejects(x.engine.verifyRomReturn(), e => e.code === 'diagnostic_stub_still_running');
+  world.stubRunning = false; assert.equal(await x.engine.verifyRomReturn(), true);
 });
