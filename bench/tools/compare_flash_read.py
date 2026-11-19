@@ -64,8 +64,8 @@ def run_b(port: str, outdir: Path, python: str, c_sha: str | None) -> dict:
     # esptool's own duration excludes setup/stub upload and file output; unlike
     # wall time it is directly comparable to IDLab's flash transfer duration.
     summary = re.search(
-        r"Read (\\d+) bytes from (0x[0-9a-fA-F]+) in (\\d+(?:\\.\\d+)?) seconds",
-        proc.stdout + "\\n" + proc.stderr,
+        r"Read (\d+) bytes from (0x[0-9a-fA-F]+) in (\d+(?:\.\d+)?) seconds",
+        proc.stdout + "\n" + proc.stderr,
     )
     read_seconds = float(summary.group(3)) if summary and int(summary.group(1)) == SIZE and int(summary.group(2), 16) == OFFSET else None
     report = {
