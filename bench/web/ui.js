@@ -686,6 +686,14 @@ async function startStream() {
   }
 }
 
+// "ROM seule" needs the no-reset entry: without it esptool-js would toggle DTR/RTS and drop the native USB OTG.
+// So BOOT manuel is checked AND locked while ROM seule is on, visibly, instead of being implied behind the scenes.
+function syncRomOnly() {
+  const rom = $('rom-only'), manual = $('manual-download');
+  if (rom.checked) manual.checked = true;
+  manual.disabled = rom.checked;
+}
+$('rom-only').addEventListener('change', syncRomOnly);
 async function addCard(id) {
   if (!navigator.serial) throw new Error('Web Serial indisponible dans ce navigateur ou ce contexte');
   if (!session?.devices.includes(id)) throw new Error('Identifiant non autorisé');
@@ -705,7 +713,7 @@ async function addCard(id) {
     await boards.add(id, port, { http_origins, manualDownload, loaderBaud, romOnly });
     flashRates.delete(id); // A reused logical ID must not inherit a previous board's throughput.
     $('loader-baud').value = '';
-    $('manual-download').checked = false; $('rom-only').checked = false;
+    $('manual-download').checked = false; $('rom-only').checked = false; syncRomOnly();
     renderDevices();
     $('devices').value = id;
     boards.select(id);

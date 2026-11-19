@@ -53,3 +53,9 @@ test('the "ROM seule" connection option: advanced, unchecked by default, implies
   const bm = readFileSync(new URL('../web/board-manager.js', import.meta.url), 'utf8');
   assert.match(bm, /manualDownload: options\.manualDownload === true \|\| options\.romOnly === true, romOnly: options\.romOnly === true/);
 });
+
+test('ROM seule visibly forces and locks BOOT manuel (no DTR/RTS reset that would drop the native USB OTG)', () => {
+  assert.match(ui, /function syncRomOnly\(\) \{\s*const rom = \$\('rom-only'\), manual = \$\('manual-download'\);\s*if \(rom\.checked\) manual\.checked = true;\s*manual\.disabled = rom\.checked;/);
+  assert.match(ui, /\$\('rom-only'\)\.addEventListener\('change', syncRomOnly\)/);
+  assert.match(ui, /\$\('rom-only'\)\.checked = false; syncRomOnly\(\);/);
+});
