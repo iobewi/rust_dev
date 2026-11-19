@@ -84,7 +84,7 @@ Les agents utilisent REST seulement pour uploader les dumps et télécharger les
 | `reset` | `{}` ; en console, EN sur pont UART ou reset interne USB Serial/JTAG 303a:1001 | Non |
 | `console` | `{}` | Non |
 | `partitions` | `address` défaut 0x8000, `return_console` | Non |
-| `flash.read` | `address`, `size`, `return_console`, `reader` (`reference` par défaut ou `preallocated`) ; résultat contient `artifact`, `transfer.reader` et `transfer.profile` | Non |
+| `flash.read` | `address`, `size`, `return_console`, `reader` (`reference` par défaut, `preallocated`, ou `packet-diagnostic` avec `packet_size` 1024/2048/4096) ; résultat contient `artifact`, `transfer.reader`, `transfer.packet_size` et `transfer.profile` | Non |
 | `flash.write` | `chip`, `images` (1–16), `erase` optionnel, `return_console` | Oui + program + consentement |
 | `flash.erase` | `chip`, `return_console` | Oui + program + consentement |
 | `uart.write` | `data` base64, 1–16 384 octets | Oui |
