@@ -130,6 +130,17 @@ test(`local browser session and direct control over ${usbJtag?'USB Serial/JTAG':
   assert.equal(await page.title(),'IDLab — IOBEWI Device Lab');
   await page.locator('#add-device-id').selectOption('board');
   assert.equal(await page.locator('#card-details').isVisible(),false);
+  // Normal device selection never requires a baud choice, and the optional
+  // UART override must not force the 260px sidebar to scroll horizontally.
+  assert.equal(await page.locator('.loader-advanced').getAttribute('open'),null);
+  assert.equal(await page.locator('#loader-baud').isVisible(),false);
+  assert.equal(await page.locator('#loader-baud').inputValue(),'');
+  const noSidebarOverflow=()=>page.locator('.sidebar-stack').evaluate(node=>node.scrollWidth<=node.clientWidth+1);
+  assert.equal(await noSidebarOverflow(),true);
+  await page.locator('.loader-advanced summary').click();
+  assert.equal(await page.locator('#loader-baud').isVisible(),true);
+  assert.equal(await noSidebarOverflow(),true,'expanded advanced UART selector must fit sidebar');
+  await page.locator('.loader-advanced summary').click();
   await page.click('#add-device');
   await page.waitForFunction(()=>document.querySelector('[data-device="board"] .board-connection-state')?.textContent==='Connectée');
   assert.equal(await page.locator('#active-cards .active-board').count(),1);
