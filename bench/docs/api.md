@@ -84,13 +84,14 @@ Les agents utilisent REST seulement pour uploader les dumps et télécharger les
 | `reset` | `{}` ; en console, EN sur pont UART ou reset interne USB Serial/JTAG 303a:1001 | Non |
 | `console` | `{}` | Non |
 | `partitions` | `address` défaut 0x8000, `return_console` | Non |
-| `flash.read` | `address`, `size`, `return_console` ; résultat contient `artifact` | Non |
+| `flash.read` | `address`, `size`, `return_console`, `reader` (`reference` par défaut, `preallocated`, ou `packet-diagnostic` avec `packet_size` 1024/2048/4096) ; résultat contient `artifact`, `transfer.reader`, `transfer.packet_size` et `transfer.profile` | Non |
 | `flash.write` | `chip`, `images` (1–16), `erase` optionnel, `return_console` | Oui + program + consentement |
 | `flash.erase` | `chip`, `return_console` | Oui + program + consentement |
 | `uart.write` | `data` base64, 1–16 384 octets | Oui |
 | `uart.configure` | `baudrate` entier 1 200–3 000 000 | Non |
 | `io0` | `duration_ms` 1–10 000, UART externe seulement | Oui |
 | `boot.download` | `hold_ms` 100–3 000 (obligatoire), UART externe et console seulement : circuit d'auto-reset classique : EN bas (RTS), puis EN relâché IO0 bas (DTR) pendant le maintien borné, puis relâche des deux lignes ; câblage supposé, non mesuré ; ne vérifie ni le mode ni un démarrage | Oui |
+| `diagnostic.p4_usb_trace` | **Expérimental, ESP32-P4 USB OTG uniquement.** Charge en **RAM** un stub diagnostique relu et lit 1 Mio à `0x8000` en lecture seule. Paramètres figés : `chip: "esp32p4"`, `address: 32768`, `size: 1048576`, `packet_size: 4096`, `cpu_hz: 200000000` (fréquence supposée, enregistrée avec l'opération), `stub_artifact`, `stub_sha256` (64 hex), `consent` (voir ci-dessous). Jamais une valeur de `reader` de `flash.read` | Oui + program + consentement + consentement dédié |
 | `mark` | `label` texte ≤256 caractères | Non |
 | `trigger` | `data` base64 ≤256 octets, `action` mark/reset, `delay_ms` 0–10 000, `expires_ms` 1–120 000 | Oui |
 | `trigger` | `action:"disarm"` uniquement ; réservation active ayant armé le déclencheur dans cette génération | Non ; scope `control` et propriétaire vérifiés |
@@ -147,7 +148,7 @@ L’agent physique authentifié peut envoyer `{"type":"release_control","device"
 
 ### Lecture longue et diagnostic des échecs
 
-Une commande `flash.read` reste une opération unique côté API et produit au plus un artefact complet. L’agent lit la région par blocs séquentiels d’au plus 1 Mio via esptool-js 0.7.0, sans nouvelle identification entre les blocs, sans retry et sans publication de préfixe partiel. La taille exacte de chaque bloc est vérifiée. L’échéance de départ n’est pas réappliquée pendant la lecture démarrée ; les contrôles de connexion, réservation, autorisation applicable et échéance d’exécution restent actifs. L’interface manuelle demande `timeout:600` pour les lectures ; les clients REST choisissent leur timeout dans les limites existantes, sans prolongation automatique.
+Une commande `flash.read` reste une opération unique côté API et produit au plus un artefact complet. Le lecteur `preallocated` reste exclusivement dans l'agent navigateur, utilise le même port Web Serial et les mêmes commandes/ACK que le lecteur `reference`, et remplace uniquement la stratégie de copie en mémoire. L’agent lit la région par blocs séquentiels d’au plus 1 Mio via esptool-js 0.7.0, sans nouvelle identification entre les blocs, sans retry et sans publication de préfixe partiel. La taille exacte de chaque bloc est vérifiée. L’échéance de départ n’est pas réappliquée pendant la lecture démarrée ; les contrôles de connexion, réservation, autorisation applicable et échéance d’exécution restent actifs. L’interface manuelle demande `timeout:600` pour les lectures ; les clients REST choisissent leur timeout dans les limites existantes, sans prolongation automatique.
 
 `error` conserve un `code` et peut ajouter `phase`, `error_type`, `transport_kind`, `elapsed_ms`, `received_bytes`, `expected_bytes`, `block_address`, `block_size`, `serial_reads`, `serial_bytes`, `serial_timeouts`, `silence_limit_ms`, `last_read_ms`, `last_packet_bytes`, `start_remaining_ms`, `execution_remaining_ms`, `lease_remaining_ms`, `grant_remaining_ms`, `visibility`, `http_status`. Ces champs sont filtrés : aucun message arbitraire d’exception, corps HTTP, nom réseau, token ou contenu flash.
 
@@ -217,3 +218,28 @@ See [reliability contracts](reliability.md) for the complete guarantees and limi
 - Durable operation views preserve their original epoch/result metadata and expose
   reconciliation_required, reconciled_at/generation, and result_sha256 where
   applicable. Journal failure is 503 journal_unavailable and fails execution closed.
+
+## Diagnostic USB OTG de l'ESP32-P4 (`diagnostic.p4_usb_trace`)
+
+Ce n'est pas une lecture flash : l'opération charge et exécute du code en RAM, puis lit la flash avec ce code. Elle exige donc, en plus d'un grant local actif,
+la portée `program`, `allow_destructive: true` **et** un consentement qui lui est propre. Une autorisation de `flash.read` ne suffit jamais.
+
+Le consentement doit être exactement (les types sont comparés strictement, `1` n'est pas `true`) :
+
+```json
+{"scenario": "diagnostic.p4_usb_trace", "device": "<id de la carte réservée>", "stub_sha256": "<même SHA-256 que l'argument>",
+ "address": 32768, "size": 1048576,
+ "ram_code_execution": true, "session_effects_acknowledged": true, "rom_reset_may_be_required": true}
+```
+
+Refus avant toute exécution (aucune opération n'est créée) : puce autre que `esp32p4`, transport autre que l'USB OTG natif, paramètre différent de la valeur figée, SHA-256 invalide,
+artefact absent ou dont l'empreinte diffère, JSON de stub invalide (clés exactes, adresses entières, segments dans l'IRAM `0x4ff50000+0x4500` et la DRAM `0x4ff60000+0x18000`),
+consentement absent, incomplet ou lié à une autre carte ou à un autre SHA, autre opération en attente ou en cours sur la carte, diagnostic déjà en cours.
+
+Effets sur l'état de la carte : dès que l'agent démarre l'exécution, la carte est marquée `diagnostic_resident` (durable) ; à la fin, quelle qu'elle soit, elle est mise en quarantaine.
+Tant que ce drapeau est levé, **seule `mark` est acceptée** : ni `identify`, `partitions` ni `flash.read`, qui parleraient au chargeur à travers un stub qui n'est plus le stub standard.
+Seule la récupération locale de l'opérateur (`recover`), après son propre reset de la carte, lève le drapeau. Aucun reset n'est jamais demandé ni exécuté par l'opération elle-même.
+La carte doit être mise en mode ROM par l'opérateur (BOOT + reset) avant l'opération : une session de chargeur ordinaire a déjà le stub standard en RAM (esptool-js l'y charge à la connexion).
+
+Politique d'empreintes : le serveur n'accepte que les SHA-256 listés dans `BENCH_P4_STUB_SHA256S` (séparés par des virgules ; liste vide = commande refusée, `diagnostic_stub_not_qualified`).
+Le MD5 des octets reçus est recalculé par l'agent et comparé à celui du stub. L'événement `recover` d'une carte `diagnostic_resident` doit porter `rom_verified: true`, produit par l'agent après une synchronisation ROM sans stub ; sinon `rom_proof_required` (409).

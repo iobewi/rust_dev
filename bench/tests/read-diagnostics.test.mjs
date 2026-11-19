@@ -97,3 +97,156 @@ test('artifact capacity HTTP status survives the diagnostic and visible journal'
   });
  } finally {globalThis.fetch=original;}
 });
+
+
+test('flash read profiler aggregates per-block timings without changing read commands or artifacts', async () => {
+ const MiB = 1024 * 1024, calls = [];
+ const x = setup(async (address, size, progress) => {
+  calls.push({ address, size });
+  progress(new Uint8Array(size), size, size);
+  return new Uint8Array(size);
+ });
+ let begun = 0, ended = 0;
+ x.engine.transport = {
+  beginFlashReadProfile() { begun++; },
+  endFlashReadProfile() {
+   ended++;
+   return { packets: 256, payload_bytes: MiB, read_ms: 100, waiting_ms: 70, write_calls: 257, write_ms: 12 };
+  },
+ };
+ const result = await x.engine.execute('flash.read', { address: 0, size: 2 * MiB, return_console: false }, x.context);
+ assert.equal(result.artifact.size, 2 * MiB);
+ assert.deepEqual(calls, [{address: 0,size: MiB},{address: MiB,size: MiB}]);
+ assert.equal(begun,2); assert.equal(ended,2);
+ assert.equal(result.transfer.profile.blocks,2);
+ assert.equal(result.transfer.profile.packets,512);
+ assert.equal(result.transfer.profile.payload_bytes,2 * MiB);
+ assert.equal(result.transfer.profile.read_ms,200);
+ assert.equal(result.transfer.profile.waiting_ms,140);
+ assert.equal(result.transfer.profile.write_calls,514);
+ assert.equal(result.transfer.profile.write_ms,24);
+ assert.equal(x.reports.at(-1).flash_read_profile.blocks,2);
+});
+
+test('flash read profiler ends on error and cannot create a partial artifact', async () => {
+ const x = setup(async()=>{throw new Error('read rejected');});
+ let begin=0, end=0;
+ x.engine.transport={beginFlashReadProfile(){begin++;},endFlashReadProfile(){end++;return null;}};
+ await assert.rejects(x.engine.execute('flash.read',{address:0,size:4096,return_console:false},x.context));
+ assert.equal(begin,1);assert.equal(end,1);assert.equal(x.uploaded(),0);
+});
+
+test('transport profiler counts SLIP payloads and ACK writes without changing bytes', async () => {
+ const {BenchTransport}=makeBenchTransport(FakeTransport,ESPError);
+ const written=[], device={writable:{getWriter(){return {write:async bytes=>written.push(bytes),releaseLock(){}};}}};
+ const tr = new BenchTransport(device);
+ tr.beginFlashReadProfile();
+ const payload=Uint8Array.from([1,2,3,4,0xc0,0xdb]);
+ tr.buffer=FakeTransport.frame(payload);
+ assert.deepEqual(await tr.read(100),payload);
+ tr.slipWriter=bytes=>FakeTransport.frame(bytes);
+ await tr.write(new Uint8Array([4,0,0,0]));
+ const metrics=tr.endFlashReadProfile();
+ assert.equal(metrics.packets,1);
+ assert.equal(metrics.payload_bytes,payload.length);
+ assert.equal(metrics.write_calls,1);
+ assert.deepEqual(written,[FakeTransport.frame(new Uint8Array([4,0,0,0]))]);
+ assert.equal(tr.endFlashReadProfile(),null);
+});
+
+
+test('bounded timing histograms distinguish stable 90ms cadence from bursts without retaining samples', async () => {
+ const { latencyStats, observeLatency, mergeLatency, summarizeLatency } = await import('../web/flash-read-latency.js');
+ const stable = latencyStats(), bursts = latencyStats();
+ for (let i=0;i<256;i++) observeLatency(stable,90);
+ for (let i=0;i<128;i++) observeLatency(bursts,1);
+ for (let i=0;i<128;i++) observeLatency(bursts,179);
+ const a = summarizeLatency(stable), b = summarizeLatency(bursts);
+ assert.equal(a.count,256);
+ assert.equal(a.mean_ms,90);
+ assert.equal(a.p50_bucket_ms,'≤120');
+ assert.equal(a.p95_bucket_ms,'≤120');
+ assert.equal(b.mean_ms,90,'same mean does not imply same packet cadence');
+ assert.equal(b.p50_bucket_ms,'≤5');
+ assert.equal(b.p95_bucket_ms,'≤200');
+ assert.ok(b.max_ms>a.max_ms);
+ mergeLatency(stable,bursts);
+ assert.equal(summarizeLatency(stable).count,512);
+ assert.equal(stable.buckets.length,8,'histogram size remains constant');
+ assert.equal(Object.hasOwn(a,'samples'),false,'no raw per-packet sample storage');
+});
+
+test('ACK-to-first-byte timing is measured after completed 4-byte ACK, not after a failed write',async()=>{
+ const {BenchTransport}=makeBenchTransport(FakeTransport,ESPError);
+ let tick=0;
+ const {BenchTransport: ClockedTransport}=makeBenchTransport(FakeTransport,ESPError,{now:()=>tick});
+ const tr=new ClockedTransport({writable:{getWriter(){return {async write(){tick+=2;},releaseLock(){}};}}});
+ tr.slipWriter=bytes=>FakeTransport.frame(bytes);
+ tr.beginFlashReadProfile();
+ tick=10;
+ tr.buffer=FakeTransport.frame(new Uint8Array([1,2,3]));
+ assert.deepEqual(await tr.read(100),new Uint8Array([1,2,3]));
+ tick=20;
+ await tr.write(new Uint8Array([3,0,0,0]));
+ tick=110;
+ tr.buffer=FakeTransport.frame(new Uint8Array([4,5]));
+ assert.deepEqual(await tr.read(100),new Uint8Array([4,5]));
+ const profile=tr.endFlashReadProfile();
+ assert.equal(profile.packets,2);
+ assert.equal(profile.timing.packet_interval.count,1);
+ assert.equal(profile.timing.packet_interval.sum_ms,100);
+ assert.equal(profile.timing.ack_to_first_byte.count,1);
+ assert.equal(profile.timing.ack_to_first_byte.sum_ms,88);
+ assert.equal(profile.timing.ack_to_first_byte.buckets[4],1);
+ assert.equal(profile.timing.read_to_first_byte.count,2);
+ assert.equal(profile.timing.frame_receive.count,2);
+ assert.equal(profile.timing.ack_to_first_byte.buckets.length,8);
+});
+
+
+test('raw Web Serial chunk cadence is recorded before SLIP decoding, without storing payloads', async () => {
+  let clock = 0;
+  const {BenchTransport} = makeBenchTransport(FakeTransport, ESPError, {now:()=>clock});
+  const tr = new BenchTransport({});
+  tr.beginFlashReadProfile();
+  // Simulate three chunks appended by upstream esptool-js readLoop at steady intervals.
+  clock = 10;
+  tr.buffer = Uint8Array.from([0xc0,1,2]);
+  clock = 100;
+  tr.buffer = Uint8Array.from([...tr.buffer,3,4]);
+  clock = 190;
+  tr.buffer = Uint8Array.from([...tr.buffer,5,0xc0]);
+  const result = await tr.read(1000);
+  assert.deepEqual(result, Uint8Array.from([1,2,3,4,5]));
+  const profile = tr.endFlashReadProfile();
+  assert.equal(profile.raw_chunks,3);
+  assert.equal(profile.raw_bytes,7);
+  assert.equal(profile.max_raw_chunk_bytes,3);
+  assert.equal(profile.timing.raw_chunk_interval.count,2);
+  assert.equal(profile.timing.raw_chunk_interval.sum_ms,180);
+  assert.equal(profile.packets,1);
+  assert.equal(Object.hasOwn(profile,'raw_payload'),false);
+});
+
+test('raw chunk ACK interval is measured before packet assembly, without modifying the ACK', async () => {
+  let clock = 0;
+  const {BenchTransport}=makeBenchTransport(FakeTransport,ESPError,{now:()=>clock});
+  const tr=new BenchTransport({writable:{getWriter(){return {
+    async write(){clock+=1;}, releaseLock(){}
+  };}}});
+  tr.slipWriter=bytes=>FakeTransport.frame(bytes);
+  tr.beginFlashReadProfile();
+  clock=10;
+  tr.buffer=FakeTransport.frame(new Uint8Array([1]));
+  assert.deepEqual(await tr.read(1000),new Uint8Array([1]));
+  clock=20;
+  await tr.write(new Uint8Array([1,0,0,0]));
+  clock=111;
+  tr.buffer=FakeTransport.frame(new Uint8Array([2]));
+  assert.deepEqual(await tr.read(1000),new Uint8Array([2]));
+  const p=tr.endFlashReadProfile();
+  assert.equal(p.timing.ack_to_raw_chunk.count,1);
+  assert.equal(p.timing.ack_to_raw_chunk.sum_ms,90);
+  assert.equal(p.timing.ack_to_first_byte.count,1);
+  assert.equal(p.timing.ack_to_first_byte.sum_ms,90);
+});

@@ -100,9 +100,13 @@ export class Agent {
     if (this.engine.cancelTrigger) this.engine.cancelTrigger();
     else this.engine.trigger = null;
   }
-  recover() {
+  async recover() {
     if (this.active || this.awaitingResult) throw new Error('Operation is still running');
-    this.recoveryPending = true; this.event('recover', {});
+    // After the P4 diagnostic the operator's word is not enough: observe a stub-free ROM session first (no reset is sent).
+    // Never lift a quarantine on a guess: a server that did not state the resident flag leaves the question open.
+    if (this.residentKnown === false && this.engine.hold) throw new Error('diagnostic_state_unknown');
+    const proof = this.engine.diagnosticResident ? { rom_verified: await this.engine.verifyRomReturn() } : {};
+    this.recoveryPending = true; this.event('recover', proof);
   }
   async artifact(id, bytes) {
     const { sha256 } = await import('./protocol.js');
@@ -137,6 +141,9 @@ export class Agent {
           assets_sha256: typeof SERVED_ASSETS_SHA256 === 'undefined' ? null : SERVED_ASSETS_SHA256 } } });
     } else if (m.type === 'registered') {
       if (m.quarantined === true) this.engine.setHold(true);
+      // The server's durable fact wins over this (possibly freshly rebuilt) engine's memory: a reloaded page must still prove the ROM return.
+      this.residentKnown = typeof m.diagnostic_resident === 'boolean';
+      if (m.diagnostic_resident === true) { this.engine.setHold(true); this.engine.diagnosticResident = true; }
       this.generation = m.generation; this.seq = 0; this.log('connected'); this.onState(this.engine.hold ? 'Connexion rétablie · récupération opérateur requise' : 'Agent connected');
     } else if (m.type === 'offer') {
       if (this.awaitingResult) { this.deferredOffer = m; return; }
@@ -162,7 +169,7 @@ export class Agent {
       this.engine.persistHold(true);
       const generation = this.generation;
       const disarm = op.command === 'trigger' && op.args?.action === 'disarm' && Object.keys(op.args).length === 1;
-      const privileged = ['flash.write', 'flash.erase', 'uart.write', 'io0', 'boot.download', 'trigger', 'http.request'].includes(op.command) && !disarm && !op.local_control;
+      const privileged = ['flash.write', 'flash.erase', 'diagnostic.p4_usb_trace', 'uart.write', 'io0', 'boot.download', 'trigger', 'http.request'].includes(op.command) && !disarm && !op.local_control;
       const leaseLive = () => this.generation === generation && this.socket?.readyState === 1 && !this.revoked.has(op.lease) && this.now() < op.lease_deadline_ms - this.serverOffset - 100 && (!privileged || this.now() < this.grantUntil);
       // The server starts this deadline before sending execute; network delay cannot extend it.
       const live = () => leaseLive() && this.now() < executionUntil;

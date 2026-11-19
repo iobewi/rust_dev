@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
+import { readFile } from 'node:fs/promises';
 const { chromium }=createRequire(import.meta.url)('playwright');
 
 async function openStatus(page, name) {
@@ -63,9 +64,38 @@ test('automatic manual operations and independent API share exclusion across two
   });
   await selectRemoteDevice(page,'board');
   await page.waitForFunction(()=>document.querySelector('#operations-body').textContent.includes('completed'));
-  await page.evaluate(()=>document.querySelector('#operations-body button').click());
-  assert.equal(JSON.parse(await page.textContent('#result')).device,'board');
-  assert.equal(JSON.parse(await page.textContent('#result')).state,'completed');
+  await page.click('#workspace-tab-operations');
+  await page.click('#tab-operations');
+  const previousResult = await page.textContent('#result');
+  await page.locator('#operations-body button').first().click();
+  assert.equal(await page.locator('#manual-result-panel').isVisible(),false,
+    'the legacy JSON panel must be hidden while inline Inspecter is open');
+  assert.equal(await page.textContent('#result'),previousResult,
+    'Inspecter must not rewrite the legacy manual result');
+  assert.equal(await page.locator('#operations-body .operation-detail-row').count(),1);
+  const proofText = await page.locator('#operations-body .operation-detail-json').textContent();
+  const proof = JSON.parse(proofText);
+  assert.equal(proof.state,'completed');
+  assert.equal(proof.device,'board');
+  assert.equal(await page.locator('#operations-body button[aria-expanded="true"]').count(),1);
+  await page.evaluate(()=>{
+    Object.defineProperty(navigator, 'clipboard', { configurable:true, value:{
+      writeText:async text=>{window.__proofCopied=text;}
+    }});
+  });
+  await page.locator('.operation-proof-action[aria-label="Copier tout le JSON"]').click();
+  assert.equal(await page.evaluate(()=>window.__proofCopied),proofText);
+  assert.ok((await page.textContent('#client-state')).includes('copié'));
+  const downloadPromise = page.waitForEvent('download');
+  await page.locator('.operation-proof-action[aria-label="Sauvegarder la preuve JSON"]').click();
+  const evidenceDownload = await downloadPromise;
+  assert.match(evidenceDownload.suggestedFilename(),/^idlab-board-.*-[a-zA-Z0-9_-]+\.json$/);
+  const evidenceBytes = await readFile(await evidenceDownload.path());
+  assert.deepEqual(JSON.parse(evidenceBytes.toString('utf8')),proof);
+  await page.evaluate(()=>document.querySelector('#operations-body button[aria-expanded="true"]').click());
+  assert.equal(await page.locator('#operations-body .operation-detail-row').count(),0);
+  assert.equal(await page.locator('#operations-body button[aria-expanded="true"]').count(),0);
+  assert.equal(await page.locator('#manual-result-panel').isVisible(),true);
   await page.waitForFunction(async()=>{const r=await fetch('/api/v1/devices');return (await r.json()).devices.find(d=>d.id==='board').reservation===null;});
   await page.waitForFunction(()=>!document.querySelector('#devices').disabled);
   await selectRemoteDevice(page,'board-b');await page.click('[data-command="reset"]');
@@ -231,9 +261,17 @@ test(`local browser session and direct control over ${usbJtag?'USB Serial/JTAG':
   assert.equal(await page.locator('#partition-suggestion').isVisible(),false);
   await page.evaluate(()=>{window.__partitionAddress=0x8000;});
   await page.click('#tab-memory');await page.fill('#address','0x10000');await page.fill('#size','64');
+  assert.equal(await page.inputValue('#flash-reader'),'reference','A remains the default');
+  const readerRequests=[];
+  page.on('request',request=>{
+    if(request.method()==='POST'&&request.url().endsWith('/manual-operations')) {
+      const body=request.postDataJSON();if(body.command==='flash.read')readerRequests.push(body.args);
+    }
+  });
+  await page.selectOption('#flash-reader','preallocated');
   await page.evaluate(()=>{window.__pauseFlashRead=true;window.__journalNode=document.querySelector('#agent-log');});
   await page.click('#read');
-  await page.waitForFunction(()=>typeof window.__continueFlashRead==='function'&&document.querySelector('#agent-log').textContent.includes('0 / 64 octets'));
+  await page.waitForFunction(()=>typeof window.__continueFlashRead==='function');
   assert.equal(await page.locator('#agent-log').isVisible(),true);
   assert.equal(await page.locator('#read').isDisabled(),true);
   await page.click('#workspace-tab-consoles');assert.equal(await page.locator('#agent-log').isVisible(),true);
@@ -245,6 +283,29 @@ test(`local browser session and direct control over ${usbJtag?'USB Serial/JTAG':
   await page.evaluate(()=>{window.__pauseFlashRead=false;window.__continueFlashRead();});
   await page.waitForFunction(()=>document.querySelector('#dump-state').textContent.includes('64 octets'));
   assert.ok((await page.textContent('#hex-dump')).includes('ff ff'));
+  assert.equal(readerRequests.at(-1).reader,'preallocated','B selection travels through the same manual API and browser agent');
+  assert.equal(readerRequests.at(-1).packet_size,undefined);
+  await page.selectOption('#flash-reader','packet-diagnostic');
+  assert.equal(await page.locator('#flash-packet-control').isVisible(),true);
+  await page.selectOption('#flash-packet-size','2048');
+  await page.click('#read');
+  await page.waitForFunction(()=>document.querySelector('#result').textContent.includes('"state": "completed"') &&
+    document.querySelector('#operations-body tr:first-child').textContent.includes('completed'));
+  await page.waitForFunction(()=>!document.querySelector('#read').disabled);
+  assert.equal(readerRequests.at(-1).reader,'packet-diagnostic');
+  assert.equal(readerRequests.at(-1).packet_size,2048);
+  await page.selectOption('#flash-reader','md5-only');
+  assert.equal(await page.locator('#flash-packet-control').isVisible(),false);
+  await page.click('#read');
+  await page.waitForFunction(()=>{const op=JSON.parse(document.querySelector('#result').textContent);
+    return op.state==='completed' && op.result?.transfer?.reader==='md5-only';});
+  assert.equal(readerRequests.at(-1).reader,'md5-only');
+  assert.equal(readerRequests.at(-1).packet_size,undefined);
+  const md5Op=JSON.parse(await page.textContent('#result'));
+  assert.equal(md5Op.result.md5,'5a'.repeat(16));
+  assert.equal(md5Op.result.artifact,undefined,'D does not create a flash dump');
+  await page.selectOption('#flash-reader','reference');
+  assert.equal(await page.locator('#flash-packet-control').isVisible(),false);
   // A loader SerialFault must survive engine cleanup, WS, broker and UI translation.
   await page.evaluate(()=>{window.__readFault='closed';});await page.click('#read');
   await page.waitForFunction(()=>{const op=JSON.parse(document.querySelector('#result').textContent);return op.state==='failed'&&op.error?.code==='serial_disconnected';});

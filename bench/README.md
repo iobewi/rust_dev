@@ -225,3 +225,177 @@ reste à exécuter explicitement sur chaque transport disponible.
 - [Couverture et validation matérielle restante](docs/coverage.md)
 - [Recettes pytest et client Python](docs/pytest.md) · [Méthode de qualification](docs/qualification-workflow.md) · [Démarrage d'une session Claude](docs/session-startup.md)
 - [Exemple de client Python asynchrone](examples/client.py)
+
+
+### Diagnostic du débit de lecture flash (PR #67)
+
+La réponse d'une opération manuelle `flash.read` expose `result.transfer.profile`, consultable dans
+**Opérations → Historique des opérations → Inspecter**. Le détail s'ouvre directement sous
+la ligne. `result.transfer.bytes_per_second` mesure le débit **utile** des octets lus en flash,
+pas le débit physique USB. Le profilage est passif : il ne change ni les ACK, ni les
+tailles des paquets, ni les délais d'expiration, ni les essais de récupération.
+
+- `read_ms` et `waiting_ms` se chevauchent : ne pas les additionner.
+- `timing.packet_interval` : intervalle entre les premiers octets de deux trames SLIP
+  successives observées par le navigateur, réponse initiale comprise.
+- `timing.ack_to_first_byte` : délai depuis **la fin d'un `write()` Web Serial de l'ACK
+  cumulatif (4 octets)** jusqu'à l'observation du premier octet de la trame suivante.
+  Ce n'est ni la mesure d'un acquittement reçu physiquement par l'ESP ni celle de la
+  seule latence du contrôleur USB.
+- `timing.read_to_first_byte` : délai de l'appel `read()` à sa première donnée.
+- `timing.frame_receive` : délai du premier octet à la trame SLIP entièrement décodée.
+- Chaque distribution contient `count`, `mean_ms`, `min_ms`, `max_ms`,
+  `p50_bucket_ms`, `p95_bucket_ms` et `histogram_ms` ; les percentiles indiquent
+  **la tranche** (par exemple `≤120`), pas une valeur au milliseconde près.
+  Les tranches sont `≤5`, `≤20`, `≤50`, `≤80`, `≤120`, `≤200`, `≤500`, `>500` ms.
+- Les mesures concernent **les instants où le JavaScript traite les données**.
+  Une trame déjà présente dans le tampon ou le throttling du navigateur peut influencer
+  les résultats. Elles ne remplacent pas une capture USB matérielle.
+- `packet_interval.count` peut être inférieur à `packets` : le premier paquet
+  n'a pas d'intervalle antérieur ; `ack_to_first_byte.count` exclut les trames qui
+  n'ont pas d'ACK antérieur mesurable.
+- Les histogrammes sont agrégés entre les blocs successifs de 1 Mio. Ils ne stockent
+  ni contenu flash, ni horodatages par paquet, et leur taille reste fixe.
+
+Recette recommandée : relever deux fois 4 Kio au même offset et comparer les SHA-256 ;
+puis 1 Mio, puis 4 Mio **uniquement si les deux lectures courtes sont identiques**.
+Toujours noter VID/PID, état du stub et SHA du code effectivement servi par le serveur.
+Les comparaisons d'implémentations doivent rester dans l'architecture entièrement distante :
+le navigateur détient exclusivement le port Web Serial, les opérations sont déclenchées
+par l'API IDLab et les variantes de lecture sont exécutées par l'agent navigateur.
+Ne pas ajouter de dépendance à un outil Python local ni transférer la possession USB.
+Comparer uniquement des variantes JavaScript explicitement qualifiées ; ne pas
+assimiler un changement du protocole de lecture à une simple optimisation.
+
+
+### Comparaison A/B depuis l'interface IDLab
+
+Dans **Opérations → Lecture mémoire**, sélectionner **Lecteur** avant de cliquer sur
+**Lire la flash** :
+
+- **A — standard (esptool-js)** : méthode `readFlash()` historique, utilisée par
+  défaut, y compris pour les recettes API qui ne précisent aucun lecteur ;
+- **B — expérimentale (tampon préalloué)** : méthode JavaScript alternative
+  exécutée par le même agent navigateur et sur **le même port Web Serial**.
+  Le protocole `ESP_READ_FLASH`, les trames de 4 Kio et les ACK cumulatifs restent
+  identiques : seule la stratégie d'accumulation des octets change.
+
+Chaque lecture produit un artefact et son SHA-256, puis
+**Historique des opérations → Inspecter → `result.transfer.reader`** identifie
+la méthode réellement exécutée, avec `result.transfer.bytes_per_second` et
+`result.transfer.profile`. Aucun Python local, aucune commande shell et
+aucune déconnexion du port USB ne sont nécessaires.
+
+Recette comparative : sur la même carte, choisir une région stable de 4 Kio,
+lire A puis B, vérifier les deux SHA-256 identiques ; ensuite seulement,
+répéter à 1 Mio et comparer la durée utile, en gardant un essai A de contrôle.
+L'identité de la carte, l'état du banc et les autorisations habituelles restent
+obligatoires. La méthode B est expérimentale : elle **n'est pas censée corriger
+à elle seule une latence de 90 ms par paquet**, puisqu'elle conserve exactement
+le même protocole de transport.
+
+
+### Diagnostic suivant : trames brutes Web Serial (en amont de SLIP)
+
+Les profils `flash.read` incluent désormais `raw_chunks`, `raw_bytes`,
+`max_raw_chunk_bytes` et, dans `timing` :
+
+- `raw_chunk_interval` : intervalle entre deux mises à disposition de fragments
+  reçus par le `readLoop()` d'esptool-js dans le tampon du transport ;
+- `ack_to_raw_chunk` : temps entre la fin du `write()` Web Serial de l'ACK
+  cumulatif de 4 octets et le premier fragment brut suivant.
+
+Il s'agit d'horodatages **observés côté JavaScript**, avant le décodage
+SLIP et **non d'horodatages physiques du bus USB**. La lecture continue avec le
+même protocole et la même fenêtre ; la taille des fragments dépend du navigateur.
+
+Pour l'investigation sur l'ESP32-P4 : après déploiement explicite du commit validé,
+relever une lecture **A / reference, 1 Mio, 0x8000**, puis éventuellement B au
+même offset si l'intégrité reste identique. Dans
+**Historique des opérations → Inspecter**, conserver le JSON avec
+l'icône de sauvegarde et vérifier surtout `timing.raw_chunk_interval` :
+
+- intervalles bruts eux aussi réguliers autour de 90 ms : la cadence est déjà
+  présente **avant le décodeur SLIP**, mais la cause entre firmware, USB et
+  scheduling navigateur reste indéterminée ;
+- fragments bruts fréquents mais trames SLIP espacées de 90 ms : approfondir
+  en priorité le buffering, le décodage et la segmentation.
+  
+Ne pas conclure à une corrélation causale ACK → envoi : l'ACK peut être en
+concurrence avec d'autres paquets permis par la fenêtre. Cette mesure ne
+change aucun réglage USB, ACK ou commande flash.
+
+
+### Diagnostic C — taille des paquets de lecture (1 / 2 / 4 Kio)
+
+Dans **Opérations → Lecture mémoire**, choisir **C — diagnostic taille de paquet**
+puis **Taille de paquet** : **1 Kio**, **2 Kio** ou **4 Kio** (valeur initiale
+4 Kio). Le bouton habituel **Lire la flash** reste le seul déclencheur ;
+aucun appel API manuel, outil local ou changement de propriétaire Web Serial.
+
+Le moteur utilise le même `ESP_READ_FLASH`, le même stub actuellement chargé,
+la même valeur déclarée de fenêtre `1024` et le même ACK cumulatif de 4 octets
+que le mode B. **Seul le champ `packet_size` de la commande change** ; aucun
+stub n'est remplacé ou programmé. A et B restent fixés à 4 Kio. Le serveur
+refuse `packet_size` hors C et toutes les tailles autres que 1024, 2048, 4096.
+
+Le résultat d'`Inspecter` contient `result.transfer.reader =
+"packet-diagnostic"` et `result.transfer.packet_size`, ainsi que
+`bytes_per_second`, les compteurs et histogrammes. L'artefact n'est
+publié que si l'intégralité des octets a été lue et le SHA-256 du fichier
+peut être comparé à celui de la lecture A au même offset.
+
+**Recette opérateur recommandée (séquentielle, non automatique) :**
+choisir une région stable à **offset `0x8000`, taille `0x100000`**
+et lire dans l'ordre A (4 Kio), C (4 Kio), C (2 Kio),
+C (1 Kio), puis A (4 Kio). Sauvegarder chaque JSON via
+**Historique des opérations → Inspecter → Sauvegarder**.
+Vérifier les cinq SHA-256 identiques, les tailles annoncées
+et comparer `elapsed_ms`, `packet_interval` et
+`raw_chunk_interval`. En cas de lecture incomplète ou de perte
+USB, **ne pas relancer automatiquement**, conserver la preuve d'échec
+et arrêter la campagne. Prévoir l'espace d'artefacts temporaire
+(5 lectures de 1 Mio).
+
+Une variation proportionnelle du débit avec la taille de paquet serait
+compatible avec un coût fixe par ACK/transaction. Un débit stable
+à toutes tailles orienterait vers un coût lié au volume transmis.
+Les deux résultats nécessitent encore une investigation du stub et
+du chemin USB : ils ne constituent pas une mesure sur le bus physique.
+
+
+### Diagnostic D — isoler le coût de lecture flash, sans stub modifié
+
+**Opérations → Lecture mémoire → D — diagnostic lecture flash (MD5 seule)** :
+sélectionner la région de référence `0x8000`, `0x100000`, puis
+**Lire la flash**. Malgré le libellé du bouton, ce mode appelle
+`ESP_SPI_FLASH_MD5`, commande officielle du stub déjà présent en RAM :
+il lit la région flash et calcule son MD5 sur le P4, mais **ne transfère
+pas le contenu flash, ne sauvegarde aucun artefact et n'écrit pas en NOR**.
+
+Le stub v1.2.2 utilise `stub_lib_flash_read_buff()` dans les deux commandes
+(`READ_FLASH` et `SPI_FLASH_MD5`). L'expérience D permet donc de comparer
+une lecture+MD5 avec une lecture+MD5+SLIP+USB+ACK, même puce et même région.
+Elle évite un nouveau stub et ses risques. Le temps D inclut les coûts
+du calcul MD5, du contrôle de commande et de la réponse, **ce n'est pas
+une mesure du seul temps de lecture SPI**. L'empreinte MD5 n'est pas
+directement comparable à la SHA-256 des sauvegardes précédentes ; répéter
+D deux fois pour vérifier sa stabilité.
+
+Le délai d'attente est volontairement porté à **120 secondes** pour couvrir
+les P4 lents, là où `flashMd5sum()` d'esptool-js 0.7.0 applique
+8 secondes/Mio. D est limité à **1 Mio** par commande, et refuse
+explicitement le mode ROM sans stub. Le résultat contient
+`result.md5` et `result.transfer.elapsed_ms` ; il ne contient
+ni artefact ni `bytes_per_second` (un débit USB serait trompeur).
+
+**Recette proposée :** exécuter A (4 Kio / 1 Mio), D (1 Mio),
+D (1 Mio), A (contrôle), à offset `0x8000`, en conservant
+les JSON. Toutes les opérations restent explicites, séquentielles et
+non destructives, depuis l'interface IDLab uniquement.
+
+- D très inférieur à A (~23 s) : surcoût majeur de SLIP/USB/ACK.
+- D proche de A : coût majeur de la lecture flash/MD5 à vérifier
+  via instrumentation dédiée si nécessaire.
+- D en échec ou non stable : conserver les preuves et suspendre
+  toute conclusion, sans relance automatique.

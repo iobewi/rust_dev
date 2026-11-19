@@ -139,3 +139,16 @@
 .card-permissions #authorization-settings label { display:flex; flex-direction:column; align-items:stretch; gap:4px; font-size:12px; }
 .card-permissions #authorization-settings button { width:100%; }
 .card-permissions .hint { margin:8px 0 0; font-size:11px; }
+
+/* Operation details expand immediately below their history row; no offscreen-only output. */
+.operation-detail-row td { padding:0; white-space:normal; }
+.operation-detail-json { max-height:360px; overflow:auto; margin:0; max-width:100%; }
+
+
+/* Inline operation evidence: one JSON viewer with explicit copy/save controls. */
+.operation-proof-panel { min-width:0; border-top:1px solid var(--line); }
+.operation-proof-toolbar { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:6px 10px; background:var(--toolbar); color:var(--muted); font-size:12px; }
+.operation-proof-actions { display:flex; align-items:center; gap:5px; }
+.operation-proof-action { width:30px; min-height:28px; padding:4px; }
+.operation-proof-action svg { width:16px; height:16px; flex:none; }
+.operation-detail-json { max-height:420px; overflow:auto; user-select:text; }

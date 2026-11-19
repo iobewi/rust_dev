@@ -2,9 +2,20 @@ import { effectiveLoaderBaud, flashTransfer } from './loader-settings.js';
 // Hardware only: no DOM, REST, project readiness rules or verdicts.
 import { HardwareError, hardwareError } from './hardware-errors.js';
 import { makeBenchTransport } from './bench-transport.js';
+import { readFlashPreallocated } from './flash-read-preallocated.js';
+import { flashMd5Diagnostic, MD5_DIAGNOSTIC_MAX_SIZE } from './flash-md5-diagnostic.js';
+import { latencyStats, mergeLatency, summarizeLatency } from './flash-read-latency.js';
 import { runWrite, Tracer } from './flash-op.js';
 import { b64, unb64, family, region, validateImages, partitions, sha256 } from './protocol.js';
+import { P4_TRACE, runP4UsbTrace } from './p4-diagnostic.js';
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+const latencyFields = ['packet_interval', 'ack_to_first_byte', 'read_to_first_byte', 'frame_receive',
+  'raw_chunk_interval', 'ack_to_raw_chunk'];
+function readProfileSnapshot(profile) {
+  if (!profile) return null;
+  const { timing, ...totals } = profile;
+  return { ...totals, timing: Object.fromEntries(latencyFields.map(key => [key, summarizeLatency(timing[key])])) };
+}
 
 export class EspEngine {
   constructor(port, deps, event, hold = () => {}) {
@@ -15,7 +26,7 @@ export class EspEngine {
     this.mode = 'off'; this.reader = null; this.loader = null; this.baudrate = 115200;
     // A native USB port (303a:*, USB-Serial-JTAG or the ROM's USB-OTG, e.g. 303a:0012 on the ESP32-P4) has no UART speed: esptool-js's baud change after the stub (and the port reopening it implies) is
     // only for an external UART bridge, and made the loader unreachable on the P4's USB-OTG port.
-    this.flashBaud = 115200; this.loaderBaud = null; this.manualDownload = false; this.identityChecks = 0; this.hold = false; this.trigger = null; this.tail = new Uint8Array();
+    this.flashBaud = 115200; this.loaderBaud = null; this.manualDownload = false; this.identityChecks = 0; this.hold = false; this.diagnosticResident = false; this.trigger = null; this.tail = new Uint8Array();
     this.trace = new Tracer(); this.busy = false; this.phase = 'prepare'; this.readProgress = {};
   }
   provenance() {
@@ -31,11 +42,16 @@ export class EspEngine {
     return { phase: this.phase, ...this.readProgress,
       serial_reads: Math.max(0, (stats.reads || 0) - (base.reads || 0)),
       serial_bytes: Math.max(0, (stats.bytesIn || 0) - (base.bytesIn || 0)),
-      serial_timeouts: Math.max(0, (stats.timeouts || 0) - (base.timeouts || 0)), ...this.lastRead };
+      serial_timeouts: Math.max(0, (stats.timeouts || 0) - (base.timeouts || 0)),
+      ...(this.flashReadProfile ? { flash_read_profile: readProfileSnapshot(this.flashReadProfile) } : {}), ...this.lastRead };
   }
   setPhase(phase, context) { this.phase = phase; context.report?.(this.diagnostics()); }
-  async readFlash(loader, address, size, context) {
+  async readFlash(loader, address, size, context, reader = 'reference', packetSize = 4096) {
     const startedAt = performance.now(); this.lastFlashTransfer = null;
+    this.flashReadProfile = { blocks: 0, elapsed_ms: 0, packets: 0, payload_bytes: 0,
+      read_ms: 0, waiting_ms: 0, write_calls: 0, write_ms: 0,
+      raw_chunks: 0, raw_bytes: 0, max_raw_chunk_bytes: 0,
+      timing: Object.fromEntries(latencyFields.map(key => [key, latencyStats()])) };
     // Keep esptool-js's cumulative append limited to 1 MiB per command. No retry:
     // every block is read once and only a complete region becomes an artifact.
     const data = new Uint8Array(size), blockLimit = 1024 * 1024;
@@ -48,21 +64,47 @@ export class EspEngine {
       check();
       const blockSize = Math.min(blockLimit, size - offset);
       this.readProgress = { received_bytes: offset, expected_bytes: size, block_address: address + offset, block_size: blockSize };
-      const block = await loader.readFlash(address + offset, blockSize, (_packet, received) => {
+      const blockStarted = performance.now();
+      this.transport?.beginFlashReadProfile?.();
+      let block;
+      try {
+        const read = reader === 'preallocated' || reader === 'packet-diagnostic'
+          ? (a, b, callback) => readFlashPreallocated(loader, a, b, callback, packetSize)
+          : (a, b, callback) => loader.readFlash(a, b, callback);
+        block = await read(address + offset, blockSize, (_packet, received) => {
         check();
         if (Number.isSafeInteger(received) && received >= 0 && received <= blockSize) this.readProgress.received_bytes = offset + received;
         if (this.readProgress.received_bytes >= nextReport) {
           context.report?.(this.diagnostics()); nextReport = this.readProgress.received_bytes + 256 * 1024;
         }
-      });
+        });
+      } finally {
+        const transportMetrics = this.transport?.endFlashReadProfile?.();
+        this.flashReadProfile.blocks++;
+        this.flashReadProfile.elapsed_ms += Math.round(performance.now() - blockStarted);
+        if (transportMetrics) {
+          for (const key of ['packets', 'payload_bytes', 'read_ms', 'waiting_ms', 'write_calls', 'write_ms',
+            'raw_chunks', 'raw_bytes'])
+            this.flashReadProfile[key] += transportMetrics[key] || 0;
+          this.flashReadProfile.max_raw_chunk_bytes = Math.max(this.flashReadProfile.max_raw_chunk_bytes,
+            transportMetrics.max_raw_chunk_bytes || 0);
+          for (const key of latencyFields) mergeLatency(this.flashReadProfile.timing[key], transportMetrics.timing?.[key]);
+        }
+      }
       if (!(block instanceof Uint8Array) || block.length !== blockSize) throw new HardwareError('short_flash_read');
       data.set(block, offset); this.readProgress.received_bytes = offset + blockSize;
       context.report?.(this.diagnostics()); check();
     }
-    this.lastFlashTransfer = flashTransfer(size, performance.now() - startedAt);
+    this.lastFlashTransfer = { ...flashTransfer(size, performance.now() - startedAt), reader, packet_size: packetSize, profile: readProfileSnapshot(this.flashReadProfile) };
     return data;
   }
-  setHold(value) { this.hold = value; this.persistHold(value); }
+  setHold(value) {
+    if (value === false && this.diagnosticResident) {
+      // Operator recovery after the diagnostic: every handle of the session that talked to the diagnostic stub is stale.
+      this.diagnosticResident = false; this.loader = null;
+    }
+    this.hold = value; this.persistHold(value);
+  }
   cancelTrigger() {
     clearTimeout(this.triggerTimer);
     this.triggerTimer = null; this.trigger = null; this.tail = new Uint8Array();
@@ -71,7 +113,9 @@ export class EspEngine {
   capabilities() {
     const caps = ['identify', 'partitions', 'flash.read', 'flash.write', 'flash.erase', 'uart.write', 'uart.configure', 'console', 'mark', 'trigger', 'http.request'];
     if (!this.native) return [...caps, 'reset', 'io0', 'boot.download'];
-    return this.usbSerialJtag ? [...caps, 'reset'] : caps;
+    if (this.usbSerialJtag) return [...caps, 'reset'];
+    // Experimental: only a native USB OTG ESP32-P4 whose operator opted in to manual download entry.
+    return this.manualDownload === true && /ESP32-P4/i.test(this.chipDescription || '') ? [...caps, P4_TRACE] : caps;
   }
   // Manual entry also supports a UART bridge with no DTR/RTS wiring. Only an
   // explicit console action may leave the loader after this operator opt-in.
@@ -140,6 +184,33 @@ export class EspEngine {
     }
     catch (e) { try { await this.close(); } catch { /* Preserve the original serial failure. */ } throw e; }
     return this.loader;
+  }
+  // ROM-only session for the diagnostic: connect + detect, never runStub(), never a reset (no_reset entry).
+  // The operator must have put the chip in ROM download mode; if the standard stub still runs, the loader refuses.
+  async openRomSession() {
+    if (this.manualDownload !== true) throw new HardwareError('manual_download_required');
+    if (this.transport) { await this.transport.disconnect(); this.transport = null; this.loader = null; this.mode = 'off'; }
+    await this.closeConsole();
+    this.event('transport', { detail: 'opening ROM-only loader session for the P4 diagnostic (no reset, no stub)' });
+    const { ESPLoader, Transport, ESPError } = this.deps;
+    const { BenchTransport } = makeBenchTransport(Transport, ESPError);
+    this.transport = new BenchTransport(this.port, false);
+    const terminal = { clean() {}, write() {}, writeLine: () => {} };
+    this.loader = new ESPLoader({ transport: this.transport, baudrate: 115200, terminal });
+    try { await this.loader.detectChip('no_reset'); this.mode = 'loader'; }
+    catch (e) { try { await this.close(); } catch { /* Preserve the original serial failure. */ } throw e; }
+    return this.loader;
+  }
+  // Proof that the diagnostic stub is gone: a ROM-only sync (no reset, no stub, nothing written) on the operator-prepared board.
+  async verifyRomReturn() {
+    if (this.busy) throw new Error('Device is busy');
+    this.busy = true;
+    try {
+      const loader = await this.openRomSession();
+      if (loader.IS_STUB === true || loader.syncStubDetected === true) throw new HardwareError('diagnostic_stub_still_running');
+      if (loader.chip?.CHIP_NAME !== 'ESP32-P4') throw new HardwareError('diagnostic_chip_unsupported');
+      return true;
+    } finally { try { await this.close(); } catch { /* the proof stands or fails on the sync above */ } this.busy = false; }
   }
   async identity() {
     const l = await this.openLoader();
@@ -237,8 +308,10 @@ export class EspEngine {
   }
   async execute(command, args, context) {
     if (this.busy) throw new Error('Device is busy');
+    if (this.diagnosticResident && command !== 'mark') throw new HardwareError('operator_recovery_required');
     if (this.hold && !['identify', 'partitions', 'flash.read', 'flash.write', 'flash.erase', 'mark'].includes(command)) throw new Error('Operator recovery required');
-    this.busy = true; this.phase = 'prepare'; this.readProgress = {}; this.lastRead = {};
+    if (command === P4_TRACE) return this.diagnosticP4(args, context);
+    this.busy = true; this.phase = 'prepare'; this.readProgress = {}; this.lastRead = {}; this.flashReadProfile = null;
     this.baselineTransport = this.transport; this.serialBaseline = { ...this.transport?.stats };
     let destructive = false;
     try {
@@ -316,11 +389,28 @@ export class EspEngine {
         try { result = { partitions: partitions(bytes, physical.flash_size) }; if (!result.partitions.length) throw new Error('Empty table'); }
         catch { throw new HardwareError('partition_table_invalid'); }
       } else if (command === 'flash.read') {
+        const reader = args.reader ?? 'reference';
+        if (!['reference', 'preallocated', 'packet-diagnostic', 'md5-only'].includes(reader)) throw new HardwareError('flash_reader_invalid');
+        const packetSize = reader === 'packet-diagnostic' ? args.packet_size : 4096;
+        if (reader === 'packet-diagnostic' ? ![1024, 2048, 4096].includes(packetSize) : args.packet_size !== undefined)
+          throw new HardwareError('flash_packet_size_invalid');
         region(args.address, args.size, physical.flash_size);
         this.setPhase('flash_read', context);
-        const data = await this.readFlash(l, args.address, args.size, context);
-        this.setPhase('artifact_upload', context);
-        result = { artifact: await context.upload(data), address: args.address, transfer: this.lastFlashTransfer };
+        if (reader === 'md5-only') {
+          if (args.size > MD5_DIAGNOSTIC_MAX_SIZE) throw new HardwareError('flash_md5_diagnostic_size_exceeded');
+          context.check();
+          const start = performance.now();
+          const md5 = await flashMd5Diagnostic(l, args.address, args.size);
+          context.check();
+          result = { address: args.address, size: args.size, md5,
+            transfer: { bytes: args.size, elapsed_ms: Math.round(performance.now() - start),
+              reader: 'md5-only', transmitted_flash_bytes: 0, packet_size: null,
+              metric: 'flash_read_and_md5_without_bulk_transfer' } };
+        } else {
+          const data = await this.readFlash(l, args.address, args.size, context, reader, packetSize);
+          this.setPhase('artifact_upload', context);
+          result = { artifact: await context.upload(data), address: args.address, transfer: this.lastFlashTransfer };
+        }
       } else if (command === 'flash.write') {
         validateImages(images, physical.flash_size); context.check();
         this.setPhase('flash_write', context);
@@ -349,6 +439,42 @@ export class EspEngine {
       const failure = hardwareError(e, this.disconnected, this.diagnostics());
       if (this.phase === 'flash_read') { try { await this.close(); } catch { /* Original failure wins. */ } }
       throw Object.assign(new HardwareError(failure.code, failure), { name: failure.error_type, kind: failure.transport_kind });
+    } finally { this.busy = false; }
+  }
+
+  // Experimental P4 USB OTG diagnostic. Not a flash read: RAM code execution. Hold is raised BEFORE the first chip write;
+  // an early refusal (nothing sent) clears it again, anything else stays held, indeterminate, with no retry and no reset.
+  async diagnosticP4(args, context) {
+    if (this.busy) throw new Error('Device is busy');
+    if (this.hold) throw new HardwareError('operator_recovery_required');
+    if (!this.capabilities().includes(P4_TRACE)) throw new HardwareError('diagnostic_unavailable');
+    this.busy = true; this.phase = 'prepare'; this.readProgress = {}; this.lastRead = {}; this.flashReadProfile = null;
+    let touched = false;
+    try {
+      context.check(); this.setPhase('artifact_download', context);
+      const stubBytes = await context.download(args.stub_artifact);
+      context.check(); this.setPhase('identify', context);
+      const loader = await this.openRomSession();
+      this.baselineTransport = this.transport; this.serialBaseline = { ...this.transport?.stats };
+      this.setHold(true); this.diagnosticResident = true; touched = true;
+      this.setPhase('flash_read', context);
+      const { result } = await runP4UsbTrace({ loader, args, device: context.device, stubBytes, check: () => context.check(),
+        report: detail => context.report?.(detail) });
+      context.complete?.({ hold: true, returnConsole: false });
+      return result;
+    } catch (e) {
+      if (touched && e?.indeterminate === false) {
+        // Refused before any byte reached the chip (or by the loader's own pre-checks): nothing resident, release the hold.
+        this.diagnosticResident = false; this.setHold(false); touched = false;
+      }
+      if (touched) {
+        this.setHold(true); this.diagnosticResident = true;
+        context.complete?.({ hold: true, returnConsole: false });
+        return { state: 'indeterminate', hold: true, error: { code: 'hardware_outcome_unknown', cause: String(e?.code || e?.message || 'unknown').slice(0, 64) },
+          trace: this.trace.snapshot().slice(-60) };
+      }
+      const failure = hardwareError(e, this.disconnected, this.diagnostics());
+      throw Object.assign(new HardwareError(e?.code && /^diagnostic_|^manual_download|^artifact_/.test(e.code) ? e.code : failure.code, failure), { name: failure.error_type });
     } finally { this.busy = false; }
   }
 }
