@@ -66,6 +66,12 @@ test('automatic manual operations and independent API share exclusion across two
   await page.evaluate(()=>document.querySelector('#operations-body button').click());
   assert.equal(JSON.parse(await page.textContent('#result')).device,'board');
   assert.equal(JSON.parse(await page.textContent('#result')).state,'completed');
+  assert.equal(await page.locator('#operations-body .operation-detail-row').count(),1);
+  assert.equal(JSON.parse(await page.locator('#operations-body .operation-detail-json').textContent()).state,'completed');
+  assert.equal(await page.locator('#operations-body button[aria-expanded="true"]').count(),1);
+  await page.evaluate(()=>document.querySelector('#operations-body button[aria-expanded="true"]').click());
+  assert.equal(await page.locator('#operations-body .operation-detail-row').count(),0);
+  assert.equal(await page.locator('#operations-body button[aria-expanded="true"]').count(),0);
   await page.waitForFunction(async()=>{const r=await fetch('/api/v1/devices');return (await r.json()).devices.find(d=>d.id==='board').reservation===null;});
   await page.waitForFunction(()=>!document.querySelector('#devices').disabled);
   await selectRemoteDevice(page,'board-b');await page.click('[data-command="reset"]');
