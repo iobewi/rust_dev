@@ -7,6 +7,7 @@ import { flashMd5Diagnostic, MD5_DIAGNOSTIC_MAX_SIZE } from './flash-md5-diagnos
 import { latencyStats, mergeLatency, summarizeLatency } from './flash-read-latency.js';
 import { runWrite, Tracer } from './flash-op.js';
 import { b64, unb64, family, region, validateImages, partitions, sha256 } from './protocol.js';
+import { P4_TRACE, runP4UsbTrace } from './p4-diagnostic.js';
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const latencyFields = ['packet_interval', 'ack_to_first_byte', 'read_to_first_byte', 'frame_receive',
   'raw_chunk_interval', 'ack_to_raw_chunk'];
@@ -25,7 +26,7 @@ export class EspEngine {
     this.mode = 'off'; this.reader = null; this.loader = null; this.baudrate = 115200;
     // A native USB port (303a:*, USB-Serial-JTAG or the ROM's USB-OTG, e.g. 303a:0012 on the ESP32-P4) has no UART speed: esptool-js's baud change after the stub (and the port reopening it implies) is
     // only for an external UART bridge, and made the loader unreachable on the P4's USB-OTG port.
-    this.flashBaud = 115200; this.loaderBaud = null; this.manualDownload = false; this.identityChecks = 0; this.hold = false; this.trigger = null; this.tail = new Uint8Array();
+    this.flashBaud = 115200; this.loaderBaud = null; this.manualDownload = false; this.identityChecks = 0; this.hold = false; this.diagnosticResident = false; this.trigger = null; this.tail = new Uint8Array();
     this.trace = new Tracer(); this.busy = false; this.phase = 'prepare'; this.readProgress = {};
   }
   provenance() {
@@ -97,7 +98,13 @@ export class EspEngine {
     this.lastFlashTransfer = { ...flashTransfer(size, performance.now() - startedAt), reader, packet_size: packetSize, profile: readProfileSnapshot(this.flashReadProfile) };
     return data;
   }
-  setHold(value) { this.hold = value; this.persistHold(value); }
+  setHold(value) {
+    if (value === false && this.diagnosticResident) {
+      // Operator recovery after the diagnostic: every handle of the session that talked to the diagnostic stub is stale.
+      this.diagnosticResident = false; this.loader = null;
+    }
+    this.hold = value; this.persistHold(value);
+  }
   cancelTrigger() {
     clearTimeout(this.triggerTimer);
     this.triggerTimer = null; this.trigger = null; this.tail = new Uint8Array();
@@ -106,7 +113,9 @@ export class EspEngine {
   capabilities() {
     const caps = ['identify', 'partitions', 'flash.read', 'flash.write', 'flash.erase', 'uart.write', 'uart.configure', 'console', 'mark', 'trigger', 'http.request'];
     if (!this.native) return [...caps, 'reset', 'io0', 'boot.download'];
-    return this.usbSerialJtag ? [...caps, 'reset'] : caps;
+    if (this.usbSerialJtag) return [...caps, 'reset'];
+    // Experimental: only a native USB OTG ESP32-P4 whose operator opted in to manual download entry.
+    return this.manualDownload === true && /ESP32-P4/i.test(this.chipDescription || '') ? [...caps, P4_TRACE] : caps;
   }
   // Manual entry also supports a UART bridge with no DTR/RTS wiring. Only an
   // explicit console action may leave the loader after this operator opt-in.
@@ -173,6 +182,22 @@ export class EspEngine {
       if (entry === 'no_reset') this.event('transport', { detail: 'loader entry without reset (operator put the chip in ROM download mode)' });
       this.chipDescription = await this.loader.main(entry); this.mode = 'loader';
     }
+    catch (e) { try { await this.close(); } catch { /* Preserve the original serial failure. */ } throw e; }
+    return this.loader;
+  }
+  // ROM-only session for the diagnostic: connect + detect, never runStub(), never a reset (no_reset entry).
+  // The operator must have put the chip in ROM download mode; if the standard stub still runs, the loader refuses.
+  async openRomSession() {
+    if (this.manualDownload !== true) throw new HardwareError('manual_download_required');
+    if (this.transport) { await this.transport.disconnect(); this.transport = null; this.loader = null; this.mode = 'off'; }
+    await this.closeConsole();
+    this.event('transport', { detail: 'opening ROM-only loader session for the P4 diagnostic (no reset, no stub)' });
+    const { ESPLoader, Transport, ESPError } = this.deps;
+    const { BenchTransport } = makeBenchTransport(Transport, ESPError);
+    this.transport = new BenchTransport(this.port, false);
+    const terminal = { clean() {}, write() {}, writeLine: () => {} };
+    this.loader = new ESPLoader({ transport: this.transport, baudrate: 115200, terminal });
+    try { await this.loader.detectChip('no_reset'); this.mode = 'loader'; }
     catch (e) { try { await this.close(); } catch { /* Preserve the original serial failure. */ } throw e; }
     return this.loader;
   }
@@ -272,7 +297,9 @@ export class EspEngine {
   }
   async execute(command, args, context) {
     if (this.busy) throw new Error('Device is busy');
+    if (this.diagnosticResident && command !== 'mark') throw new HardwareError('operator_recovery_required');
     if (this.hold && !['identify', 'partitions', 'flash.read', 'flash.write', 'flash.erase', 'mark'].includes(command)) throw new Error('Operator recovery required');
+    if (command === P4_TRACE) return this.diagnosticP4(args, context);
     this.busy = true; this.phase = 'prepare'; this.readProgress = {}; this.lastRead = {}; this.flashReadProfile = null;
     this.baselineTransport = this.transport; this.serialBaseline = { ...this.transport?.stats };
     let destructive = false;
@@ -401,6 +428,42 @@ export class EspEngine {
       const failure = hardwareError(e, this.disconnected, this.diagnostics());
       if (this.phase === 'flash_read') { try { await this.close(); } catch { /* Original failure wins. */ } }
       throw Object.assign(new HardwareError(failure.code, failure), { name: failure.error_type, kind: failure.transport_kind });
+    } finally { this.busy = false; }
+  }
+
+  // Experimental P4 USB OTG diagnostic. Not a flash read: RAM code execution. Hold is raised BEFORE the first chip write;
+  // an early refusal (nothing sent) clears it again, anything else stays held, indeterminate, with no retry and no reset.
+  async diagnosticP4(args, context) {
+    if (this.busy) throw new Error('Device is busy');
+    if (this.hold) throw new HardwareError('operator_recovery_required');
+    if (!this.capabilities().includes(P4_TRACE)) throw new HardwareError('diagnostic_unavailable');
+    this.busy = true; this.phase = 'prepare'; this.readProgress = {}; this.lastRead = {}; this.flashReadProfile = null;
+    let touched = false;
+    try {
+      context.check(); this.setPhase('artifact_download', context);
+      const stubBytes = await context.download(args.stub_artifact);
+      context.check(); this.setPhase('identify', context);
+      const loader = await this.openRomSession();
+      this.baselineTransport = this.transport; this.serialBaseline = { ...this.transport?.stats };
+      this.setHold(true); this.diagnosticResident = true; touched = true;
+      this.setPhase('flash_read', context);
+      const { result } = await runP4UsbTrace({ loader, args, device: context.device, stubBytes, check: () => context.check(),
+        report: detail => context.report?.(detail) });
+      context.complete?.({ hold: true, returnConsole: false });
+      return result;
+    } catch (e) {
+      if (touched && e?.indeterminate === false) {
+        // Refused before any byte reached the chip (or by the loader's own pre-checks): nothing resident, release the hold.
+        this.diagnosticResident = false; this.setHold(false); touched = false;
+      }
+      if (touched) {
+        this.setHold(true); this.diagnosticResident = true;
+        context.complete?.({ hold: true, returnConsole: false });
+        return { state: 'indeterminate', hold: true, error: { code: 'hardware_outcome_unknown', cause: String(e?.code || e?.message || 'unknown').slice(0, 64) },
+          trace: this.trace.snapshot().slice(-60) };
+      }
+      const failure = hardwareError(e, this.disconnected, this.diagnostics());
+      throw Object.assign(new HardwareError(e?.code && /^diagnostic_|^manual_download|^artifact_/.test(e.code) ? e.code : failure.code, failure), { name: failure.error_type });
     } finally { this.busy = false; }
   }
 }
