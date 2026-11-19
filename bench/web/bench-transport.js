@@ -45,7 +45,7 @@ export function makeBenchTransport(Transport, ESPError, env = {}) {
         packet_interval: latencyStats(), ack_to_first_byte: latencyStats(),
         read_to_first_byte: latencyStats(), frame_receive: latencyStats(),
         raw_chunk_interval: latencyStats(), ack_to_raw_chunk: latencyStats(),
-        raw_chunk_bytes: latencyStats(), raw_chunks: 0, raw_bytes: 0,
+        raw_chunks: 0, raw_bytes: 0, max_raw_chunk_bytes: 0,
         lastRawChunkAt: null, lastPacketAt: null, lastAckAt: null };
     }
     endFlashReadProfile() {
@@ -54,6 +54,7 @@ export function makeBenchTransport(Transport, ESPError, env = {}) {
       if (!profile) return null;
       return { packets: profile.packets, payload_bytes: profile.payload_bytes,
         raw_chunks: profile.raw_chunks, raw_bytes: profile.raw_bytes,
+        max_raw_chunk_bytes: profile.max_raw_chunk_bytes,
         read_ms: Math.round(profile.read_ms), waiting_ms: Math.round(profile.waiting_ms),
         write_calls: profile.write_calls, write_ms: Math.round(profile.write_ms),
         timing: {
@@ -63,7 +64,6 @@ export function makeBenchTransport(Transport, ESPError, env = {}) {
           frame_receive: profile.frame_receive,
           raw_chunk_interval: profile.raw_chunk_interval,
           ack_to_raw_chunk: profile.ack_to_raw_chunk,
-          raw_chunk_bytes: profile.raw_chunk_bytes,
         } };
     }
     _arrived(n) {
@@ -77,7 +77,7 @@ export function makeBenchTransport(Transport, ESPError, env = {}) {
         const at = now();
         profile.raw_chunks++;
         profile.raw_bytes += n;
-        observeLatency(profile.raw_chunk_bytes, n);
+        profile.max_raw_chunk_bytes = Math.max(profile.max_raw_chunk_bytes, n);
         if (profile.lastRawChunkAt !== null)
           observeLatency(profile.raw_chunk_interval, at - profile.lastRawChunkAt);
         if (profile.lastAckAt !== null)
