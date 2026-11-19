@@ -237,6 +237,14 @@ test(`local browser session and direct control over ${usbJtag?'USB Serial/JTAG':
   assert.equal(await page.locator('#partition-suggestion').isVisible(),false);
   await page.evaluate(()=>{window.__partitionAddress=0x8000;});
   await page.click('#tab-memory');await page.fill('#address','0x10000');await page.fill('#size','64');
+  assert.equal(await page.inputValue('#flash-reader'),'reference','A remains the default');
+  const readerRequests=[];
+  page.on('request',request=>{
+    if(request.method()==='POST'&&request.url().endsWith('/manual-operations')) {
+      const body=request.postDataJSON();if(body.command==='flash.read')readerRequests.push(body.args.reader);
+    }
+  });
+  await page.selectOption('#flash-reader','preallocated');
   await page.evaluate(()=>{window.__pauseFlashRead=true;window.__journalNode=document.querySelector('#agent-log');});
   await page.click('#read');
   await page.waitForFunction(()=>typeof window.__continueFlashRead==='function'&&document.querySelector('#agent-log').textContent.includes('0 / 64 octets'));
@@ -251,6 +259,8 @@ test(`local browser session and direct control over ${usbJtag?'USB Serial/JTAG':
   await page.evaluate(()=>{window.__pauseFlashRead=false;window.__continueFlashRead();});
   await page.waitForFunction(()=>document.querySelector('#dump-state').textContent.includes('64 octets'));
   assert.ok((await page.textContent('#hex-dump')).includes('ff ff'));
+  assert.equal(readerRequests.at(-1),'preallocated','B selection travels through the same manual API and browser agent');
+  await page.selectOption('#flash-reader','reference');
   // A loader SerialFault must survive engine cleanup, WS, broker and UI translation.
   await page.evaluate(()=>{window.__readFault='closed';});await page.click('#read');
   await page.waitForFunction(()=>{const op=JSON.parse(document.querySelector('#result').textContent);return op.state==='failed'&&op.error?.code==='serial_disconnected';});
