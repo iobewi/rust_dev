@@ -262,7 +262,7 @@ test(`local browser session and direct control over ${usbJtag?'USB Serial/JTAG':
   const readerRequests=[];
   page.on('request',request=>{
     if(request.method()==='POST'&&request.url().endsWith('/manual-operations')) {
-      const body=request.postDataJSON();if(body.command==='flash.read')readerRequests.push(body.args.reader);
+      const body=request.postDataJSON();if(body.command==='flash.read')readerRequests.push(body.args);
     }
   });
   await page.selectOption('#flash-reader','preallocated');
@@ -280,8 +280,19 @@ test(`local browser session and direct control over ${usbJtag?'USB Serial/JTAG':
   await page.evaluate(()=>{window.__pauseFlashRead=false;window.__continueFlashRead();});
   await page.waitForFunction(()=>document.querySelector('#dump-state').textContent.includes('64 octets'));
   assert.ok((await page.textContent('#hex-dump')).includes('ff ff'));
-  assert.equal(readerRequests.at(-1),'preallocated','B selection travels through the same manual API and browser agent');
+  assert.equal(readerRequests.at(-1).reader,'preallocated','B selection travels through the same manual API and browser agent');
+  assert.equal(readerRequests.at(-1).packet_size,undefined);
+  await page.selectOption('#flash-reader','packet-diagnostic');
+  assert.equal(await page.locator('#flash-packet-control').isVisible(),true);
+  await page.selectOption('#flash-packet-size','2048');
+  await page.click('#read');
+  await page.waitForFunction(()=>document.querySelector('#result').textContent.includes('"state": "completed"') &&
+    document.querySelector('#operations-body tr:first-child').textContent.includes('completed'));
+  await page.waitForFunction(()=>!document.querySelector('#read').disabled);
+  assert.equal(readerRequests.at(-1).reader,'packet-diagnostic');
+  assert.equal(readerRequests.at(-1).packet_size,2048);
   await page.selectOption('#flash-reader','reference');
+  assert.equal(await page.locator('#flash-packet-control').isVisible(),false);
   // A loader SerialFault must survive engine cleanup, WS, broker and UI translation.
   await page.evaluate(()=>{window.__readFault='closed';});await page.click('#read');
   await page.waitForFunction(()=>{const op=JSON.parse(document.querySelector('#result').textContent);return op.state==='failed'&&op.error?.code==='serial_disconnected';});
