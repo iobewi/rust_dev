@@ -747,8 +747,41 @@ hook('revoke', () => {
 hook('release-control', () => { if (confirm('Libérer le pilotage abandonné et révoquer l’autorisation distante ? Une opération en cours empêchera cette action.')) agent.releaseControl(); });
 hook('recover', () => { if (confirm(`Après relecture et vérification de ${localDevice.id}, lever le blocage ? Cela autorisera de nouveaux resets.`)) agent.recover(); });
 
+function operationProofName(record) {
+  const command = String(record.command || 'operation').replace(/[^a-zA-Z0-9_-]/g, '-');
+  const device = String(record.device || 'device').replace(/[^a-zA-Z0-9_-]/g, '-');
+  const id = String(record.id || '').replace(/[^a-zA-Z0-9_-]/g, '');
+  return `idlab-${device}-${command}-${id}.json`;
+}
+function proofButton(icon, label, handler) {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'operation-proof-action';
+  button.setAttribute('aria-label', label);
+  button.title = label;
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('viewBox', '0 0 24 24');
+  svg.setAttribute('fill', 'none');
+  svg.setAttribute('stroke', 'currentColor');
+  svg.setAttribute('stroke-width', '1.8');
+  svg.setAttribute('stroke-linejoin', 'round');
+  svg.setAttribute('stroke-linecap', 'round');
+  svg.setAttribute('aria-hidden', 'true');
+  const paths = icon === 'copy'
+    ? ['M8 4h11a2 2 0 0 1 2 2v11', 'M5 8h10a2 2 0 0 1 2 2v10H5a2 2 0 0 1-2-2V10a2 2 0 0 1 2-2z']
+    : ['M5 3h12l4 4v14H3V3h2', 'M7 3v7h10V3', 'M7 21v-8h10v8'];
+  for (const d of paths) {
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    path.setAttribute('d', d); svg.append(path);
+  }
+  button.append(svg);
+  button.onclick = handler;
+  return button;
+}
 function renderOperations() {
   const body = $('operations-body'); body.replaceChildren();
+  $('manual-result-panel').hidden = operationLog.has(inspectedOperation) &&
+    operationLog.get(inspectedOperation).device === selected();
   for (const record of [...operationLog.values()].filter(op => op.device === selected()).reverse()) {
     const row = document.createElement('tr');
     for (const value of [record.id.slice(0, 10), record.device, record.command, record.state, Math.round((record.finished || performance.now()) - record.started) + ' ms']) {
@@ -762,8 +795,6 @@ function renderOperations() {
     button.setAttribute('aria-label', (expanded ? 'Masquer' : 'Inspecter') + ' l’opération ' + record.id.slice(0, 10));
     button.onclick = () => {
       inspectedOperation = expanded ? null : record.id;
-      selectedOperation = record.id;
-      json(record.snapshot); // Preserve the existing result panel and its consumers.
       renderOperations();
     };
     cell.append(button); row.append(cell); body.append(row);
@@ -772,10 +803,34 @@ function renderOperations() {
       detailRow.className = 'operation-detail-row';
       const detailCell = document.createElement('td');
       detailCell.colSpan = 6;
+      const proof = JSON.stringify(record.snapshot, null, 2);
+      const panel = document.createElement('div');
+      panel.className = 'operation-proof-panel';
+      const toolbar = document.createElement('div');
+      toolbar.className = 'operation-proof-toolbar';
+      const heading = document.createElement('span');
+      heading.textContent = 'Détail de l’opération · JSON';
+      const actions = document.createElement('div');
+      actions.className = 'operation-proof-actions';
+      const copy = proofButton('copy', 'Copier tout le JSON', async () => {
+        try {
+          await navigator.clipboard.writeText(proof);
+          feedback('JSON de l’opération copié.');
+        } catch {
+          feedback('Copie impossible : autorisation du presse-papiers refusée.');
+        }
+      });
+      const download = proofButton('save', 'Sauvegarder la preuve JSON', () => {
+        save(new Blob([proof + '\\n'], { type: 'application/json;charset=utf-8' }), operationProofName(record));
+        feedback('Téléchargement de la preuve JSON demandé.');
+      });
+      actions.append(copy, download);
+      toolbar.append(heading, actions);
       const details = document.createElement('pre');
       details.className = 'operation-detail-json result';
-      details.textContent = JSON.stringify(record.snapshot, null, 2);
-      detailCell.append(details); detailRow.append(detailCell); body.append(detailRow);
+      details.textContent = proof;
+      panel.append(toolbar, details); detailCell.append(panel);
+      detailRow.append(detailCell); body.append(detailRow);
     }
   }
 }
