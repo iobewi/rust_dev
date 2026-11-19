@@ -39,6 +39,11 @@ export async function readFlashWithP4StubTrace(loader, address, size, onPacket =
       !Number.isSafeInteger(size) || size <= 0 || size > MAX_SIZE ||
       address + size > 0x100000000) throw new RangeError('invalid_idlab_trace_range');
 
+  // Verify that the RAM stub really understands our trace opcode before
+  // any bulk read; a stock stub must be rejected with no stream started.
+  decodeTraceReport(await loader.checkCommand('IDLab trace probe', IDLAB_GET_FLASH_TRACE,
+    new Uint8Array(0), undefined, REPORT_SIZE, 3000));
+
   const payload = new Uint8Array(16);
   const view = new DataView(payload.buffer);
   view.setUint32(0, address, true);
