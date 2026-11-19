@@ -82,6 +82,7 @@ export async function runP4UsbTrace({ loader, args, device, stubBytes, check = (
     else if (error instanceof IdlabDiagnosticError) Object.assign(fields, { category: 'ram_load_failed', ram_load: 'started' });
     else Object.assign(fields, { category: 'unexpected', ram_load: stubLoaded ? 'started' : 'unknown' });
     if (error instanceof IdlabDiagnosticError && Number.isInteger(error.detail) && /revision/.test(error.code)) fields.chip_revision = error.detail;
+    if (error instanceof IdlabDiagnosticError && error.sessionState && typeof error.sessionState === 'object') Object.assign(fields, error.sessionState);
     throw report_(error, fields);
   }
 }

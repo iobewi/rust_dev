@@ -85,3 +85,25 @@ La part de l'écart que ni `send` ni `ack` n'expliquent est publiée comme `unat
 - Un intervalle isolé de plus de 21 s à 200 MHz ferait déborder le compteur 32 bits ; la trace ne le détecterait pas.
 - Un run par séquence : un écart de mesure, pas une borne statistique.
 - La mesure est faite avec l'instrumentation, qui ajoute quelques cycles par lecture du compteur (négligeables devant les ms par paquet, non nuls).
+
+## Admission de T : détection ROM / stub (PR « fiabilité de la détection »)
+
+À l'instant de T, avant toute écriture RAM, la page **refait** la synchronisation de la session courante (aucun reset, aucune écriture : seules des trames `ESP_SYNC` sont échangées) et relève : `loader.sync()` puis huit réponses `ESP_SYNC` brutes (`val`), `syncStubDetected` frais et `IS_STUB`. Aucun indice n'est une preuve absolue (`syncStubDetected` n'est qu'une heuristique d'esptool : huit `val` à 0).
+
+| Indices | Code | Effet |
+| --- | --- | --- |
+| tous ROM (`val` ≠ 0 ×8, `syncStubDetected` faux, `IS_STUB` faux) | — | le chargement continue |
+| tous « stub » | `diagnostic_stub_reported_running` | refus, rien chargé, carte laissée en quarantaine résidente |
+| contradiction ou observation incomplète (`val` mixtes, heuristique ≠ valeurs, `IS_STUB` vrai mais synchro ROM, sonde MD5 ≠ synchro) | `diagnostic_session_state_indeterminate` | refus, rien chargé, quarantaine résidente |
+| erreur de communication pendant l'admission | `diagnostic_admission_sync_failed` | refus, rien chargé, quarantaine résidente, aucune nouvelle tentative |
+
+`IS_STUB` faux n'apporte aucune information (un stub laissé par une page précédente lui est invisible) ; seul `true` compte. Le refus publie, en liste blanche : `sync_values` (≤ 8 entiers 32 bits), `sync_zero_count`, `sync_stub_detected`, `loader_stub`, `md5_shape`. L'ancien code `diagnostic_stub_requires_a_rom_session` (runs 001–002) n'est plus produit ; son message est conservé pour lire ces preuves.
+
+### Quarantaine après un refus avant chargement
+Le serveur mémorise les drapeaux de la carte au démarrage de T (`diag_prior`). Seuls les refus de la liste fermée `P4_REFUSALS_BEFORE_ANY_CHIP_WRITE` (consentement, empreinte, paramètres, intégrité, puce ou révision inadaptée : le chargeur n'a rien reçu et le refus ne révèle aucun doute matériel), avec un échec simple, `ram_load: not_started` et une catégorie `refused_before_load`/`local_validation` cohérentes, rétablissent ces drapeaux. Tout le reste (stub signalé, état indéterminé, synchro impossible, code inconnu, `hold`, résultat tardif) garde la quarantaine + `diagnostic_resident`. Aucune quarantaine préexistante n'est levée : une carte résidente ne peut pas démarrer T, et seule la récupération avec preuve ROM la lève.
+
+### Sonde MD5 indépendante : pertinence (non exécutée)
+Une réponse `ESP_SPI_FLASH_MD5` fait 32 octets ASCII en ROM et 16 octets bruts avec un stub (observé : PC-9 `rom-ascii32`). Elle serait un indice **indépendant** de la synchro, mais c'est une commande matérielle (lecture NOR) : elle ne fait **pas** partie de l'admission par défaut. Le classificateur pur `classifyMd5Answer` et l'option `md5Probe` de `loadDiagnosticStub` existent et sont testés avec des chargeurs simulés ; rien ne les branche dans l'agent. L'usage réel exige une autorisation matérielle séparée de l'opérateur.
+
+### Limite connue
+Les valeurs brutes sont obtenues par `loader.command(loader.ESP_SYNC, …)` (esptool-js 0.7.0 : `command()` retourne `[val, data]`). `node_modules` est absent du devcontainer : ce point est validé par les simulateurs, **pas** contre le vrai esptool-js ; à vérifier en revue avant tout essai.

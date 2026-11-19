@@ -5,7 +5,8 @@
 // that was reviewed. It only uses the ROM RAM-download commands (MEM_BEGIN / MEM_DATA / MEM_END):
 // it never writes, erases or configures the NOR flash, never resets the chip, never retries.
 //
-// Every refusal below happens BEFORE the first byte is sent to the chip.
+// Every refusal below happens BEFORE the first byte is sent to the chip (the admission only exchanges sync frames).
+import {observeSessionState, judgeSessionState} from './p4-session-state.js';
 import {decodeTraceReport, IDLAB_GET_FLASH_TRACE} from './p4-stub-trace.js';
 
 export const DIAGNOSTIC_STUB_CHIP = 'ESP32-P4';
@@ -22,8 +23,9 @@ const FLASH_METHODS = ['flashBegin', 'flashBlock', 'flashFinish', 'flashDeflBegi
   'flashDeflFinish', 'writeFlash', 'eraseFlash', 'eraseRegion', 'flashSpiAttach', 'flashSetParameters'];
 
 export class IdlabDiagnosticError extends Error {
-  constructor(code, {chipTouched = false, detail} = {}) {
+  constructor(code, {chipTouched = false, detail, sessionState} = {}) {
     super(code);
+    this.sessionState = sessionState;   // allowlisted raw observations of the admission (see hardware-errors.js)
     this.name = 'IdlabDiagnosticError';
     this.code = code;
     this.detail = detail;
@@ -68,6 +70,23 @@ export function parseStubJson(text) {
   return {json, decodedText, decodedData};
 }
 
+// Fresh, traced ROM/stub admission: never trusts the connection-time flags. The refusal carries the raw observations
+// (allowlisted fields only, see hardware-errors.js); no write happens here, and a refusal never retries.
+async function admitRomSession(loader, options) {
+  let evidence;
+  try { evidence = await observeSessionState(loader, { md5Probe: options.md5Probe }); }
+  catch (error) {
+    throw new IdlabDiagnosticError('diagnostic_admission_sync_failed', {detail: String(error?.message ?? error).slice(0, 120),
+      sessionState: {is_stub: loader.IS_STUB === true ? 1 : 0}});
+  }
+  const judged = judgeSessionState(evidence);
+  const sessionState = {sync_values: evidence.syncValues, sync_zero_count: judged.zero_count, sync_stub_detected: evidence.syncStubDetected ? 1 : 0,
+    loader_stub: evidence.isStub ? 1 : 0, ...(evidence.md5 ? {md5_shape: evidence.md5} : {})};
+  if (judged.verdict === 'rom') return judged;
+  throw new IdlabDiagnosticError(judged.verdict === 'stub' ? 'diagnostic_stub_reported_running' : 'diagnostic_session_state_indeterminate',
+    {sessionState});
+}
+
 // Loads the reviewed diagnostic stub into RAM of a ROM-mode ESP32-P4 and positively identifies it.
 //   options.consent         must be exactly true (operator's explicit consent for THIS binary)
 //   options.expectedSha256  SHA-256 (hex) of the stub JSON text that was reviewed and qualified
@@ -77,8 +96,7 @@ export async function loadDiagnosticStub(loader, stubJsonText, options = {}) {
   const actual = await sha256Hex(new TextEncoder().encode(stubJsonText));
   if (actual !== options.expectedSha256) throw new IdlabDiagnosticError('diagnostic_stub_sha256_mismatch', {detail: actual});
   if (loader?.chip?.CHIP_NAME !== DIAGNOSTIC_STUB_CHIP) throw new IdlabDiagnosticError('diagnostic_stub_wrong_chip');
-  if (loader.IS_STUB === true || loader.syncStubDetected === true)
-    throw new IdlabDiagnosticError('diagnostic_stub_requires_a_rom_session');
+  await admitRomSession(loader, options);
   const revision = await loader.chip.getChipRevision(loader);  // read-only eFuse reads
   if (!Number.isInteger(revision) || revision < MIN_CHIP_REVISION)
     throw new IdlabDiagnosticError('diagnostic_stub_unsupported_chip_revision', {detail: revision});

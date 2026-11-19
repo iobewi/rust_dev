@@ -17,10 +17,18 @@ function report() {
 }
 
 // A loader that records every call, so that a test can assert what was (not) done.
-function makeLoader({chip = 'ESP32-P4', revision = 302, isStub = false, greeting = 'OHAI', probe = 'ok'} = {}) {
+// syncVals: the eight raw `val` of the fresh ESP_SYNC exchange; syncDetected: esptool's own flag after loader.sync().
+function makeLoader({chip = 'ESP32-P4', revision = 302, isStub = false, greeting = 'OHAI', probe = 'ok',
+    syncVals = null, syncDetected = null, syncError = null} = {}) {
   const calls = [];
   const loader = {
-    IS_STUB: isStub, ESP_RAM_BLOCK: 64, DEFAULT_TIMEOUT: 1000, calls,
+    IS_STUB: isStub, ESP_RAM_BLOCK: 64, DEFAULT_TIMEOUT: 1000, calls, ESP_SYNC: 8,
+    async sync() { calls.push('sync'); if (syncError === 'sync') throw new Error('no sync'); loader.syncStubDetected = syncDetected ?? isStub; },
+    async command() {
+      calls.push('sync_frame'); if (syncError === 'command') throw new Error('serial lost');
+      const n = calls.filter(c => c === 'sync_frame').length - 1;
+      return [syncVals ? syncVals[n] : isStub ? 0 : 1, new Uint8Array(0)];
+    },
     chip: {CHIP_NAME: chip, async getChipRevision() { calls.push('getChipRevision'); return revision; }},
     async memBegin(...a) { calls.push(['memBegin', ...a]); },
     async memBlock(bytes, seq) { calls.push(['memBlock', bytes.length, seq]); },
@@ -56,7 +64,7 @@ test('without consent, a SHA-256 or with another SHA-256 nothing is sent to the 
 test('a wrong chip, an old revision or an already running stub is refused before any write', async () => {
   const json = stubJson(), opts = await options(json);
   for (const [loaderOptions, code] of [[{chip: 'ESP32-S3'}, 'wrong_chip'], [{revision: 200}, 'unsupported_chip_revision'],
-      [{revision: 299}, 'unsupported_chip_revision'], [{isStub: true}, 'requires_a_rom_session']]) {
+      [{revision: 299}, 'unsupported_chip_revision'], [{isStub: true}, 'stub_reported_running']]) {
     const loader = makeLoader(loaderOptions);
     await assert.rejects(loadDiagnosticStub(loader, json, opts), e => e.code.endsWith(code) && e.sessionIndeterminate === false);
     assert.equal(chipWrites(loader).length, 0);
@@ -147,4 +155,73 @@ test('retiring the diagnostic stub clears the browser state, asks for the operat
   assert.equal(loader.__idlabTraceStub, false);
   assert.equal(loader.IS_STUB, false);
   assert.equal(loader.calls.length, before);
+});
+
+// ---------------------------------------------------------------- admission: ROM / stub detection (fresh, multi-index)
+const ROM = [1, 1, 1, 1, 1, 1, 1, 1], ZEROS = new Array(8).fill(0);
+async function admit(loaderOptions, extra = {}) {
+  const json = stubJson(), loader = makeLoader(loaderOptions);
+  let error = null, result = null;
+  try { result = await loadDiagnosticStub(loader, json, {...await options(json), ...extra}); } catch (e) { error = e; }
+  return {loader, error, result};
+}
+
+test('ROM confirmed by every index: the sync is redone BEFORE the first RAM write and the load proceeds', async () => {
+  const {loader, error, result} = await admit({syncVals: ROM});
+  assert.equal(error, null); assert.equal(result.ram_only, true);
+  const firstWrite = loader.calls.findIndex(c => Array.isArray(c) && c[0] === 'memBegin');
+  assert.ok(loader.calls.indexOf('sync') >= 0 && loader.calls.indexOf('sync') < firstWrite);
+  assert.equal(loader.calls.filter(c => c === 'sync_frame').length, 8);
+});
+
+test('stub confirmed by every fresh index: explicit refusal carrying the raw values, nothing written', async () => {
+  const {loader, error} = await admit({isStub: true, syncVals: ZEROS});
+  assert.equal(error.code, 'diagnostic_stub_reported_running'); assert.equal(error.sessionIndeterminate, false);
+  assert.deepEqual(error.sessionState, {sync_values: ZEROS, sync_zero_count: 8, sync_stub_detected: 1, loader_stub: 1});
+  assert.equal(chipWrites(loader).length, 0);
+});
+
+test('a stub left by an earlier page (IS_STUB false here) but answering zero everywhere is refused, not loaded over', async () => {
+  const {loader, error} = await admit({isStub: false, syncVals: ZEROS, syncDetected: true});
+  assert.equal(error.code, 'diagnostic_stub_reported_running'); assert.equal(chipWrites(loader).length, 0);
+});
+
+test('contradictory indices are refused as an indeterminate state (never "stub", never "ROM")', async () => {
+  for (const [name, opts] of [
+    ['esptool says stub, raw values say ROM', {syncVals: ROM, syncDetected: true}],
+    ['esptool says ROM, raw values all zero', {syncVals: ZEROS, syncDetected: false}],
+    ['mixed raw values (flapping session)', {syncVals: [1, 0, 1, 1, 0, 1, 1, 1], syncDetected: false}],
+    ['one zero among eight', {syncVals: [1, 1, 1, 1, 1, 1, 1, 0], syncDetected: false}],
+    ['the page claims a stub but the fresh sync looks like a ROM', {isStub: true, syncVals: ROM, syncDetected: false}],
+  ]) {
+    const {loader, error} = await admit(opts);
+    assert.equal(error.code, 'diagnostic_session_state_indeterminate', name);
+    assert.equal(error.sessionIndeterminate, false, name); assert.equal(chipWrites(loader).length, 0, name);
+    assert.equal(error.sessionState.sync_values.length, 8, name);
+  }
+});
+
+test('syncStubDetected is not an absolute proof: it cannot clear a stub nor condemn a ROM alone', async () => {
+  assert.equal((await admit({syncVals: ROM, syncDetected: true})).error.code, 'diagnostic_session_state_indeterminate');
+  assert.equal((await admit({syncVals: ZEROS, syncDetected: false})).error.code, 'diagnostic_session_state_indeterminate');
+});
+
+test('a communication error during the admission is its own refusal: nothing written, state unobservable, no retry', async () => {
+  for (const syncError of ['sync', 'command']) {
+    const {loader, error} = await admit({syncError});
+    assert.equal(error.code, 'diagnostic_admission_sync_failed', syncError);
+    assert.equal(error.sessionIndeterminate, false); assert.equal(chipWrites(loader).length, 0);
+    assert.equal(loader.calls.filter(c => c === 'sync').length, 1, 'no retry');
+  }
+});
+
+test('the optional independent MD5 probe: agreeing evidence passes, disagreeing evidence is indeterminate, never run by default', async () => {
+  const ascii = Uint8Array.from('0123456789abcdef0123456789abcdef', c => c.charCodeAt(0)), raw = new Uint8Array(16);
+  assert.equal((await admit({syncVals: ROM}, {md5Probe: async () => ascii})).error, null);
+  const stubAnswer = await admit({syncVals: ROM}, {md5Probe: async () => raw});
+  assert.equal(stubAnswer.error.code, 'diagnostic_session_state_indeterminate'); assert.equal(stubAnswer.error.sessionState.md5_shape, 'stub');
+  const romAnswerWhileZero = await admit({isStub: true, syncVals: ZEROS}, {md5Probe: async () => ascii});
+  assert.equal(romAnswerWhileZero.error.code, 'diagnostic_session_state_indeterminate');
+  const plain = await admit({syncVals: ROM});
+  assert.ok(!plain.loader.calls.some(c => Array.isArray(c) && c[0] === 'checkCommand' && c[1] !== IDLAB_GET_FLASH_TRACE));
 });
