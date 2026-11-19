@@ -77,7 +77,7 @@ def validate_command(name, args, device, artifacts):
     capacity = device['flash_size']
     if name == 'flash.read':
         reader = args.get('reader', 'reference')
-        require(isinstance(reader, str) and reader in {'reference', 'preallocated', 'packet-diagnostic'},
+        require(isinstance(reader, str) and reader in {'reference', 'preallocated', 'packet-diagnostic', 'md5-only'},
                 'invalid_flash_reader', 'Unknown flash reader')
         if reader == 'packet-diagnostic':
             require(type(args.get('packet_size')) is int and args['packet_size'] in {1024, 2048, 4096},
@@ -86,6 +86,9 @@ def validate_command(name, args, device, artifacts):
             require('packet_size' not in args,
                     'invalid_flash_packet_size', 'Packet size can only be set in diagnostic mode')
         region(args.get('address'), args.get('size'), capacity)
+        if reader == 'md5-only':
+            require(args['size'] <= 1024 * 1024, 'invalid_flash_md5_size',
+                    'MD5-only diagnostics are limited to 1 MiB per operation')
     if name == 'partitions':
         region(args.get('address', 0x8000), 0xc00, capacity)
     if name in PROGRAM:
