@@ -16,8 +16,8 @@ function refreshBrowserSession() {
 }
 // Authenticated WebSocket executor; it owns no UI and never replays a hardware operation.
 export class Agent {
-  constructor({ engine, device, token, scopedBrowserAgent = false, onState = () => {}, onLog = () => {}, onActivity = () => {}, socketFactory = url => new WebSocket(url), now = () => performance.now(), reconnect = typeof window !== "undefined", schedule = (fn, ms) => setTimeout(fn, ms), cancel = id => clearTimeout(id) }) {
-    Object.assign(this, { engine, device, token, scopedBrowserAgent, onState, onLog, onActivity, socketFactory, now, reconnect, schedule, cancel });
+  constructor({ engine, device, token, scopedBrowserAgent = false, onState = () => {}, onLog = () => {}, onActivity = () => {}, onTransfer = () => {}, socketFactory = url => new WebSocket(url), now = () => performance.now(), reconnect = typeof window !== "undefined", schedule = (fn, ms) => setTimeout(fn, ms), cancel = id => clearTimeout(id) }) {
+    Object.assign(this, { engine, device, token, scopedBrowserAgent, onState, onLog, onActivity, onTransfer, socketFactory, now, reconnect, schedule, cancel });
     this.seq = 0; this.seen = new Set(); this.grantUntil = 0; this.pending = null; this.revoked = new Set(); this.awaitingResult = null;
   }
   log(stage, detail = {}) { this.onLog({ at: Date.now(), device: this.device.id, stage, ...detail }); }
@@ -181,7 +181,9 @@ export class Agent {
       const publish = message => {
         const requiredHold = completion ? completion.hold || !live() : this.engine.hold || !live();
         this.awaitingResult = { id: op.id, generation, requiredHold,
-          returnConsole: completion?.returnConsole === true, live };
+          returnConsole: completion?.returnConsole === true, live,
+          command: op.command,
+          transfer: message.state === 'completed' && ['flash.read', 'flash.write'].includes(op.command) ? message.result?.transfer : null };
         this.engine.setHold(true);
         this.log('result', { id: op.id, command: op.command, state: message.state, code: message.error?.code, duration_ms: Math.round(this.now() - started), detail: message.error });
         this.send({ type: 'result', id: op.id, ...message, hold: requiredHold });
@@ -219,6 +221,12 @@ export class Agent {
         this.onState('Console return failed; operator recovery required');
       } finally {
         this.awaitingResult = null; this.send({ type: 'settled', device: this.device.id, generation: this.generation, id: m.id }); this.log('acknowledged', { id: m.id, state: m.state }); this.activity();
+        // Only report accepted, on-time transfers. A timed-out operation may
+        // produce late physical evidence, but its server verdict is not completed.
+        if (m.state === 'completed' && pending.transfer) {
+          try { this.onTransfer({ device: this.device.id, operationId: pending.id, command: pending.command, transfer: pending.transfer }); }
+          catch { /* UI diagnostics must never block the settled acknowledgement. */ }
+        }
         const offer = this.deferredOffer; this.deferredOffer = null;
         if (offer && this.generation) await this.message(offer);
       }
