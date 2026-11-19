@@ -86,7 +86,7 @@ test('automatic manual operations and independent API share exclusion across two
   const downloadPromise = page.waitForEvent('download');
   await page.locator('.operation-proof-action[aria-label="Sauvegarder la preuve JSON"]').click();
   const evidenceDownload = await downloadPromise;
-  assert.match(evidenceDownload.suggestedFilename(),/^idlab-board-.*-[a-zA-Z0-9_-]+\\.json$/);
+  assert.match(evidenceDownload.suggestedFilename(),/^idlab-board-.*-[a-zA-Z0-9_-]+\.json$/);
   const evidenceBytes = await readFile(await evidenceDownload.path());
   assert.deepEqual(JSON.parse(evidenceBytes.toString('utf8')),proof);
   await page.evaluate(()=>document.querySelector('#operations-body button[aria-expanded="true"]').click());
