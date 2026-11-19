@@ -63,15 +63,36 @@ test('automatic manual operations and independent API share exclusion across two
   });
   await selectRemoteDevice(page,'board');
   await page.waitForFunction(()=>document.querySelector('#operations-body').textContent.includes('completed'));
+  const previousResult = await page.textContent('#result');
   await page.evaluate(()=>document.querySelector('#operations-body button').click());
-  assert.equal(JSON.parse(await page.textContent('#result')).device,'board');
-  assert.equal(JSON.parse(await page.textContent('#result')).state,'completed');
+  assert.equal(await page.locator('#manual-result-panel').isVisible(),false,
+    'the legacy JSON panel must be hidden while inline Inspecter is open');
+  assert.equal(await page.textContent('#result'),previousResult,
+    'Inspecter must not rewrite the legacy manual result');
   assert.equal(await page.locator('#operations-body .operation-detail-row').count(),1);
-  assert.equal(JSON.parse(await page.locator('#operations-body .operation-detail-json').textContent()).state,'completed');
+  const proofText = await page.locator('#operations-body .operation-detail-json').textContent();
+  const proof = JSON.parse(proofText);
+  assert.equal(proof.state,'completed');
+  assert.equal(proof.device,'board');
   assert.equal(await page.locator('#operations-body button[aria-expanded="true"]').count(),1);
+  await page.evaluate(()=>{
+    Object.defineProperty(navigator, 'clipboard', { configurable:true, value:{
+      writeText:async text=>{window.__proofCopied=text;}
+    }});
+  });
+  await page.locator('.operation-proof-action[aria-label="Copier tout le JSON"]').click();
+  assert.equal(await page.evaluate(()=>window.__proofCopied),proofText);
+  assert.ok((await page.textContent('#client-state')).includes('copié'));
+  const downloadPromise = page.waitForEvent('download');
+  await page.locator('.operation-proof-action[aria-label="Sauvegarder la preuve JSON"]').click();
+  const evidenceDownload = await downloadPromise;
+  assert.match(evidenceDownload.suggestedFilename(),/^idlab-board-.*-[a-zA-Z0-9_-]+\\.json$/);
+  const evidenceBytes = await readFile(await evidenceDownload.path());
+  assert.deepEqual(JSON.parse(evidenceBytes.toString('utf8')),proof);
   await page.evaluate(()=>document.querySelector('#operations-body button[aria-expanded="true"]').click());
   assert.equal(await page.locator('#operations-body .operation-detail-row').count(),0);
   assert.equal(await page.locator('#operations-body button[aria-expanded="true"]').count(),0);
+  assert.equal(await page.locator('#manual-result-panel').isVisible(),true);
   await page.waitForFunction(async()=>{const r=await fetch('/api/v1/devices');return (await r.json()).devices.find(d=>d.id==='board').reservation===null;});
   await page.waitForFunction(()=>!document.querySelector('#devices').disabled);
   await selectRemoteDevice(page,'board-b');await page.click('[data-command="reset"]');
