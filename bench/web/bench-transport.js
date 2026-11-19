@@ -44,13 +44,16 @@ export function makeBenchTransport(Transport, ESPError, env = {}) {
         waiting_ms: 0, write_calls: 0, write_ms: 0,
         packet_interval: latencyStats(), ack_to_first_byte: latencyStats(),
         read_to_first_byte: latencyStats(), frame_receive: latencyStats(),
-        lastPacketAt: null, lastAckAt: null };
+        raw_chunk_interval: latencyStats(), ack_to_raw_chunk: latencyStats(),
+        raw_chunk_bytes: latencyStats(), raw_chunks: 0, raw_bytes: 0,
+        lastRawChunkAt: null, lastPacketAt: null, lastAckAt: null };
     }
     endFlashReadProfile() {
       const profile = this.flashReadProfile || null;
       this.flashReadProfile = null;
       if (!profile) return null;
       return { packets: profile.packets, payload_bytes: profile.payload_bytes,
+        raw_chunks: profile.raw_chunks, raw_bytes: profile.raw_bytes,
         read_ms: Math.round(profile.read_ms), waiting_ms: Math.round(profile.waiting_ms),
         write_calls: profile.write_calls, write_ms: Math.round(profile.write_ms),
         timing: {
@@ -58,9 +61,30 @@ export function makeBenchTransport(Transport, ESPError, env = {}) {
           ack_to_first_byte: profile.ack_to_first_byte,
           read_to_first_byte: profile.read_to_first_byte,
           frame_receive: profile.frame_receive,
+          raw_chunk_interval: profile.raw_chunk_interval,
+          ack_to_raw_chunk: profile.ack_to_raw_chunk,
+          raw_chunk_bytes: profile.raw_chunk_bytes,
         } };
     }
-    _arrived(n) { this._init(); this.stats.bytesIn += n; this._firstByteAt = this._firstByteAt ?? now(); }
+    _arrived(n) {
+      this._init(); this.stats.bytesIn += n; this._firstByteAt = this._firstByteAt ?? now();
+      // esptool-js readLoop() appends Web Serial chunks through the buffer
+      // setter. Our SLIP read() returns leftovers through _buf directly.
+      // Thus these timestamps precede the custom SLIP decoder, but they are
+      // still JS-observed events rather than timestamps from the USB wire.
+      const profile = this.flashReadProfile;
+      if (profile) {
+        const at = now();
+        profile.raw_chunks++;
+        profile.raw_bytes += n;
+        observeLatency(profile.raw_chunk_bytes, n);
+        if (profile.lastRawChunkAt !== null)
+          observeLatency(profile.raw_chunk_interval, at - profile.lastRawChunkAt);
+        if (profile.lastAckAt !== null)
+          observeLatency(profile.ack_to_raw_chunk, Math.max(0, at - profile.lastAckAt));
+        profile.lastRawChunkAt = at;
+      }
+    }
     _wake() { for (const w of [...this._waiters]) w(); }
     _take() { const b = this._buf || EMPTY; this._buf = EMPTY; return b; }
     flushInput() { this._buf = EMPTY; }
