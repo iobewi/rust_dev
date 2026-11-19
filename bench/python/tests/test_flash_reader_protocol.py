@@ -50,3 +50,19 @@ def test_standard_readers_refuse_packet_size_override(reader):
         args["reader"] = reader
     with pytest.raises(Fault):
         validate_command("flash.read", args, DEVICE, {})
+
+
+def test_md5_only_diagnostic_accepts_one_mib_read():
+    validate_command("flash.read",
+                     {"address": 0x8000, "size": 1024 * 1024,
+                      "reader": "md5-only"}, DEVICE, {})
+
+
+@pytest.mark.parametrize("args", [
+    {"address": 0x8000, "size": 1024 * 1024 + 1, "reader": "md5-only"},
+    {"address": 0x8000, "size": 1024, "reader": "md5-only", "packet_size": 4096},
+    {"address": 0x8000, "size": 1024, "reader": "md5-only", "packet_size": None},
+])
+def test_md5_only_diagnostic_refuses_oversize_and_packet_overrides(args):
+    with pytest.raises(Fault):
+        validate_command("flash.read", args, DEVICE, {})
