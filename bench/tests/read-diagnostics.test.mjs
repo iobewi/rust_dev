@@ -97,3 +97,59 @@ test('artifact capacity HTTP status survives the diagnostic and visible journal'
   });
  } finally {globalThis.fetch=original;}
 });
+
+
+test('flash read profiler aggregates per-block timings without changing read commands or artifacts', async () => {
+ const MiB = 1024 * 1024, calls = [];
+ const x = setup(async (address, size, progress) => {
+  calls.push({ address, size });
+  progress(new Uint8Array(size), size, size);
+  return new Uint8Array(size);
+ });
+ let begun = 0, ended = 0;
+ x.engine.transport = {
+  beginFlashReadProfile() { begun++; },
+  endFlashReadProfile() {
+   ended++;
+   return { packets: 256, payload_bytes: MiB, read_ms: 100, waiting_ms: 70, write_calls: 257, write_ms: 12 };
+  },
+ };
+ const result = await x.engine.execute('flash.read', { address: 0, size: 2 * MiB, return_console: false }, x.context);
+ assert.equal(result.artifact.size, 2 * MiB);
+ assert.deepEqual(calls, [{address: 0,size: MiB},{address: MiB,size: MiB}]);
+ assert.equal(begun,2); assert.equal(ended,2);
+ assert.equal(result.transfer.profile.blocks,2);
+ assert.equal(result.transfer.profile.packets,512);
+ assert.equal(result.transfer.profile.payload_bytes,2 * MiB);
+ assert.equal(result.transfer.profile.read_ms,200);
+ assert.equal(result.transfer.profile.waiting_ms,140);
+ assert.equal(result.transfer.profile.write_calls,514);
+ assert.equal(result.transfer.profile.write_ms,24);
+ assert.equal(x.reports.at(-1).flash_read_profile.blocks,2);
+});
+
+test('flash read profiler ends on error and cannot create a partial artifact', async () => {
+ const x = setup(async()=>{throw new Error('read rejected');});
+ let begin=0, end=0;
+ x.engine.transport={beginFlashReadProfile(){begin++;},endFlashReadProfile(){end++;return null;}};
+ await assert.rejects(x.engine.execute('flash.read',{address:0,size:4096,return_console:false},x.context));
+ assert.equal(begin,1);assert.equal(end,1);assert.equal(x.uploaded(),0);
+});
+
+test('transport profiler counts SLIP payloads and ACK writes without changing bytes', async () => {
+ const {BenchTransport}=makeBenchTransport(FakeTransport,ESPError);
+ const written=[], device={writable:{getWriter(){return {write:async bytes=>written.push(bytes),releaseLock(){}};}}};
+ const tr = new BenchTransport(device);
+ tr.beginFlashReadProfile();
+ const payload=Uint8Array.from([1,2,3,4,0xc0,0xdb]);
+ tr.buffer=FakeTransport.frame(payload);
+ assert.deepEqual(await tr.read(100),payload);
+ tr.slipWriter=bytes=>FakeTransport.frame(bytes);
+ await tr.write(new Uint8Array([4,0,0,0]));
+ const metrics=tr.endFlashReadProfile();
+ assert.equal(metrics.packets,1);
+ assert.equal(metrics.payload_bytes,payload.length);
+ assert.equal(metrics.write_calls,1);
+ assert.deepEqual(written,[FakeTransport.frame(new Uint8Array([4,0,0,0]))]);
+ assert.equal(tr.endFlashReadProfile(),null);
+});
