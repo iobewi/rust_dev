@@ -260,5 +260,9 @@ tailles des paquets, ni les délais d'expiration, ni les essais de récupératio
 Recette recommandée : relever deux fois 4 Kio au même offset et comparer les SHA-256 ;
 puis 1 Mio, puis 4 Mio **uniquement si les deux lectures courtes sont identiques**.
 Toujours noter VID/PID, état du stub et SHA du code effectivement servi par le serveur.
-Aucun benchmark avec `esptool.py` ne doit être exécuté sur le même port tant que Web
-Serial le détient ; fermer la connexion et requalifier l'état avant toute comparaison.
+Les comparaisons d'implémentations doivent rester dans l'architecture entièrement distante :
+le navigateur détient exclusivement le port Web Serial, les opérations sont déclenchées
+par l'API IDLab et les variantes de lecture sont exécutées par l'agent navigateur.
+Ne pas ajouter de dépendance à un outil Python local ni transférer la possession USB.
+Comparer uniquement des variantes JavaScript explicitement qualifiées ; ne pas
+assimiler un changement du protocole de lecture à une simple optimisation.
