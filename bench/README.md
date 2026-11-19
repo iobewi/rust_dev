@@ -225,3 +225,40 @@ reste à exécuter explicitement sur chaque transport disponible.
 - [Couverture et validation matérielle restante](docs/coverage.md)
 - [Recettes pytest et client Python](docs/pytest.md) · [Méthode de qualification](docs/qualification-workflow.md) · [Démarrage d'une session Claude](docs/session-startup.md)
 - [Exemple de client Python asynchrone](examples/client.py)
+
+
+### Diagnostic du débit de lecture flash (PR #67)
+
+La réponse d'une opération manuelle `flash.read` expose `result.transfer.profile`, consultable dans
+**Opérations → Historique des opérations → Inspecter**. Le détail s'ouvre directement sous
+la ligne. `result.transfer.bytes_per_second` mesure le débit **utile** des octets lus en flash,
+pas le débit physique USB. Le profilage est passif : il ne change ni les ACK, ni les
+tailles des paquets, ni les délais d'expiration, ni les essais de récupération.
+
+- `read_ms` et `waiting_ms` se chevauchent : ne pas les additionner.
+- `timing.packet_interval` : intervalle entre les premiers octets de deux trames SLIP
+  successives observées par le navigateur, réponse initiale comprise.
+- `timing.ack_to_first_byte` : délai depuis **la fin d'un `write()` Web Serial de l'ACK
+  cumulatif (4 octets)** jusqu'à l'observation du premier octet de la trame suivante.
+  Ce n'est ni la mesure d'un acquittement reçu physiquement par l'ESP ni celle de la
+  seule latence du contrôleur USB.
+- `timing.read_to_first_byte` : délai de l'appel `read()` à sa première donnée.
+- `timing.frame_receive` : délai du premier octet à la trame SLIP entièrement décodée.
+- Chaque distribution contient `count`, `mean_ms`, `min_ms`, `max_ms`,
+  `p50_bucket_ms`, `p95_bucket_ms` et `histogram_ms` ; les percentiles indiquent
+  **la tranche** (par exemple `≤120`), pas une valeur au milliseconde près.
+  Les tranches sont `≤5`, `≤20`, `≤50`, `≤80`, `≤120`, `≤200`, `≤500`, `>500` ms.
+- Les mesures concernent **les instants où le JavaScript traite les données**.
+  Une trame déjà présente dans le tampon ou le throttling du navigateur peut influencer
+  les résultats. Elles ne remplacent pas une capture USB matérielle.
+- `packet_interval.count` peut être inférieur à `packets` : le premier paquet
+  n'a pas d'intervalle antérieur ; `ack_to_first_byte.count` exclut les trames qui
+  n'ont pas d'ACK antérieur mesurable.
+- Les histogrammes sont agrégés entre les blocs successifs de 1 Mio. Ils ne stockent
+  ni contenu flash, ni horodatages par paquet, et leur taille reste fixe.
+
+Recette recommandée : relever deux fois 4 Kio au même offset et comparer les SHA-256 ;
+puis 1 Mio, puis 4 Mio **uniquement si les deux lectures courtes sont identiques**.
+Toujours noter VID/PID, état du stub et SHA du code effectivement servi par le serveur.
+Aucun benchmark avec `esptool.py` ne doit être exécuté sur le même port tant que Web
+Serial le détient ; fermer la connexion et requalifier l'état avant toute comparaison.
