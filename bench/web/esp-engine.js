@@ -2,6 +2,7 @@ import { effectiveLoaderBaud, flashTransfer } from './loader-settings.js';
 // Hardware only: no DOM, REST, project readiness rules or verdicts.
 import { HardwareError, hardwareError } from './hardware-errors.js';
 import { makeBenchTransport } from './bench-transport.js';
+import { readFlashPreallocated } from './flash-read-preallocated.js';
 import { latencyStats, mergeLatency, summarizeLatency } from './flash-read-latency.js';
 import { runWrite, Tracer } from './flash-op.js';
 import { b64, unb64, family, region, validateImages, partitions, sha256 } from './protocol.js';
@@ -42,7 +43,7 @@ export class EspEngine {
       ...(this.flashReadProfile ? { flash_read_profile: readProfileSnapshot(this.flashReadProfile) } : {}), ...this.lastRead };
   }
   setPhase(phase, context) { this.phase = phase; context.report?.(this.diagnostics()); }
-  async readFlash(loader, address, size, context) {
+  async readFlash(loader, address, size, context, reader = 'reference') {
     const startedAt = performance.now(); this.lastFlashTransfer = null;
     this.flashReadProfile = { blocks: 0, elapsed_ms: 0, packets: 0, payload_bytes: 0,
       read_ms: 0, waiting_ms: 0, write_calls: 0, write_ms: 0,
@@ -63,7 +64,9 @@ export class EspEngine {
       this.transport?.beginFlashReadProfile?.();
       let block;
       try {
-        block = await loader.readFlash(address + offset, blockSize, (_packet, received) => {
+        const read = reader === 'preallocated' ? (a, b, callback) => readFlashPreallocated(loader, a, b, callback)
+          : (a, b, callback) => loader.readFlash(a, b, callback);
+        block = await read(address + offset, blockSize, (_packet, received) => {
         check();
         if (Number.isSafeInteger(received) && received >= 0 && received <= blockSize) this.readProgress.received_bytes = offset + received;
         if (this.readProgress.received_bytes >= nextReport) {
@@ -84,7 +87,7 @@ export class EspEngine {
       data.set(block, offset); this.readProgress.received_bytes = offset + blockSize;
       context.report?.(this.diagnostics()); check();
     }
-    this.lastFlashTransfer = { ...flashTransfer(size, performance.now() - startedAt), profile: readProfileSnapshot(this.flashReadProfile) };
+    this.lastFlashTransfer = { ...flashTransfer(size, performance.now() - startedAt), reader, profile: readProfileSnapshot(this.flashReadProfile) };
     return data;
   }
   setHold(value) { this.hold = value; this.persistHold(value); }
@@ -341,9 +344,11 @@ export class EspEngine {
         try { result = { partitions: partitions(bytes, physical.flash_size) }; if (!result.partitions.length) throw new Error('Empty table'); }
         catch { throw new HardwareError('partition_table_invalid'); }
       } else if (command === 'flash.read') {
+        const reader = args.reader ?? 'reference';
+        if (!['reference', 'preallocated'].includes(reader)) throw new HardwareError('flash_reader_invalid');
         region(args.address, args.size, physical.flash_size);
         this.setPhase('flash_read', context);
-        const data = await this.readFlash(l, args.address, args.size, context);
+        const data = await this.readFlash(l, args.address, args.size, context, reader);
         this.setPhase('artifact_upload', context);
         result = { artifact: await context.upload(data), address: args.address, transfer: this.lastFlashTransfer };
       } else if (command === 'flash.write') {
