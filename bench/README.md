@@ -324,3 +324,41 @@ l'icône de sauvegarde et vérifier surtout `timing.raw_chunk_interval` :
 Ne pas conclure à une corrélation causale ACK → envoi : l'ACK peut être en
 concurrence avec d'autres paquets permis par la fenêtre. Cette mesure ne
 change aucun réglage USB, ACK ou commande flash.
+
+
+### Diagnostic C — taille des paquets de lecture (1 / 2 / 4 Kio)
+
+Dans **Opérations → Lecture mémoire**, choisir **C — diagnostic taille de paquet**
+puis **Taille de paquet** : **1 Kio**, **2 Kio** ou **4 Kio** (valeur initiale
+4 Kio). Le bouton habituel **Lire la flash** reste le seul déclencheur ;
+aucun appel API manuel, outil local ou changement de propriétaire Web Serial.
+
+Le moteur utilise le même `ESP_READ_FLASH`, le même stub actuellement chargé,
+la même valeur déclarée de fenêtre `1024` et le même ACK cumulatif de 4 octets
+que le mode B. **Seul le champ `packet_size` de la commande change** ; aucun
+stub n'est remplacé ou programmé. A et B restent fixés à 4 Kio. Le serveur
+refuse `packet_size` hors C et toutes les tailles autres que 1024, 2048, 4096.
+
+Le résultat d'`Inspecter` contient `result.transfer.reader =
+"packet-diagnostic"` et `result.transfer.packet_size`, ainsi que
+`bytes_per_second`, les compteurs et histogrammes. L'artefact n'est
+publié que si l'intégralité des octets a été lue et le SHA-256 du fichier
+peut être comparé à celui de la lecture A au même offset.
+
+**Recette opérateur recommandée (séquentielle, non automatique) :**
+choisir une région stable à **offset `0x8000`, taille `0x100000`**
+et lire dans l'ordre A (4 Kio), C (4 Kio), C (2 Kio),
+C (1 Kio), puis A (4 Kio). Sauvegarder chaque JSON via
+**Historique des opérations → Inspecter → Sauvegarder**.
+Vérifier les cinq SHA-256 identiques, les tailles annoncées
+et comparer `elapsed_ms`, `packet_interval` et
+`raw_chunk_interval`. En cas de lecture incomplète ou de perte
+USB, **ne pas relancer automatiquement**, conserver la preuve d'échec
+et arrêter la campagne. Prévoir l'espace d'artefacts temporaire
+(5 lectures de 1 Mio).
+
+Une variation proportionnelle du débit avec la taille de paquet serait
+compatible avec un coût fixe par ACK/transaction. Un débit stable
+à toutes tailles orienterait vers un coût lié au volume transmis.
+Les deux résultats nécessitent encore une investigation du stub et
+du chemin USB : ils ne constituent pas une mesure sur le bus physique.
