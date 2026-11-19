@@ -585,7 +585,7 @@ function renderState() {
   $('rdid-info').textContent = local && localDevice.flash_id != null ? hex(localDevice.flash_id) : '—';
   $('interface-info').textContent = local ? engine?.usbSerialJtag ? 'USB Serial/JTAG' : engine?.native ? 'USB natif (OTG ou non identifié)' : engine?.provenance().transport === 'external_uart' ? 'UART externe' : 'Port série non identifié' : 'Agent du banc';
   $('loader-speed-info').textContent = local && engine ? engine.native ?
-    'USB direct · 115 200 nominal (sans UART)' :
+    'USB direct · débit UART sans objet' :
     `${effectiveLoaderBaud(false, engine.loaderBaud, engine.flashBaud).toLocaleString('fr-FR')} bauds UART` : '—';
   $('console-speed-info').textContent = local && engine ? engine.native ?
     'USB direct · sans débit UART physique' : `${engine.baudrate.toLocaleString('fr-FR')} bauds UART` : '—';
@@ -706,7 +706,10 @@ async function addCard(id) {
     $('devices').value = id;
     boards.select(id);
     $('devices').onchange?.();
-    feedback('Carte connectée. Les autres ports restent actifs.');
+    const nativeUSB = port.getInfo()?.usbVendorId === 0x303a;
+    feedback(nativeUSB && loaderBaud !== null
+      ? 'Carte connectée en USB natif : le débit UART sélectionné est sans effet sur ce transport.'
+      : 'Carte connectée. Les autres ports restent actifs.');
     await refreshDevices(false);
   } finally { usbBusy = false; renderActiveCards(); renderState(); }
 }
