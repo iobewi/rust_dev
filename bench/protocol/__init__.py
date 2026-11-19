@@ -64,7 +64,7 @@ def validate_command(name, args, device, artifacts):
     require(isinstance(args, dict))
     schemas = {
         'identify': set(), 'reset': set(), 'console': {'return_console'},
-        'partitions': {'address', 'return_console'}, 'flash.read': {'address', 'size', 'return_console'},
+        'partitions': {'address', 'return_console'}, 'flash.read': {'address', 'size', 'return_console', 'reader'},
         'flash.write': {'images', 'chip', 'erase', 'return_console'}, 'flash.erase': {'chip', 'return_console'},
         'uart.write': {'data'}, 'uart.configure': {'baudrate'}, 'io0': {'duration_ms'}, 'boot.download': {'hold_ms'},
         'http.request': {'url', 'method', 'body', 'timeout_ms'},
@@ -76,6 +76,8 @@ def validate_command(name, args, device, artifacts):
             require(type(args[key]) is bool)
     capacity = device['flash_size']
     if name == 'flash.read':
+        require(args.get('reader', 'reference') in {'reference', 'preallocated'},
+                'invalid_flash_reader', 'Unknown flash reader')
         region(args.get('address'), args.get('size'), capacity)
     if name == 'partitions':
         region(args.get('address', 0x8000), 0xc00, capacity)
