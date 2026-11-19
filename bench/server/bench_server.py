@@ -428,7 +428,8 @@ if __name__ == '__main__':
     config = json.loads(Path(path).read_text())
     state_dir = os.environ.get('BENCH_STATE_DIR', str(Path.home() / '.local/state/iobewi-bench'))
     try:
-        broker = Broker(state_dir=state_dir, lock_timeout=float(os.environ.get('BENCH_LOCK_TIMEOUT', '0')))
+        allow = [x.strip().lower() for x in os.environ.get('BENCH_P4_STUB_SHA256S', '').split(',') if x.strip()]   # empty = diagnostic disabled
+        broker = Broker(state_dir=state_dir, lock_timeout=float(os.environ.get('BENCH_LOCK_TIMEOUT', '0')), p4_stub_allowlist=allow)
     except (BlockingIOError, ValueError) as error:
         sys.exit(str(error))
     try:

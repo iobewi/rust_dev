@@ -36,8 +36,9 @@ def checkpoint(method):
 
 
 class Broker:
-    def __init__(self, clock=time.monotonic, max_events=2048, state_dir=None, lock_timeout=0):
+    def __init__(self, clock=time.monotonic, max_events=2048, state_dir=None, lock_timeout=0, p4_stub_allowlist=()):
         self.clock, self.max_events = clock, max_events
+        self.p4_stub_allowlist = frozenset(p4_stub_allowlist)
         self.agents, self.devices, self.leases, self.operations, self.artifacts = {}, {}, {}, {}, {}
         self.artifact_bytes = 0
         self.upload_reserved = 0
@@ -312,7 +313,7 @@ class Broker:
             require(not any(o['device'] == d['id'] and (o['state'] in {'queued', 'offered', 'running'} or o['unsettled'])
                             for o in self.operations.values()), 'device_busy', 'Another operation is pending on this board', 409)
         require('control' in scopes, 'forbidden', 'Control permission required', 403)
-        validate_command(name, args, d, self.artifacts)
+        validate_command(name, args, d, self.artifacts, self.p4_stub_allowlist)
         local_control = local_agent is not None and local_agent == d['agent']
         if trigger_disarm(name, args) and not local_control:
             require(d.get('trigger_lease') == lease['id'], 'trigger_not_owned',
@@ -484,6 +485,10 @@ class Broker:
             d['quarantined'] = True
             self.event(d['id'], 'quarantined', {})
         elif kind == 'recover':
+            # Operator confirmation is not proof: after the diagnostic the agent must have observed a ROM session
+            # (no stub running) itself. Without that proof the board stays quarantined and resident.
+            require(not d.get('diagnostic_resident') or message.get('rom_verified') is True,
+                    'rom_proof_required', 'Put the board in ROM mode: the agent must verify the diagnostic stub is gone', 409)
             require(not any(o['device'] == d['id'] and o['unsettled'] for o in self.operations.values()),
                     'still_running', 'Hardware execution is still unsettled', 409)
             d['quarantined'] = False

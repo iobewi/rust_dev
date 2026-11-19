@@ -132,6 +132,11 @@ Fréquence CPU : **200 MHz** d'après le code du stub (`stub_target_clock_init`,
 
 **Décision sur la session ROM.** esptool-js charge le stub standard dès `main()` : une session ordinaire d'IDLab n'est donc jamais une session ROM. Le diagnostic ouvre sa propre session (`detectChip` seul) et exige que l'opérateur ait mis la carte en mode ROM (BOOT + reset, entrée manuelle activée) ; si le stub standard tourne encore, le chargeur refuse avant toute écriture (`diagnostic_stub_requires_a_rom_session`) et rien n'est retenu. Aucun reset n'est jamais fait par IDLab.
 
+**Corrections issues de la revue indépendante (commit suivant `2be8062`).**
+1. *MD5* : le lecteur recalcule le MD5 des octets reçus et le compare à celui du stub ; divergence = `idlab_trace_md5_mismatch`, session indéterminée (test de corruption avec trames valides).
+2. *Retour en ROM* : `recover` est refusé (`rom_proof_required`) tant que la carte est `diagnostic_resident` sans `rom_verified: true`. L'agent produit cette preuve lui-même (`verifyRomReturn` : synchronisation ROM seule, sans reset ni écriture, stub absent, puce P4) ; le geste de l'opérateur (BOOT + reset) reste nécessaire mais ne suffit plus. Le mécanisme `recover` existant est réutilisé, pas dupliqué. La confiance dans la preuve repose sur l'agent, propriétaire de l'USB.
+3. *Liste d'empreintes qualifiées* : le serveur n'exécute que les SHA-256 de `BENCH_P4_STUB_SHA256S` (liste vide = fonction désactivée, échec fermé, `diagnostic_stub_not_qualified`) ; la validation structurelle du JSON reste appliquée en plus. L'agent ne reçoit pas cette liste : il fait confiance au serveur pour la politique et vérifie l'empreinte elle-même.
+
 **Reste non fait ou non prouvé.** Aucun test navigateur de bout en bout (Playwright absent : seuls des contrôles statiques de balisage ont été écrits) ; aucun essai sur matériel ; la durée de `detectChip` en `no_reset` sur la vraie ROM du P4 et le comportement réel de la ROM face aux commandes RAM ne sont **pas** démontrés ; après rechargement de la page, le moteur ne se souvient pas que le stub est résident (le serveur, lui, le sait et refuse tout) ; l'intégration dans la PR #68 n'est pas faite (voir le rapport).
 
 ## 7. Tests exécutés

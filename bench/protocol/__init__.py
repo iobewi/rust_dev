@@ -102,7 +102,7 @@ def validate_p4_stub_json(data):
     require(stub['text_start'] <= stub['entry'] < stub['text_start'] + len(text), 'diagnostic_stub_invalid', 'Entry outside text')
 
 
-def validate_p4_usb_trace(args, device, artifacts):
+def validate_p4_usb_trace(args, device, artifacts, allowlist=frozenset()):
     require(device['chip'] == P4_TRACE_CHIP, 'diagnostic_chip_unsupported', 'Only the ESP32-P4 is supported')
     require((device.get('provenance') or {}).get('transport') == 'native_usb_other', 'diagnostic_transport_unsupported',
             'The diagnostic needs the native USB OTG port')
@@ -117,6 +117,8 @@ def validate_p4_usb_trace(args, device, artifacts):
     artifact = artifacts.get(key) if isinstance(key, str) else None
     require(artifact is not None, 'artifact_missing', 'Upload the diagnostic stub first')
     require(artifact['sha256'] == sha, 'digest_mismatch', 'SHA-256 mismatch')
+    # Fail closed: only a stub whose SHA-256 the qualification configuration lists may ever be executed.
+    require(sha in allowlist, 'diagnostic_stub_not_qualified', 'This stub SHA-256 is not in the qualified list', 403)
     require(1 <= artifact['size'] <= P4_STUB_MAX, 'diagnostic_stub_invalid', 'Unexpected stub size')
     validate_p4_stub_json(artifact['data'])
     require(strict_equal(args.get('consent'), p4_trace_consent(device['id'], sha)), 'diagnostic_consent_invalid',
@@ -129,7 +131,7 @@ def region(address, size, capacity):
     require(address + size <= capacity, 'flash_bounds', 'Region exceeds flash capacity')
 
 
-def validate_command(name, args, device, artifacts):
+def validate_command(name, args, device, artifacts, p4_stub_allowlist=frozenset()):
     require(name in CAPABILITIES and name in device['capabilities'], 'unsupported', 'Unsupported command')
     require(isinstance(args, dict))
     schemas = {
@@ -166,7 +168,7 @@ def validate_command(name, args, device, artifacts):
         require(isinstance(args.get('chip'), str) and args['chip'] == device['chip'],
                 'chip_mismatch', 'Expected chip family must match the device')
     if name == P4_TRACE:
-        validate_p4_usb_trace(args, device, artifacts)
+        validate_p4_usb_trace(args, device, artifacts, p4_stub_allowlist)
     if name == 'flash.write':
         images = args.get('images')
         require(isinstance(images, list) and 1 <= len(images) <= 16)

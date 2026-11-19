@@ -26,7 +26,7 @@ def stub_json(**over):
 class P4TraceTests(unittest.TestCase):
     def setUp(self):
         self.now = 100.
-        self.b = Broker(clock=lambda: self.now, max_events=50)
+        self.b = Broker(clock=lambda: self.now, max_events=50, p4_stub_allowlist=[hashlib.sha256(stub_json()).hexdigest()])
         self.b.agent('agent', object())
         self.generation = self.register('p4', 'esp32p4', 'native_usb_other')
         self.b.agent('agent2', object())
@@ -115,6 +115,7 @@ class P4TraceTests(unittest.TestCase):
         for name, data in cases.items():
             artifact = self.b.artifact(data, hashlib.sha256(data).hexdigest(), 'alice')
             sha = artifact['sha256']
+            self.b.p4_stub_allowlist |= {sha}   # qualified by hash, yet still structurally validated (defense in depth)
             with self.subTest(name):
                 self.refused('diagnostic_stub_invalid', args=self.args(stub_artifact=artifact['id'], stub_sha256=sha,
                              consent=p4_trace_consent('p4', sha)))
@@ -122,6 +123,7 @@ class P4TraceTests(unittest.TestCase):
     def test_an_oversized_stub_is_refused(self):
         data = stub_json(text=base64.b64encode(bytes(70000)).decode())
         artifact = self.b.artifact(data, hashlib.sha256(data).hexdigest(), 'alice')
+        self.b.p4_stub_allowlist |= {artifact['sha256']}
         self.refused('diagnostic_stub_invalid', args=self.args(stub_artifact=artifact['id'], stub_sha256=artifact['sha256'],
                      consent=p4_trace_consent('p4', artifact['sha256'])))
 
@@ -240,11 +242,30 @@ class P4TraceTests(unittest.TestCase):
         self.assertEqual(self.b.operations[read['id']]['state'], 'cancelled')
         self.assertEqual(self.b.operations[read['id']]['error'], {'code': 'device_quarantined'})
 
+    def test_a_stub_outside_the_qualified_list_is_refused_and_an_empty_list_disables_the_feature(self):
+        other = stub_json(entry=0x4ff50020)
+        art = self.b.artifact(other, hashlib.sha256(other).hexdigest(), 'alice')
+        self.refused('diagnostic_stub_not_qualified', args=self.args(stub_artifact=art['id'], stub_sha256=art['sha256'],
+                     consent=p4_trace_consent('p4', art['sha256'])))
+        self.b.p4_stub_allowlist = frozenset()
+        self.refused('diagnostic_stub_not_qualified')
+
+    def test_recovery_of_a_non_diagnostic_quarantine_is_unchanged(self):
+        self.b.devices['p4']['quarantined'] = True
+        self.b.agent_event('agent', {'type': 'recover', 'device': 'p4', 'generation': self.generation})
+        self.assertFalse(self.b.devices['p4']['quarantined'])
+
     def test_the_operator_local_recovery_is_the_only_way_back(self):
         op = self.start()
         self.b.finish('agent', {'id': op['id'], 'state': 'completed', 'result': {}})
         self.b.agent_event('agent', {'type': 'settled', 'device': 'p4', 'generation': self.generation, 'id': op['id']})
-        self.b.agent_event('agent', {'type': 'recover', 'device': 'p4', 'generation': self.generation})
+        with self.assertRaises(Fault) as context:   # the operator's word alone is not proof of a ROM return
+            self.b.agent_event('agent', {'type': 'recover', 'device': 'p4', 'generation': self.generation})
+        self.assertEqual(context.exception.code, 'rom_proof_required')
+        self.assertTrue(self.b.devices['p4']['quarantined'] and self.b.devices['p4']['diagnostic_resident'])
+        with self.assertRaises(Fault):
+            self.b.agent_event('agent', {'type': 'recover', 'device': 'p4', 'generation': self.generation, 'rom_verified': 'true'})
+        self.b.agent_event('agent', {'type': 'recover', 'device': 'p4', 'generation': self.generation, 'rom_verified': True})
         d = self.b.devices['p4']
         self.assertFalse(d['quarantined']); self.assertFalse(d['diagnostic_resident'])
         read = self.b.submit('alice', ['read', 'control'], {'lease': self.lease['id'], 'command': 'flash.read',

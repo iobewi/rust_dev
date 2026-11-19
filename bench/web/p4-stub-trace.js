@@ -8,6 +8,7 @@ const REPORT_SIZE = 64;
 const MAX_SIZE = 1024 * 1024;
 const PACKET_SIZE = 4096;
 const TIMEOUT_MS = 120000;
+import {md5hex} from './md5.js';
 const CYCLE_KEYS = ['flash_cycles', 'md5_cycles', 'send_cycles', 'ack_cycles', 'fill_cycles'];
 
 // Error raised by the trace. `sessionIndeterminate` is true once the bulk stream started: the stub
@@ -125,6 +126,9 @@ export async function readFlashWithP4StubTrace(loader, address, size, onPacket =
     const md5Bytes = await loader.transport.read(TIMEOUT_MS);
     if (!(md5Bytes instanceof Uint8Array) || md5Bytes.length !== 16)
       throw streaming('idlab_trace_missing_md5_frame');
+    const announced = [...md5Bytes].map(b => b.toString(16).padStart(2,'0')).join('');
+    // The stub's MD5 covers the flash bytes it read; ours covers the bytes we received: a corruption between them is caught here.
+    if (md5hex(data) !== announced) throw streaming('idlab_trace_md5_mismatch');
     const metrics = decodeTraceReport(await loader.checkCommand(
       'IDLab trace counters', IDLAB_GET_FLASH_TRACE, new Uint8Array(0),
       undefined, REPORT_SIZE, 3000));
@@ -132,7 +136,7 @@ export async function readFlashWithP4StubTrace(loader, address, size, onPacket =
       throw streaming('idlab_trace_counter_mismatch');
     return {
       data, trace: metrics,
-      md5: [...md5Bytes].map(b => b.toString(16).padStart(2,'0')).join(''),
+      md5: announced, md5_verified: true,
       cycle_unit: 'cpu_cycles', clock_hz: null,
     };
   } catch (error) {

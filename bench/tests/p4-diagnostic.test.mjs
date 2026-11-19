@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 import { EspEngine } from '../web/esp-engine.js';
 import { P4_TRACE, P4_FIXED, expectedConsent, validateDiagnosticArgs, runP4UsbTrace } from '../web/p4-diagnostic.js';
 import { sha256 } from '../web/protocol.js';
+import { md5hex } from '../web/md5.js';
 import { IDLAB_GET_FLASH_TRACE, IDLAB_READ_FLASH_TRACE } from '../web/p4-stub-trace.js';
 import { FORBIDDEN_FLASH_METHODS } from '../web/p4-stub-loader.js';
 
@@ -24,6 +25,10 @@ function trace(packets = 256, over = {}) {
 }
 
 /** A simulated ESP32-P4 behind an esptool-js-like loader. `fault` selects where the scenario breaks. */
+const fill = n => new Uint8Array(4096).fill(n & 255);
+const all = () => { const x = new Uint8Array(256 * 4096); for (let i = 1; i <= 256; i++) x.set(fill(i), (i - 1) * 4096); return x; };
+const MD5_ALL = md5hex(all());
+
 function simP4({ fault = null, chip = 'ESP32-P4', revision = 302, isStub = false } = {}) {
   const calls = [];
   let reads = 0;
@@ -49,7 +54,9 @@ function simP4({ fault = null, chip = 'ESP32-P4', revision = 302, isStub = false
       reads += 1;
       if (fault === 'read_interrupted' && reads === 40) throw new Error('usb disconnected');
       if (fault === 'bad_md5' && reads === 257) return new Uint8Array(3);
-      return reads <= 256 ? new Uint8Array(4096).fill(reads & 255) : new Uint8Array(16).fill(0xab);
+      if (fault === 'corrupt_data' && reads === 10) { const c = fill(reads); c[5] ^= 1; return c; }
+      if (reads <= 256) return fill(reads);
+      return Uint8Array.from(md5hex(all()).match(/../g), h => parseInt(h, 16));
     }, async write() { calls.push(['ack']); } },
   };
   for (const name of FORBIDDEN_FLASH_METHODS) loader[name] = async () => { calls.push(['FORBIDDEN', name]); throw new Error(name); };
@@ -92,7 +99,7 @@ test('nominal run: RAM load, 256 packets with cumulative ACKs, MD5, IDT1, raw cy
   const loader = simP4(), steps = [];
   const { result } = await runP4UsbTrace({ loader, args: clean(goodArgs()), device, stubBytes, report: d => steps.push(d.phase) });
   assert.equal(result.packets, 256); assert.equal(result.acks, 256); assert.equal(result.bytes, 1048576);
-  assert.equal(result.md5, 'ab'.repeat(16)); assert.match(result.data_sha256, /^[0-9a-f]{64}$/);
+  assert.equal(result.md5, MD5_ALL); assert.match(result.data_sha256, /^[0-9a-f]{64}$/);
   assert.equal(result.trace.flash_cycles, '100000'); assert.equal(result.converted.cycles.fill_cycles, '3000000');
   assert.equal(result.cpu_hz.basis, 'assumed_from_stub_code_not_measured'); assert.equal(result.cpu_hz.value, 200000000);
   assert.equal(result.converted.microseconds.send_without_fill, (4000000 - 3000000) / 200);   // fill is inside send
@@ -112,7 +119,7 @@ test('loader refusals before any write are not indeterminate: wrong chip, old re
 });
 
 test('failures after the first RAM write are indeterminate and never retried', async () => {
-  for (const fault of ['memBegin', 'load_truncated', 'probe_rejected', 'read_interrupted', 'bad_md5', 'bad_counters', 'bad_idt1']) {
+  for (const fault of ['memBegin', 'load_truncated', 'probe_rejected', 'read_interrupted', 'bad_md5', 'corrupt_data', 'bad_counters', 'bad_idt1']) {
     const loader = simP4({ fault });
     await assert.rejects(runP4UsbTrace({ loader, args: clean(goodArgs()), device, stubBytes }), e => e.indeterminate === true, fault);
     assert.ok(loader.calls.filter(c => c[0] === 'memBegin').length <= 2, 'no retry (one text + one data segment): ' + fault);
@@ -151,7 +158,7 @@ test('the capability exists only for a native USB OTG P4 with the operator-confi
 test('engine nominal: hold raised before the first write, resident, console never reopened, only mark accepted afterwards', async () => {
   const loader = simP4(), x = await engineWith(loader);
   const result = await x.engine.execute(P4_TRACE, clean(goodArgs()), x.context);
-  assert.equal(result.md5, 'ab'.repeat(16));
+  assert.equal(result.md5, MD5_ALL);
   assert.equal(x.engine.hold, true); assert.equal(x.engine.diagnosticResident, true);
   assert.equal(x.holds[0], true); assert.deepEqual(x.completion(), { hold: true, returnConsole: false });
   assert.equal(x.consoleOpens(), 0);
@@ -184,7 +191,7 @@ test('a standard stub still running (operator did not enter ROM mode) is refused
 });
 
 test('interruption during load or read: indeterminate, hold kept, resident, no reset, no console, no retry', async () => {
-  for (const fault of ['load_truncated', 'read_interrupted', 'bad_md5']) {
+  for (const fault of ['load_truncated', 'read_interrupted', 'bad_md5', 'corrupt_data']) {
     const loader = simP4({ fault }), x = await engineWith(loader);
     const result = await x.engine.execute(P4_TRACE, clean(goodArgs()), x.context);
     assert.equal(result.state, 'indeterminate'); assert.equal(result.hold, true); assert.equal(result.error.code, 'hardware_outcome_unknown');
@@ -208,4 +215,27 @@ test('a standard flash.read on another engine instance (another board) is unaffe
   other.context.device = { id: 'c6', chip: 'esp32c6', flash_size: 4194304 };
   const result = await other.engine.execute('flash.read', { address: 0, size: 4096, return_console: false }, other.context);
   assert.equal(result.address, 0); assert.equal(other.engine.diagnosticResident, false);
+});
+
+test('ROM-return proof: a stub-free ROM sync proves it; a still-running stub or another chip does not; nothing is written', async () => {
+  for (const [options, ok] of [[{}, true], [{ isStub: true }, false], [{ chip: 'ESP32-S3' }, false]]) {
+    const loader = simP4(options), x = await engineWith(loader);
+    x.engine.close = async () => {};
+    const outcome = x.engine.verifyRomReturn();
+    if (ok) assert.equal(await outcome, true); else await assert.rejects(outcome);
+    assert.equal(writes(loader).length, 0); noForbidden(loader);
+  }
+});
+
+test('agent recovery after the diagnostic carries the engine proof; without a resident stub it carries none; a failed proof sends nothing', async () => {
+  const { Agent } = await import('../web/agent.js');
+  const make = resident => {
+    const sent = [], engine = { diagnosticResident: resident, verifyRomReturn: async () => { if (resident === 'fail') throw new Error('still running'); return true; } };
+    const agent = Object.create(Agent.prototype);
+    Object.assign(agent, { engine, active: null, awaitingResult: null, event: (name, data) => sent.push([name, data]) });
+    return { agent, sent };
+  };
+  let x = make(true); await x.agent.recover(); assert.deepEqual(x.sent, [['recover', { rom_verified: true }]]);
+  x = make(false); await x.agent.recover(); assert.deepEqual(x.sent, [['recover', {}]]);
+  x = make('fail'); await assert.rejects(x.agent.recover()); assert.deepEqual(x.sent, []);
 });

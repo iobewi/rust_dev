@@ -100,9 +100,11 @@ export class Agent {
     if (this.engine.cancelTrigger) this.engine.cancelTrigger();
     else this.engine.trigger = null;
   }
-  recover() {
+  async recover() {
     if (this.active || this.awaitingResult) throw new Error('Operation is still running');
-    this.recoveryPending = true; this.event('recover', {});
+    // After the P4 diagnostic the operator's word is not enough: observe a stub-free ROM session first (no reset is sent).
+    const proof = this.engine.diagnosticResident ? { rom_verified: await this.engine.verifyRomReturn() } : {};
+    this.recoveryPending = true; this.event('recover', proof);
   }
   async artifact(id, bytes) {
     const { sha256 } = await import('./protocol.js');

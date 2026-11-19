@@ -1,4 +1,6 @@
 import test from 'node:test';
+import {md5hex} from '../web/md5.js';
+const md5Of=(...parts)=>{const all=new Uint8Array(parts.reduce((n,x)=>n+x.length,0));let o=0;for(const x of parts){all.set(x,o);o+=x.length;}return Uint8Array.from(md5hex(all).match(/../g),h=>parseInt(h,16));};
 import assert from 'node:assert/strict';
 import {decodeTraceReport, readFlashWithP4StubTrace, convertTraceCycles, impliedCpuHz, IdlabTraceError,
   IDLAB_READ_FLASH_TRACE, IDLAB_GET_FLASH_TRACE} from '../web/p4-stub-trace.js';
@@ -29,8 +31,8 @@ test('diagnostic must identify the custom RAM stub before any commands',async()=
 });
 test('trace reads two frames, ACKs cumulative lengths, drains MD5, then retrieves counters',async()=>{
   const commands=[],events=[],acks=[];
-  const frames=[new Uint8Array(4096).fill(0x12),
-    new Uint8Array(4096).fill(0x34),new Uint8Array(16).fill(0x56)];
+  const d1=new Uint8Array(4096).fill(0x12),d2=new Uint8Array(4096).fill(0x34);
+  const frames=[d1,d2,md5Of(d1,d2)];
   const loader={IS_STUB:true,__idlabTraceStub:true,
     async checkCommand(_label,op,params,_chk,expected) {
       commands.push({op,params,expected});
@@ -43,7 +45,7 @@ test('trace reads two frames, ACKs cumulative lengths, drains MD5, then retrieve
   const r=await readFlashWithP4StubTrace(loader,0x8000,8192);
   assert.equal(r.data.length,8192);
   assert.equal(r.data[0],0x12);assert.equal(r.data[4096],0x34);
-  assert.equal(r.md5,'56'.repeat(16));
+  assert.equal(r.md5,md5hex(r.data));assert.equal(r.md5_verified,true);
   assert.deepEqual(acks,[4096,8192]);
   assert.deepEqual(commands.map(x=>x.op),[IDLAB_GET_FLASH_TRACE,IDLAB_READ_FLASH_TRACE,IDLAB_GET_FLASH_TRACE]);
   assert.equal(commands[0].expected,64);
@@ -54,7 +56,8 @@ test('trace reads two frames, ACKs cumulative lengths, drains MD5, then retrieve
   assert.deepEqual([0,4,8,12].map(i=>view.getUint32(i,true)),[0x8000,8192,4096,1]);
 });
 test('trace rejects mismatched counters and aborts publication',async()=>{
-  const frames=[new Uint8Array(4096),new Uint8Array(4096),new Uint8Array(16)];
+  const z=new Uint8Array(4096);
+  const frames=[z,z,md5Of(z,z)];
   const loader={IS_STUB:true,__idlabTraceStub:true,checkCommand:async(_l,op)=>
     op===IDLAB_GET_FLASH_TRACE?report({ackCount:1}):0,
     transport:{read:async()=>frames.shift(),write:async()=>{}}};
@@ -142,4 +145,12 @@ test('64-bit cycle counters survive the round trip beyond 2^53 as decimal string
   const b=report(), v=new DataView(b.buffer);
   v.setBigUint64(8,(1n<<63n)+5n,true);
   assert.equal(decodeTraceReport(b).flash_cycles,((1n<<63n)+5n).toString());
+});
+
+test('a corrupted data packet with valid framing is caught by the MD5 of the received bytes and ends the session indeterminate',async()=>{
+  const good=new Uint8Array(4096).fill(7),bad=good.slice();bad[100]^=1;
+  const frames=[bad,md5Of(good)];
+  const loader={IS_STUB:true,__idlabTraceStub:true,checkCommand:async(_l,op)=>op===IDLAB_GET_FLASH_TRACE?report({bytes:4096,packets:1,ackCount:1}):0,
+    transport:{read:async()=>frames.shift(),write:async()=>{}}};
+  await assert.rejects(readFlashWithP4StubTrace(loader,0,4096),e=>e.code==='idlab_trace_md5_mismatch'&&e.sessionIndeterminate===true&&e.noRetry===true);
 });

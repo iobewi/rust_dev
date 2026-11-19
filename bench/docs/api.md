@@ -240,3 +240,6 @@ Effets sur l'état de la carte : dès que l'agent démarre l'exécution, la cart
 Tant que ce drapeau est levé, **seule `mark` est acceptée** : ni `identify`, `partitions` ni `flash.read`, qui parleraient au chargeur à travers un stub qui n'est plus le stub standard.
 Seule la récupération locale de l'opérateur (`recover`), après son propre reset de la carte, lève le drapeau. Aucun reset n'est jamais demandé ni exécuté par l'opération elle-même.
 La carte doit être mise en mode ROM par l'opérateur (BOOT + reset) avant l'opération : une session de chargeur ordinaire a déjà le stub standard en RAM (esptool-js l'y charge à la connexion).
+
+Politique d'empreintes : le serveur n'accepte que les SHA-256 listés dans `BENCH_P4_STUB_SHA256S` (séparés par des virgules ; liste vide = commande refusée, `diagnostic_stub_not_qualified`).
+Le MD5 des octets reçus est recalculé par l'agent et comparé à celui du stub. L'événement `recover` d'une carte `diagnostic_resident` doit porter `rom_verified: true`, produit par l'agent après une synchronisation ROM sans stub ; sinon `rom_proof_required` (409).

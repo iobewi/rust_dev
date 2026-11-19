@@ -747,7 +747,7 @@ hook('revoke', () => {
   renderState();
 });
 hook('release-control', () => { if (confirm('Libérer le pilotage abandonné et révoquer l’autorisation distante ? Une opération en cours empêchera cette action.')) agent.releaseControl(); });
-hook('recover', () => { if (confirm(`Après relecture et vérification de ${localDevice.id}, lever le blocage ? Cela autorisera de nouveaux resets.`)) agent.recover(); });
+hook('recover', () => { if (confirm(`Après relecture et vérification de ${localDevice.id}, lever le blocage ? Cela autorisera de nouveaux resets.`)) agent.recover().catch(e => feedback(diagnostic(e.code) || e.message)); });
 
 function operationProofName(record) {
   const command = String(record.command || 'operation').replace(/[^a-zA-Z0-9_-]/g, '-');

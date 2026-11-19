@@ -201,6 +201,17 @@ export class EspEngine {
     catch (e) { try { await this.close(); } catch { /* Preserve the original serial failure. */ } throw e; }
     return this.loader;
   }
+  // Proof that the diagnostic stub is gone: a ROM-only sync (no reset, no stub, nothing written) on the operator-prepared board.
+  async verifyRomReturn() {
+    if (this.busy) throw new Error('Device is busy');
+    this.busy = true;
+    try {
+      const loader = await this.openRomSession();
+      if (loader.IS_STUB === true || loader.syncStubDetected === true) throw new HardwareError('diagnostic_stub_still_running');
+      if (loader.chip?.CHIP_NAME !== 'ESP32-P4') throw new HardwareError('diagnostic_chip_unsupported');
+      return true;
+    } finally { try { await this.close(); } catch { /* the proof stands or fails on the sync above */ } this.busy = false; }
+  }
   async identity() {
     const l = await this.openLoader();
     this.identityChecks += 1;

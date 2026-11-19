@@ -10,6 +10,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from aiohttp.test_utils import TestClient, TestServer
 from server.bench_server import create_app
+from server.core import Broker
 from protocol import p4_trace_consent
 
 TOKENS = {
@@ -28,7 +29,7 @@ SHA = hashlib.sha256(STUB).hexdigest()
 
 class P4HttpTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
-        self.client = TestClient(TestServer(create_app(TOKENS)))
+        self.client = TestClient(TestServer(create_app(TOKENS, broker=Broker(p4_stub_allowlist=[SHA, hashlib.sha256(b'{"entry": 1}').hexdigest()]))))
         await self.client.start_server()
         self.sockets = []
 
@@ -110,6 +111,9 @@ class P4HttpTests(unittest.IsolatedAsyncioTestCase):
             r = await self.submit(args, command=command, consent=False)
             self.assertEqual((r.status, await self.code(r)), (409, 'device_quarantined'), command)
         await self.p4ws.send_json({'type': 'recover', 'device': 'p4', 'generation': self.gen})
+        self.assertEqual((await self.p4ws.receive_json())['error']['code'], 'rom_proof_required')
+        self.assertTrue((await self.device())['diagnostic_resident'])
+        await self.p4ws.send_json({'type': 'recover', 'device': 'p4', 'generation': self.gen, 'rom_verified': True})
         self.assertEqual((await self.p4ws.receive_json())['type'], 'recovered')
         dev = await self.device()
         self.assertFalse(dev['quarantined'] or dev['diagnostic_resident'])
