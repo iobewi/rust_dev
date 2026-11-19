@@ -1,0 +1,302 @@
+"""Protocol and broker tests of the experimental ESP32-P4 USB OTG diagnostic.
+
+Pure software: the broker is driven directly, no browser and no board. These tests prove the server
+side of the authorization model; they say nothing about hardware behaviour."""
+import base64
+import copy
+import hashlib
+import json
+import sys
+import unittest
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from server.core import Broker
+from protocol import Fault, P4_TRACE, p4_trace_consent, strict_equal
+
+CMD = P4_TRACE
+
+
+def stub_json(**over):
+    stub = {'entry': 0x4ff50010, 'text': base64.b64encode(bytes(100)).decode(), 'text_start': 0x4ff50000,
+            'data': base64.b64encode(bytes(40)).decode(), 'data_start': 0x4ff60040, 'bss_start': 0x4ff60000}
+    stub.update(over)
+    return json.dumps(stub).encode()
+
+
+class P4TraceTests(unittest.TestCase):
+    def setUp(self):
+        self.now = 100.
+        self.b = Broker(clock=lambda: self.now, max_events=50)
+        self.b.agent('agent', object())
+        self.generation = self.register('p4', 'esp32p4', 'native_usb_other')
+        self.b.agent('agent2', object())
+        self.register('c6', 'esp32c6', 'usb_serial_jtag', agent='agent2')
+        self.lease = self.b.reserve('p4', 'alice', 600)
+        self.b.devices['p4']['grant_until'] = 10000
+        self.stub = stub_json()
+        self.artifact = self.b.artifact(self.stub, hashlib.sha256(self.stub).hexdigest(), 'alice')
+
+    def register(self, device, chip, transport, agent='agent'):
+        return self.b.register(agent, {'id': device, 'chip': chip, 'flash_size': 32 * 1024 * 1024,
+            'capabilities': ['identify', 'flash.read', 'partitions', 'mark', 'flash.write', CMD] if chip == 'esp32p4' else
+                            ['identify', 'flash.read', 'partitions', 'mark'],
+            'provenance': {'transport': transport, 'transport_basis': 'inferred_from_webserial_vid_pid'}}, [device])
+
+    def args(self, **over):
+        sha = self.artifact['sha256']
+        args = {'chip': 'esp32p4', 'stub_artifact': self.artifact['id'], 'stub_sha256': sha, 'address': 0x8000,
+                'size': 1024 * 1024, 'packet_size': 4096, 'cpu_hz': 200_000_000, 'consent': p4_trace_consent('p4', sha)}
+        args.update(over)
+        return args
+
+    def submit(self, args=None, scopes=('read', 'control', 'program'), allow=True, lease=None, command=CMD):
+        return self.b.submit('alice', list(scopes), {'lease': (lease or self.lease)['id'], 'command': command,
+                             'args': self.args() if args is None else args, 'allow_destructive': allow})
+
+    def refused(self, code, **kw):
+        with self.assertRaises(Fault) as context:
+            self.submit(**kw)
+        self.assertEqual(context.exception.code, code)
+        self.assertEqual([o for o in self.b.operations.values() if o['command'] == CMD], [])  # nothing queued
+
+    def start(self):
+        op = self.submit(); self.b.offer('p4'); self.b.commit('agent', op['id']); return op
+
+    # ---------------------------------------------------------------- validation of the parameters
+    def test_the_nominal_request_is_accepted_and_pins_the_stub_artifact(self):
+        op = self.submit()
+        self.assertEqual(op['state'], 'queued')
+        self.assertIn(self.artifact['id'], self.b.operations[op['id']]['artifact_ids'])
+
+    def test_every_fixed_parameter_is_enforced_exactly(self):
+        for key, bad in (('address', 0x9000), ('address', 0), ('size', 4096), ('size', 1024 * 1024 + 1), ('packet_size', 2048),
+                         ('cpu_hz', 100_000_000), ('cpu_hz', 200_000_000.0), ('address', True), ('size', '1048576')):
+            self.refused('diagnostic_parameter_not_allowed', args=self.args(**{key: bad}))
+
+    def test_unknown_or_missing_fields_are_refused(self):
+        self.refused('invalid_request', args={**self.args(), 'reader': 'reference'})
+        args = self.args(); del args['cpu_hz']
+        self.refused('diagnostic_parameter_not_allowed', args=args)
+
+    def test_an_incompatible_mcu_or_transport_is_refused(self):
+        self.b.devices['p4']['chip'] = 'esp32s3'
+        self.refused('chip_mismatch')
+        self.b.devices['p4']['chip'] = 'esp32p4'
+        self.b.devices['p4']['provenance']['transport'] = 'external_uart'
+        self.refused('diagnostic_transport_unsupported')
+        self.b.devices['p4']['provenance']['transport'] = 'usb_serial_jtag'
+        self.refused('diagnostic_transport_unsupported')
+
+    def test_a_board_that_does_not_advertise_the_capability_refuses_the_command(self):
+        self.b.devices['p4']['capabilities'].remove(CMD)
+        self.refused('unsupported')
+
+    def test_a_wrong_chip_argument_is_refused(self):
+        self.refused('chip_mismatch', args=self.args(chip='esp32c6'))
+
+    # ---------------------------------------------------------------- the stub artifact
+    def test_a_missing_artifact_or_a_digest_mismatch_is_refused(self):
+        self.refused('artifact_missing', args=self.args(stub_artifact='nope'))
+        self.refused('digest_mismatch', args=self.args(stub_sha256='0' * 64,
+                     consent=p4_trace_consent('p4', '0' * 64)))
+
+    def test_a_malformed_sha_256_is_refused(self):
+        for bad in ('ABC', self.artifact['sha256'].upper(), self.artifact['sha256'][:63], None, 12):
+            self.refused('diagnostic_stub_sha256_invalid', args=self.args(stub_sha256=bad))
+
+    def test_non_conforming_stub_artifacts_are_refused(self):
+        cases = {'not json': b'{nope', 'wrong keys': json.dumps({'entry': 1}).encode(),
+                 'text outside iram': stub_json(text_start=0x4ff50000 + 0x4500 - 50),
+                 'data outside dram': stub_json(data_start=0x4ff60000 + 0x18000 - 8),
+                 'bss outside dram': stub_json(bss_start=0x40000000),
+                 'entry outside text': stub_json(entry=0x4ff50000 + 100), 'bad base64': stub_json(text='***'),
+                 'float address': stub_json(entry=1.5), 'bool address': stub_json(text_start=True),
+                 'empty text': stub_json(text='')}
+        for name, data in cases.items():
+            artifact = self.b.artifact(data, hashlib.sha256(data).hexdigest(), 'alice')
+            sha = artifact['sha256']
+            with self.subTest(name):
+                self.refused('diagnostic_stub_invalid', args=self.args(stub_artifact=artifact['id'], stub_sha256=sha,
+                             consent=p4_trace_consent('p4', sha)))
+
+    def test_an_oversized_stub_is_refused(self):
+        data = stub_json(text=base64.b64encode(bytes(70000)).decode())
+        artifact = self.b.artifact(data, hashlib.sha256(data).hexdigest(), 'alice')
+        self.refused('diagnostic_stub_invalid', args=self.args(stub_artifact=artifact['id'], stub_sha256=artifact['sha256'],
+                     consent=p4_trace_consent('p4', artifact['sha256'])))
+
+    # ---------------------------------------------------------------- consent and scopes
+    def test_without_the_dedicated_consent_nothing_runs(self):
+        args = self.args(); del args['consent']
+        self.refused('diagnostic_consent_invalid', args=args)
+        self.refused('diagnostic_consent_invalid', args=self.args(consent={}))
+
+    def test_a_consent_bound_to_another_board_or_another_sha_is_refused(self):
+        self.refused('diagnostic_consent_invalid', args=self.args(consent=p4_trace_consent('c6', self.artifact['sha256'])))
+        other = hashlib.sha256(b'other').hexdigest()
+        self.refused('diagnostic_consent_invalid', args=self.args(consent=p4_trace_consent('p4', other)))
+
+    def test_every_clause_of_the_consent_is_required_and_types_are_strict(self):
+        good = p4_trace_consent('p4', self.artifact['sha256'])
+        for key in good:
+            missing = copy.deepcopy(good); del missing[key]
+            self.refused('diagnostic_consent_invalid', args=self.args(consent=missing))
+            extra = {**good, 'extra': True}
+            self.refused('diagnostic_consent_invalid', args=self.args(consent=extra))
+        for key in ('ram_code_execution', 'session_effects_acknowledged', 'rom_reset_may_be_required'):
+            for bad in (False, 1, 'true', None):
+                self.refused('diagnostic_consent_invalid', args=self.args(consent={**good, key: bad}))
+        self.refused('diagnostic_consent_invalid', args=self.args(consent={**good, 'size': 1048576.0}))
+
+    def test_strict_equal_never_confuses_types(self):
+        self.assertFalse(strict_equal({'a': 1}, {'a': True}))
+        self.assertFalse(strict_equal({'a': 1}, {'a': 1.0}))
+        self.assertTrue(strict_equal({'a': [1]}, {'a': [1]}))
+
+    def test_a_read_only_or_control_only_client_cannot_start_it(self):
+        for scopes, allow, code in ((('read', 'control'), True, 'program_permission_required'),
+                                    (('read', 'control', 'program'), False, 'destructive_consent_required'),
+                                    (('read', 'control', 'program'), None, 'destructive_consent_required')):
+            self.refused(code, scopes=scopes, allow=allow)
+        with self.assertRaises(Fault) as context:
+            self.submit(scopes=('read',))
+        self.assertEqual(context.exception.code, 'forbidden')
+
+    def test_the_local_grant_is_required_unless_the_operator_page_itself_submits(self):
+        self.b.devices['p4']['grant_until'] = 0
+        self.refused('grant_required')
+        op = self.b.submit('alice', ['read', 'control', 'program'], {'lease': self.lease['id'], 'command': CMD,
+                           'args': self.args(), 'allow_destructive': True}, local_agent='agent')
+        self.assertTrue(self.b.operations[op['id']]['local_control'])
+
+    def test_a_standard_read_grant_flow_does_not_extend_to_the_diagnostic(self):
+        read = self.b.submit('alice', ['read', 'control'], {'lease': self.lease['id'], 'command': 'flash.read',
+                             'args': {'address': 0x8000, 'size': 4096}})
+        self.assertEqual(read['state'], 'queued')
+        self.b.cancel(read['id'], 'alice')
+        self.refused('program_permission_required', scopes=('read', 'control'))
+
+    # ---------------------------------------------------------------- exclusivity and isolation
+    def test_a_concurrent_operation_on_the_same_board_is_refused_in_both_directions(self):
+        queued = self.b.submit('alice', ['read', 'control'], {'lease': self.lease['id'], 'command': 'identify', 'args': {}})
+        self.refused('device_busy')
+        self.b.cancel(queued['id'], 'alice')
+        op = self.submit()
+        for command, args in (('identify', {}), ('flash.read', {'address': 0x8000, 'size': 4096}), ('mark', {'label': 'x'})):
+            with self.assertRaises(Fault) as context:
+                self.b.submit('alice', ['read', 'control'], {'lease': self.lease['id'], 'command': command, 'args': args})
+            self.assertEqual(context.exception.code, 'diagnostic_in_progress')
+        self.assertEqual(self.b.operations[op['id']]['state'], 'queued')
+
+    def test_a_second_diagnostic_is_refused_while_one_is_pending(self):
+        self.submit()
+        with self.assertRaises(Fault) as context:
+            self.submit()
+        self.assertEqual(context.exception.code, 'diagnostic_in_progress')
+
+    def test_another_board_keeps_working_normally_while_the_p4_runs_the_diagnostic(self):
+        self.start()
+        other = self.b.reserve('c6', 'bob', 600)
+        read = self.b.submit('bob', ['read', 'control'], {'lease': other['id'], 'command': 'flash.read',
+                             'args': {'address': 0x8000, 'size': 4096}})
+        self.assertEqual(read['state'], 'queued')
+        offered = self.b.offer('c6')
+        self.assertEqual(offered['command'], 'flash.read')
+        self.assertFalse(self.b.devices['c6']['quarantined'])
+        self.assertFalse(self.b.devices['c6'].get('diagnostic_resident'))
+
+    def test_the_diagnostic_is_refused_on_a_board_that_is_not_the_leased_p4(self):
+        other = self.b.reserve('c6', 'bob', 600)
+        with self.assertRaises(Fault) as context:
+            self.b.submit('bob', ['read', 'control', 'program'], {'lease': other['id'], 'command': CMD,
+                          'args': self.args(), 'allow_destructive': True})
+        self.assertIn(context.exception.code, {'unsupported', 'diagnostic_chip_unsupported', 'chip_mismatch'})
+
+    # ---------------------------------------------------------------- state after the run
+    def test_starting_marks_the_board_resident_durably_and_finishing_quarantines_it(self):
+        op = self.start()
+        self.assertTrue(self.b.devices['p4']['diagnostic_resident'])
+        self.b.finish('agent', {'id': op['id'], 'state': 'completed', 'result': {'ok': True}})
+        self.assertTrue(self.b.devices['p4']['quarantined'])   # even without a hold flag from the agent
+        self.assertTrue(self.b.devices['p4']['diagnostic_resident'])
+
+    def test_while_resident_only_mark_is_accepted_not_even_a_standard_read(self):
+        op = self.start()
+        self.b.finish('agent', {'id': op['id'], 'state': 'completed', 'result': {}})
+        self.b.agent_event('agent', {'type': 'settled', 'device': 'p4', 'generation': self.generation, 'id': op['id']})
+        for command, args in (('identify', {}), ('partitions', {}), ('flash.read', {'address': 0x8000, 'size': 4096})):
+            with self.assertRaises(Fault) as context:
+                self.b.submit('alice', ['read', 'control'], {'lease': self.lease['id'], 'command': command, 'args': args})
+            self.assertEqual(context.exception.code, 'device_quarantined', command)
+        mark = self.b.submit('alice', ['read', 'control'], {'lease': self.lease['id'], 'command': 'mark', 'args': {'label': 'x'}})
+        self.assertEqual(mark['state'], 'queued')
+
+    def test_a_queued_standard_read_is_cancelled_not_run_through_a_resident_stub(self):
+        read = self.b.submit('alice', ['read', 'control'], {'lease': self.lease['id'], 'command': 'flash.read',
+                             'args': {'address': 0x8000, 'size': 4096}})
+        d = self.b.devices['p4']
+        d['quarantined'], d['diagnostic_resident'] = True, True     # the diagnostic ran after the read was queued
+        self.assertIsNone(self.b.offer('p4'))
+        self.assertEqual(self.b.operations[read['id']]['state'], 'cancelled')
+        self.assertEqual(self.b.operations[read['id']]['error'], {'code': 'device_quarantined'})
+
+    def test_the_operator_local_recovery_is_the_only_way_back(self):
+        op = self.start()
+        self.b.finish('agent', {'id': op['id'], 'state': 'completed', 'result': {}})
+        self.b.agent_event('agent', {'type': 'settled', 'device': 'p4', 'generation': self.generation, 'id': op['id']})
+        self.b.agent_event('agent', {'type': 'recover', 'device': 'p4', 'generation': self.generation})
+        d = self.b.devices['p4']
+        self.assertFalse(d['quarantined']); self.assertFalse(d['diagnostic_resident'])
+        read = self.b.submit('alice', ['read', 'control'], {'lease': self.lease['id'], 'command': 'flash.read',
+                             'args': {'address': 0x8000, 'size': 4096}})
+        self.assertEqual(read['state'], 'queued')
+
+    # ---------------------------------------------------------------- interruptions
+    def test_an_agent_disconnection_during_the_run_leaves_the_board_resident_and_quarantined(self):
+        self.start()
+        self.b.disconnect('agent')
+        self.assertTrue(self.b.devices['p4']['quarantined'] and self.b.devices['p4']['diagnostic_resident'])
+
+    def test_a_reconnection_after_an_indeterminate_run_keeps_the_board_resident_and_quarantined(self):
+        op = self.start()
+        self.b.finish('agent', {'id': op['id'], 'state': 'indeterminate', 'error': {'code': 'hardware_outcome_unknown'}, 'hold': True})
+        self.b.disconnect('agent')
+        self.b.agent('agent', object())
+        self.register('p4', 'esp32p4', 'native_usb_other')
+        d = self.b.devices['p4']
+        self.assertTrue(d['quarantined'] and d['diagnostic_resident'])
+        with self.assertRaises(Fault) as context:
+            self.b.submit('alice', ['read', 'control'], {'lease': self.b.reserve('p4', 'alice', 60)['id'],
+                          'command': 'flash.read', 'args': {'address': 0x8000, 'size': 4096}})
+        self.assertEqual(context.exception.code, 'device_quarantined')
+
+    def test_losing_the_reservation_during_the_run_is_indeterminate_and_quarantines(self):
+        op = self.start()
+        self.b.release(self.lease['id'], 'alice', 'reservation_lost')
+        self.assertEqual(self.b.operations[op['id']]['state'], 'indeterminate')
+        self.assertTrue(self.b.devices['p4']['quarantined'])
+
+    def test_an_execution_timeout_never_becomes_a_success(self):
+        op = self.start()
+        self.now += 10_000
+        self.b.sweep()
+        self.assertNotEqual(self.b.operations[op['id']]['state'], 'completed')
+
+    def test_a_late_result_after_the_deadline_cannot_complete_the_operation(self):
+        op = self.start()
+        self.now += 10_000
+        self.b.sweep()
+        try:
+            self.b.finish('agent', {'id': op['id'], 'state': 'completed', 'result': {'ok': True}})
+        except Fault:
+            pass
+        self.assertNotEqual(self.b.operations[op['id']]['state'], 'completed')
+        self.assertTrue(self.b.devices['p4']['quarantined'])
+
+    def test_the_stub_artifact_stays_pinned_while_the_operation_is_active(self):
+        self.submit()
+        self.assertTrue(self.b.artifact_pinned(self.artifact['id']))
+
+
+if __name__ == '__main__':
+    unittest.main()
