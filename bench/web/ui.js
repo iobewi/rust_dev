@@ -821,7 +821,7 @@ function renderOperations() {
         }
       });
       const download = proofButton('save', 'Sauvegarder la preuve JSON', () => {
-        save(new Blob([proof + '\\n'], { type: 'application/json;charset=utf-8' }), operationProofName(record));
+        save(new Blob([proof + '\n'], { type: 'application/json;charset=utf-8' }), operationProofName(record));
         feedback('Téléchargement de la preuve JSON demandé.');
       });
       actions.append(copy, download);
