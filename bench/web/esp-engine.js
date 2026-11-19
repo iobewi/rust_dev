@@ -7,7 +7,8 @@ import { latencyStats, mergeLatency, summarizeLatency } from './flash-read-laten
 import { runWrite, Tracer } from './flash-op.js';
 import { b64, unb64, family, region, validateImages, partitions, sha256 } from './protocol.js';
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
-const latencyFields = ['packet_interval', 'ack_to_first_byte', 'read_to_first_byte', 'frame_receive'];
+const latencyFields = ['packet_interval', 'ack_to_first_byte', 'read_to_first_byte', 'frame_receive',
+  'raw_chunk_interval', 'ack_to_raw_chunk'];
 function readProfileSnapshot(profile) {
   if (!profile) return null;
   const { timing, ...totals } = profile;
@@ -47,6 +48,7 @@ export class EspEngine {
     const startedAt = performance.now(); this.lastFlashTransfer = null;
     this.flashReadProfile = { blocks: 0, elapsed_ms: 0, packets: 0, payload_bytes: 0,
       read_ms: 0, waiting_ms: 0, write_calls: 0, write_ms: 0,
+      raw_chunks: 0, raw_bytes: 0, max_raw_chunk_bytes: 0,
       timing: Object.fromEntries(latencyFields.map(key => [key, latencyStats()])) };
     // Keep esptool-js's cumulative append limited to 1 MiB per command. No retry:
     // every block is read once and only a complete region becomes an artifact.
@@ -78,8 +80,11 @@ export class EspEngine {
         this.flashReadProfile.blocks++;
         this.flashReadProfile.elapsed_ms += Math.round(performance.now() - blockStarted);
         if (transportMetrics) {
-          for (const key of ['packets', 'payload_bytes', 'read_ms', 'waiting_ms', 'write_calls', 'write_ms'])
+          for (const key of ['packets', 'payload_bytes', 'read_ms', 'waiting_ms', 'write_calls', 'write_ms',
+            'raw_chunks', 'raw_bytes'])
             this.flashReadProfile[key] += transportMetrics[key];
+          this.flashReadProfile.max_raw_chunk_bytes = Math.max(this.flashReadProfile.max_raw_chunk_bytes,
+            transportMetrics.max_raw_chunk_bytes || 0);
           for (const key of latencyFields) mergeLatency(this.flashReadProfile.timing[key], transportMetrics.timing?.[key]);
         }
       }
