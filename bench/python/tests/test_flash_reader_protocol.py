@@ -24,3 +24,29 @@ def test_invalid_reader_rejected_without_broker_crash(reader):
         validate_command("flash.read",
                          {"address": 0x10000, "size": 0x100000, "reader": reader},
                          DEVICE, {})
+
+
+@pytest.mark.parametrize("packet_size", [1024, 2048, 4096])
+def test_packet_diagnostic_accepts_only_supported_sizes(packet_size):
+    validate_command("flash.read", {
+        "address": 0x8000, "size": 0x100000,
+        "reader": "packet-diagnostic", "packet_size": packet_size
+    }, DEVICE, {})
+
+
+@pytest.mark.parametrize("packet_size", [None, 0, 512, 3072, 8192, -1, True, False, 1.5, "1024", {}, []])
+def test_packet_diagnostic_refuses_invalid_or_missing_sizes(packet_size):
+    args = {"address": 0x8000, "size": 0x100000, "reader": "packet-diagnostic"}
+    if packet_size is not None:
+        args["packet_size"] = packet_size
+    with pytest.raises(Fault):
+        validate_command("flash.read", args, DEVICE, {})
+
+
+@pytest.mark.parametrize("reader", [None, "reference", "preallocated"])
+def test_standard_readers_refuse_packet_size_override(reader):
+    args = {"address": 0x8000, "size": 0x100000, "packet_size": 1024}
+    if reader is not None:
+        args["reader"] = reader
+    with pytest.raises(Fault):
+        validate_command("flash.read", args, DEVICE, {})
