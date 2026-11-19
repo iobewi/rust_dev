@@ -82,7 +82,7 @@ export class EspEngine {
         if (transportMetrics) {
           for (const key of ['packets', 'payload_bytes', 'read_ms', 'waiting_ms', 'write_calls', 'write_ms',
             'raw_chunks', 'raw_bytes'])
-            this.flashReadProfile[key] += transportMetrics[key];
+            this.flashReadProfile[key] += transportMetrics[key] || 0;
           this.flashReadProfile.max_raw_chunk_bytes = Math.max(this.flashReadProfile.max_raw_chunk_bytes,
             transportMetrics.max_raw_chunk_bytes || 0);
           for (const key of latencyFields) mergeLatency(this.flashReadProfile.timing[key], transportMetrics.timing?.[key]);
