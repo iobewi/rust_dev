@@ -139,3 +139,7 @@
 .card-permissions #authorization-settings label { display:flex; flex-direction:column; align-items:stretch; gap:4px; font-size:12px; }
 .card-permissions #authorization-settings button { width:100%; }
 .card-permissions .hint { margin:8px 0 0; font-size:11px; }
+
+/* Operation details expand immediately below their history row; no offscreen-only output. */
+.operation-detail-row td { padding:0; white-space:normal; }
+.operation-detail-json { max-height:360px; overflow:auto; margin:0; max-width:100%; }
