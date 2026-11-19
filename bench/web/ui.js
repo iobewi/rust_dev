@@ -6,7 +6,8 @@ import { Agent } from './agent.js';
 import { EspEngine } from './esp-engine.js';
 import { effectiveLoaderBaud } from './loader-settings.js';
 import { BenchClient } from './api-client.js';
-import { b64, unb64, manifestPlan } from './protocol.js';
+import { b64, unb64, manifestPlan, sha256 } from './protocol.js';
+import { P4_TRACE, P4_FIXED, expectedConsent } from './p4-diagnostic.js';
 import { ConsoleBuffer } from './console-buffer.js';
 import { address, hex, flashPlan, displayChip } from './ui-model.js';
 
@@ -15,7 +16,7 @@ document.title = 'IDLab — IOBEWI Device Lab';
 const terminal = new Set(['completed', 'failed', 'expired', 'cancelled', 'indeterminate']);
 const safeCommands = new Set(['identify', 'partitions', 'flash.read', 'mark']);
 const actions = { 'try-partition-address': 'partitions', read: 'flash.read', write: 'flash.write', erase: 'flash.erase', send: 'uart.write',
-  configure: 'uart.configure', io0: 'io0', mark: 'mark', trigger: 'trigger', disarm: 'trigger', http: 'http.request' };
+  configure: 'uart.configure', 'p4-run': P4_TRACE, io0: 'io0', mark: 'mark', trigger: 'trigger', disarm: 'trigger', http: 'http.request' };
 let usbBusy = false, usbDisconnecting = false;
 let agent, engine, localDevice, portConnected = false, current;
 const inFlight = new Map();
@@ -574,6 +575,7 @@ function renderState() {
       command === 'console' && (!local || engine?.mode !== 'loader') ||
       command === 'reset' && local && engine?.mode !== 'console';
   });
+  renderP4Diagnostic(d, capability.has(P4_TRACE));
   $('partition-suggestion').hidden = partitionSuggestions.get(selected()) !== d?.generation || !d?.generation || Number($('partition-address').value) !== 0x8000;
   $('devices').disabled = false;
   // A logical ID cannot change while its port is connected or automatic reconnection owns it.
@@ -745,7 +747,7 @@ hook('revoke', () => {
   renderState();
 });
 hook('release-control', () => { if (confirm('Libérer le pilotage abandonné et révoquer l’autorisation distante ? Une opération en cours empêchera cette action.')) agent.releaseControl(); });
-hook('recover', () => { if (confirm(`Après relecture et vérification de ${localDevice.id}, lever le blocage ? Cela autorisera de nouveaux resets.`)) agent.recover(); });
+hook('recover', () => { if (confirm(`Après relecture et vérification de ${localDevice.id}, lever le blocage ? Cela autorisera de nouveaux resets.`)) agent.recover().catch(e => feedback(diagnostic(e.code) || e.message)); });
 
 function operationProofName(record) {
   const command = String(record.command || 'operation').replace(/[^a-zA-Z0-9_-]/g, '-');
@@ -858,7 +860,7 @@ async function submit(command, args = {}, destructive = false) {
   inFlight.set(target.device, ticket);
   renderState(); const started = performance.now(), client = api();
   try {
-    let op = await client.request('manual-operations', { method: 'POST', data: { device: target.device, generation: target.generation, command, args, allow_destructive: destructive, timeout: command === 'flash.read' ? 600 : 120 } });
+    let op = await client.request('manual-operations', { method: 'POST', data: { device: target.device, generation: target.generation, command, args, allow_destructive: destructive, timeout: command === 'flash.read' ? 600 : command === P4_TRACE ? 300 : 120 } });
     ticket.id = op.id;
     if (selected() === target.device) selectedOperation = op.id;
     recordOperation(op, started); renderState();
@@ -940,6 +942,39 @@ function updateFlashReadControls() {
 }
 $('flash-reader').addEventListener('change', updateFlashReadControls);
 updateFlashReadControls();
+// ---- Diagnostic USB OTG P4 (expérimental). Visible only for a compatible board; the consent is an explicit, separate action.
+let p4Stub = null;
+function renderP4Diagnostic(d, offered) {
+  $('p4-diagnostic').hidden = !offered;
+  if (!offered) return;
+  const stub = p4Stub?.device === selected() ? p4Stub : null;
+  $('p4-board').textContent = selected() + ' · ' + (d?.chip || '—');
+  $('p4-sha').textContent = stub?.sha256 || '—';
+  $('p4-stub-state').textContent = stub ? `${stub.name} · ${stub.size} octets · ${stub.sha256.slice(0, 12)}…` : 'Aucun stub choisi';
+  const run = $('p4-run');
+  run.disabled = run.disabled || !stub || !$('p4-consent').checked;
+}
+$('p4-consent').addEventListener('change', () => renderState());
+$('p4-stub-file').addEventListener('change', safely(async () => {
+  const file = $('p4-stub-file').files[0]; p4Stub = null;
+  if (file) {
+    if (file.size > 64 * 1024) throw new Error('Stub trop volumineux');
+    const bytes = new Uint8Array(await file.arrayBuffer()), digest = await sha256(bytes), artifact = await api().upload(bytes);
+    p4Stub = { device: selected(), name: file.name, size: bytes.length, sha256: digest, artifact: artifact.id };
+  }
+  $('p4-consent').checked = false;   // a new stub never inherits a previous consent
+  renderState();
+}));
+hook('p4-run', async () => {
+  const stub = p4Stub?.device === selected() ? p4Stub : null;
+  if (!stub || !$('p4-consent').checked) throw new Error('Choisissez le stub et donnez le consentement dédié');
+  const args = { chip: P4_FIXED.chip, stub_artifact: stub.artifact, stub_sha256: stub.sha256, address: P4_FIXED.address, size: P4_FIXED.size,
+    packet_size: P4_FIXED.packet_size, cpu_hz: P4_FIXED.cpu_hz, consent: expectedConsent(selected(), stub.sha256) };
+  $('p4-consent').checked = false;   // single use: every launch needs a fresh consent
+  $('p4-state').textContent = 'Diagnostic lancé — ne débranchez pas la carte';
+  const op = await submit(P4_TRACE, args, true);
+  $('p4-state').textContent = `Terminé : ${op.state}. La carte reste sous contrôle ; récupération locale requise.`;
+});
 hook('read', () => submit('flash.read',
   flashReadArgs(address($('address').value), address($('size').value))));
 

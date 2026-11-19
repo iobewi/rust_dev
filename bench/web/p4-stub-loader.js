@@ -1,0 +1,128 @@
+// IDLab P4 only: RAM-only loader of the experimental diagnostic stub.
+//
+// The standard stub stays the default. This module is never reached from the normal read path:
+// it must be called explicitly, with the operator's consent and the SHA-256 of the exact stub JSON
+// that was reviewed. It only uses the ROM RAM-download commands (MEM_BEGIN / MEM_DATA / MEM_END):
+// it never writes, erases or configures the NOR flash, never resets the chip, never retries.
+//
+// Every refusal below happens BEFORE the first byte is sent to the chip.
+import {decodeTraceReport, IDLAB_GET_FLASH_TRACE} from './p4-stub-trace.js';
+
+export const DIAGNOSTIC_STUB_CHIP = 'ESP32-P4';
+// esptool-js 0.7.0: getChipRevision() = major*100 + minor; the stub JSON `esp32p4.json` (the ROM
+// that this diagnostic is built for, "ECO5 and later") is selected for revisions >= 3.00.
+export const MIN_CHIP_REVISION = 300;
+// src/ld/esp32p4.ld of esp-flasher-stub v1.2.2
+export const RAM_WINDOWS = Object.freeze({
+  text: Object.freeze({start: 0x4ff50000, length: 0x4500}),
+  data: Object.freeze({start: 0x4ff60000, length: 0x18000}),
+});
+const JSON_KEYS = ['entry', 'text', 'text_start', 'data', 'data_start', 'bss_start'];
+const FLASH_METHODS = ['flashBegin', 'flashBlock', 'flashFinish', 'flashDeflBegin', 'flashDeflBlock',
+  'flashDeflFinish', 'writeFlash', 'eraseFlash', 'eraseRegion', 'flashSpiAttach', 'flashSetParameters'];
+
+export class IdlabDiagnosticError extends Error {
+  constructor(code, {chipTouched = false, detail} = {}) {
+    super(code);
+    this.name = 'IdlabDiagnosticError';
+    this.code = code;
+    this.detail = detail;
+    // True once any byte reached the chip: the session may be in an undetermined state and must
+    // be closed by the operator. Nothing here retries or reconnects by itself.
+    this.sessionIndeterminate = chipTouched;
+    this.noRetry = true;
+  }
+}
+
+export async function sha256Hex(bytes) {
+  const digest = await globalThis.crypto.subtle.digest('SHA-256', bytes);
+  return [...new Uint8Array(digest)].map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+function decodeBase64(text) {
+  const raw = globalThis.atob(text);
+  return Uint8Array.from(raw, c => c.charCodeAt(0));
+}
+
+// Pure validation of the loader JSON. Throws IdlabDiagnosticError (chip untouched).
+export function parseStubJson(text) {
+  let json;
+  try { json = JSON.parse(text); } catch { throw new IdlabDiagnosticError('stub_json_not_json'); }
+  if (json === null || typeof json !== 'object' || Array.isArray(json) ||
+      Object.keys(json).sort().join() !== [...JSON_KEYS].sort().join())
+    throw new IdlabDiagnosticError('stub_json_unexpected_keys');
+  for (const key of ['entry', 'text_start', 'data_start', 'bss_start'])
+    if (!Number.isSafeInteger(json[key]) || json[key] < 0) throw new IdlabDiagnosticError('stub_json_bad_address', {detail: key});
+  let decodedText, decodedData;
+  try { decodedText = decodeBase64(json.text); decodedData = decodeBase64(json.data); }
+  catch { throw new IdlabDiagnosticError('stub_json_bad_base64'); }
+  const inside = (window, start, length) => start >= window.start && start + length <= window.start + window.length;
+  if (decodedText.length === 0 || !inside(RAM_WINDOWS.text, json.text_start, decodedText.length))
+    throw new IdlabDiagnosticError('stub_text_outside_iram', {detail: json.text_start});
+  if (decodedData.length === 0 || !inside(RAM_WINDOWS.data, json.data_start, decodedData.length))
+    throw new IdlabDiagnosticError('stub_data_outside_dram', {detail: json.data_start});
+  if (!(json.bss_start >= RAM_WINDOWS.data.start && json.bss_start < RAM_WINDOWS.data.start + RAM_WINDOWS.data.length))
+    throw new IdlabDiagnosticError('stub_bss_outside_dram', {detail: json.bss_start});
+  if (!(json.entry >= json.text_start && json.entry < json.text_start + decodedText.length))
+    throw new IdlabDiagnosticError('stub_entry_outside_text', {detail: json.entry});
+  return {json, decodedText, decodedData};
+}
+
+// Loads the reviewed diagnostic stub into RAM of a ROM-mode ESP32-P4 and positively identifies it.
+//   options.consent         must be exactly true (operator's explicit consent for THIS binary)
+//   options.expectedSha256  SHA-256 (hex) of the stub JSON text that was reviewed and qualified
+export async function loadDiagnosticStub(loader, stubJsonText, options = {}) {
+  if (options.consent !== true) throw new IdlabDiagnosticError('diagnostic_stub_consent_missing');
+  if (!/^[0-9a-f]{64}$/.test(options.expectedSha256 ?? '')) throw new IdlabDiagnosticError('diagnostic_stub_sha256_missing');
+  const actual = await sha256Hex(new TextEncoder().encode(stubJsonText));
+  if (actual !== options.expectedSha256) throw new IdlabDiagnosticError('diagnostic_stub_sha256_mismatch', {detail: actual});
+  if (loader?.chip?.CHIP_NAME !== DIAGNOSTIC_STUB_CHIP) throw new IdlabDiagnosticError('diagnostic_stub_wrong_chip');
+  if (loader.IS_STUB === true || loader.syncStubDetected === true)
+    throw new IdlabDiagnosticError('diagnostic_stub_requires_a_rom_session');
+  const revision = await loader.chip.getChipRevision(loader);  // read-only eFuse reads
+  if (!Number.isInteger(revision) || revision < MIN_CHIP_REVISION)
+    throw new IdlabDiagnosticError('diagnostic_stub_unsupported_chip_revision', {detail: revision});
+  const {json, decodedText, decodedData} = parseStubJson(stubJsonText);
+
+  // ---- from here on the chip is touched: any failure leaves the session undetermined ----
+  const touched = (code, detail) => new IdlabDiagnosticError(code, {chipTouched: true, detail});
+  try {
+    for (const [bytes, start] of [[decodedText, json.text_start], [decodedData, json.data_start]]) {
+      const block = loader.ESP_RAM_BLOCK;
+      const blocks = Math.floor((bytes.length + block - 1) / block);
+      await loader.memBegin(bytes.length, blocks, block, start);
+      for (let seq = 0; seq < blocks; seq++) await loader.memBlock(bytes.slice(seq * block, (seq + 1) * block), seq);
+    }
+    await loader.memFinish(json.entry);
+  } catch (error) {
+    throw touched('diagnostic_stub_ram_load_failed', String(error?.message ?? error));
+  }
+  let greeting;
+  try { greeting = String.fromCharCode(...await loader.transport.read(loader.DEFAULT_TIMEOUT)); }
+  catch (error) { throw touched('diagnostic_stub_no_greeting', String(error?.message ?? error)); }
+  if (greeting !== 'OHAI') throw touched('diagnostic_stub_bad_greeting', greeting);
+  loader.IS_STUB = true;
+  loader.__idlabTraceStub = false;  // not yet identified
+  try {
+    // A stock stub rejects the diagnostic opcode: the flag is only set after a valid IDT1 answer.
+    decodeTraceReport(await loader.checkCommand('IDLab trace probe', IDLAB_GET_FLASH_TRACE,
+      new Uint8Array(0), undefined, 64, 3000));
+  } catch (error) {
+    throw touched('diagnostic_stub_not_identified', String(error?.message ?? error));
+  }
+  loader.__idlabTraceStub = true;
+  loader.__idlabTraceStubSha256 = actual;
+  return {sha256: actual, entry: json.entry, chip_revision: revision, text_bytes: decodedText.length,
+    data_bytes: decodedData.length, ram_only: true};
+}
+
+// Explicit end of the diagnostic mode, on the browser side only. The stub stays in the chip RAM until
+// the operator-approved reset of the standard IDLab procedure; this function never resets anything.
+export function retireDiagnosticStub(loader) {
+  loader.__idlabTraceStub = false;
+  loader.__idlabTraceStubSha256 = undefined;
+  loader.IS_STUB = false;
+  return {requires_operator_reset: true};
+}
+
+export const FORBIDDEN_FLASH_METHODS = FLASH_METHODS;

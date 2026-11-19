@@ -91,6 +91,7 @@ Les agents utilisent REST seulement pour uploader les dumps et télécharger les
 | `uart.configure` | `baudrate` entier 1 200–3 000 000 | Non |
 | `io0` | `duration_ms` 1–10 000, UART externe seulement | Oui |
 | `boot.download` | `hold_ms` 100–3 000 (obligatoire), UART externe et console seulement : circuit d'auto-reset classique : EN bas (RTS), puis EN relâché IO0 bas (DTR) pendant le maintien borné, puis relâche des deux lignes ; câblage supposé, non mesuré ; ne vérifie ni le mode ni un démarrage | Oui |
+| `diagnostic.p4_usb_trace` | **Expérimental, ESP32-P4 USB OTG uniquement.** Charge en **RAM** un stub diagnostique relu et lit 1 Mio à `0x8000` en lecture seule. Paramètres figés : `chip: "esp32p4"`, `address: 32768`, `size: 1048576`, `packet_size: 4096`, `cpu_hz: 200000000` (fréquence supposée, enregistrée avec l'opération), `stub_artifact`, `stub_sha256` (64 hex), `consent` (voir ci-dessous). Jamais une valeur de `reader` de `flash.read` | Oui + program + consentement + consentement dédié |
 | `mark` | `label` texte ≤256 caractères | Non |
 | `trigger` | `data` base64 ≤256 octets, `action` mark/reset, `delay_ms` 0–10 000, `expires_ms` 1–120 000 | Oui |
 | `trigger` | `action:"disarm"` uniquement ; réservation active ayant armé le déclencheur dans cette génération | Non ; scope `control` et propriétaire vérifiés |
@@ -217,3 +218,28 @@ See [reliability contracts](reliability.md) for the complete guarantees and limi
 - Durable operation views preserve their original epoch/result metadata and expose
   reconciliation_required, reconciled_at/generation, and result_sha256 where
   applicable. Journal failure is 503 journal_unavailable and fails execution closed.
+
+## Diagnostic USB OTG de l'ESP32-P4 (`diagnostic.p4_usb_trace`)
+
+Ce n'est pas une lecture flash : l'opération charge et exécute du code en RAM, puis lit la flash avec ce code. Elle exige donc, en plus d'un grant local actif,
+la portée `program`, `allow_destructive: true` **et** un consentement qui lui est propre. Une autorisation de `flash.read` ne suffit jamais.
+
+Le consentement doit être exactement (les types sont comparés strictement, `1` n'est pas `true`) :
+
+```json
+{"scenario": "diagnostic.p4_usb_trace", "device": "<id de la carte réservée>", "stub_sha256": "<même SHA-256 que l'argument>",
+ "address": 32768, "size": 1048576,
+ "ram_code_execution": true, "session_effects_acknowledged": true, "rom_reset_may_be_required": true}
+```
+
+Refus avant toute exécution (aucune opération n'est créée) : puce autre que `esp32p4`, transport autre que l'USB OTG natif, paramètre différent de la valeur figée, SHA-256 invalide,
+artefact absent ou dont l'empreinte diffère, JSON de stub invalide (clés exactes, adresses entières, segments dans l'IRAM `0x4ff50000+0x4500` et la DRAM `0x4ff60000+0x18000`),
+consentement absent, incomplet ou lié à une autre carte ou à un autre SHA, autre opération en attente ou en cours sur la carte, diagnostic déjà en cours.
+
+Effets sur l'état de la carte : dès que l'agent démarre l'exécution, la carte est marquée `diagnostic_resident` (durable) ; à la fin, quelle qu'elle soit, elle est mise en quarantaine.
+Tant que ce drapeau est levé, **seule `mark` est acceptée** : ni `identify`, `partitions` ni `flash.read`, qui parleraient au chargeur à travers un stub qui n'est plus le stub standard.
+Seule la récupération locale de l'opérateur (`recover`), après son propre reset de la carte, lève le drapeau. Aucun reset n'est jamais demandé ni exécuté par l'opération elle-même.
+La carte doit être mise en mode ROM par l'opérateur (BOOT + reset) avant l'opération : une session de chargeur ordinaire a déjà le stub standard en RAM (esptool-js l'y charge à la connexion).
+
+Politique d'empreintes : le serveur n'accepte que les SHA-256 listés dans `BENCH_P4_STUB_SHA256S` (séparés par des virgules ; liste vide = commande refusée, `diagnostic_stub_not_qualified`).
+Le MD5 des octets reçus est recalculé par l'agent et comparé à celui du stub. L'événement `recover` d'une carte `diagnostic_resident` doit porter `rom_verified: true`, produit par l'agent après une synchronisation ROM sans stub ; sinon `rom_proof_required` (409).
