@@ -338,6 +338,10 @@ test(`local browser session and direct control over ${usbJtag?'USB Serial/JTAG':
   await page.waitForFunction(()=>[...document.querySelectorAll('#uart-log .payload')].some(node=>node.textContent==='INFO - board connected, ip = 192.168.1.2'));
   // A narrow viewport must retain the console and put dense tables in their own horizontal scroller.
   await page.setViewportSize({width:360,height:900});assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
+  await page.locator('.loader-advanced summary').click();
+  assert.equal(await noSidebarOverflow(),true,'advanced controls stay inside narrow sidebar');
+  assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
+  await page.locator('.loader-advanced summary').click();
   // Context help remains on the upper status bar; USB is permanently in the sidebar.
   await page.focus('#status-agent');
   assert.equal(await page.locator('#status-help-agent').isVisible(),true);
