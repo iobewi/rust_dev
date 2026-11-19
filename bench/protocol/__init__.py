@@ -76,7 +76,8 @@ def validate_command(name, args, device, artifacts):
             require(type(args[key]) is bool)
     capacity = device['flash_size']
     if name == 'flash.read':
-        require(args.get('reader', 'reference') in {'reference', 'preallocated'},
+        require(isinstance(args.get('reader', 'reference'), str) and
+                args.get('reader', 'reference') in {'reference', 'preallocated'},
                 'invalid_flash_reader', 'Unknown flash reader')
         region(args.get('address'), args.get('size'), capacity)
     if name == 'partitions':
