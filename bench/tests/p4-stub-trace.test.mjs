@@ -45,11 +45,12 @@ test('trace reads two frames, ACKs cumulative lengths, drains MD5, then retrieve
   assert.equal(r.data[0],0x12);assert.equal(r.data[4096],0x34);
   assert.equal(r.md5,'56'.repeat(16));
   assert.deepEqual(acks,[4096,8192]);
-  assert.deepEqual(commands.map(x=>x.op),[IDLAB_READ_FLASH_TRACE,IDLAB_GET_FLASH_TRACE]);
-  assert.equal(commands[1].expected,64);
+  assert.deepEqual(commands.map(x=>x.op),[IDLAB_GET_FLASH_TRACE,IDLAB_READ_FLASH_TRACE,IDLAB_GET_FLASH_TRACE]);
+  assert.equal(commands[0].expected,64);
+  assert.equal(commands[2].expected,64);
   assert.equal(events.at(-2),'read');
   assert.equal(events.at(-1),'command224');
-  const view=new DataView(commands[0].params.buffer);
+  const view=new DataView(commands[1].params.buffer);
   assert.deepEqual([0,4,8,12].map(i=>view.getUint32(i,true)),[0x8000,8192,4096,1]);
 });
 test('trace rejects mismatched counters and aborts publication',async()=>{
