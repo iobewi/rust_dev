@@ -36,8 +36,10 @@ test('UI exposes connection speed and useful transfer without labeling USB as UA
   const ui=readFileSync(new URL('../web/ui.js',import.meta.url),'utf8');
   for(const id of ['interface-info','loader-speed-info','console-speed-info','transfer-rate-info'])
     assert.match(html,new RegExp('id="'+id+'"'));
-  assert.match(ui,/USB direct · 115 200 nominal \(sans UART\)/);
+  assert.match(ui,/USB direct · débit UART sans objet/);
   assert.match(ui,/effectiveLoaderBaud\(false, engine\.loaderBaud, engine\.flashBaud\)/);
   assert.match(ui,/flashRates\.set\(op\.device/);
   assert.match(ui,/transfer\.bytes_per_second \/ 1024/);
+  assert.match(html,/Débit UART — prochaine carte/);
+  assert.match(ui,/le débit UART sélectionné est sans effet sur ce transport/);
 });
