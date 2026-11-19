@@ -293,6 +293,16 @@ test(`local browser session and direct control over ${usbJtag?'USB Serial/JTAG':
   await page.waitForFunction(()=>!document.querySelector('#read').disabled);
   assert.equal(readerRequests.at(-1).reader,'packet-diagnostic');
   assert.equal(readerRequests.at(-1).packet_size,2048);
+  await page.selectOption('#flash-reader','md5-only');
+  assert.equal(await page.locator('#flash-packet-control').isVisible(),false);
+  await page.click('#read');
+  await page.waitForFunction(()=>{const op=JSON.parse(document.querySelector('#result').textContent);
+    return op.state==='completed' && op.result?.transfer?.reader==='md5-only';});
+  assert.equal(readerRequests.at(-1).reader,'md5-only');
+  assert.equal(readerRequests.at(-1).packet_size,undefined);
+  const md5Op=JSON.parse(await page.textContent('#result'));
+  assert.equal(md5Op.result.md5,'5a'.repeat(16));
+  assert.equal(md5Op.result.artifact,undefined,'D does not create a flash dump');
   await page.selectOption('#flash-reader','reference');
   assert.equal(await page.locator('#flash-packet-control').isVisible(),false);
   // A loader SerialFault must survive engine cleanup, WS, broker and UI translation.
