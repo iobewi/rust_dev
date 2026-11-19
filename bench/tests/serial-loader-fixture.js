@@ -7,9 +7,10 @@ export class Transport {
   async readLoop() {}
 }
 export class ESPLoader {
-  constructor({ transport }) { this.transport = transport; this.chip = { readMac: async () => '00:00:00:00:00:00' }; }
+  constructor({ transport }) { this.IS_STUB = true; this.ESP_SPI_FLASH_MD5 = 0x13; this.transport = transport; this.chip = { readMac: async () => '00:00:00:00:00:00' }; }
   async main() { await this.transport.connect(); return 'ESP32-S3'; }
   async checkCommand(_label, _opcode, params) {
+    if (_opcode === this.ESP_SPI_FLASH_MD5) return new Uint8Array(16).fill(0x5a);
     const view = new DataView(params.buffer, params.byteOffset, params.byteLength);
     let offset = view.getUint32(0, true);
     let remaining = view.getUint32(4, true);
