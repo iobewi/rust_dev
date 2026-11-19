@@ -3,6 +3,7 @@ import { effectiveLoaderBaud, flashTransfer } from './loader-settings.js';
 import { HardwareError, hardwareError } from './hardware-errors.js';
 import { makeBenchTransport } from './bench-transport.js';
 import { readFlashPreallocated } from './flash-read-preallocated.js';
+import { flashMd5Diagnostic, MD5_DIAGNOSTIC_MAX_SIZE } from './flash-md5-diagnostic.js';
 import { latencyStats, mergeLatency, summarizeLatency } from './flash-read-latency.js';
 import { runWrite, Tracer } from './flash-op.js';
 import { b64, unb64, family, region, validateImages, partitions, sha256 } from './protocol.js';
@@ -351,15 +352,27 @@ export class EspEngine {
         catch { throw new HardwareError('partition_table_invalid'); }
       } else if (command === 'flash.read') {
         const reader = args.reader ?? 'reference';
-        if (!['reference', 'preallocated', 'packet-diagnostic'].includes(reader)) throw new HardwareError('flash_reader_invalid');
+        if (!['reference', 'preallocated', 'packet-diagnostic', 'md5-only'].includes(reader)) throw new HardwareError('flash_reader_invalid');
         const packetSize = reader === 'packet-diagnostic' ? args.packet_size : 4096;
         if (reader === 'packet-diagnostic' ? ![1024, 2048, 4096].includes(packetSize) : args.packet_size !== undefined)
           throw new HardwareError('flash_packet_size_invalid');
         region(args.address, args.size, physical.flash_size);
         this.setPhase('flash_read', context);
-        const data = await this.readFlash(l, args.address, args.size, context, reader, packetSize);
-        this.setPhase('artifact_upload', context);
-        result = { artifact: await context.upload(data), address: args.address, transfer: this.lastFlashTransfer };
+        if (reader === 'md5-only') {
+          if (args.size > MD5_DIAGNOSTIC_MAX_SIZE) throw new HardwareError('flash_md5_diagnostic_size_exceeded');
+          context.check();
+          const start = performance.now();
+          const md5 = await flashMd5Diagnostic(l, args.address, args.size);
+          context.check();
+          result = { address: args.address, size: args.size, md5,
+            transfer: { bytes: args.size, elapsed_ms: Math.round(performance.now() - start),
+              reader: 'md5-only', transmitted_flash_bytes: 0, packet_size: null,
+              metric: 'flash_read_and_md5_without_bulk_transfer' } };
+        } else {
+          const data = await this.readFlash(l, args.address, args.size, context, reader, packetSize);
+          this.setPhase('artifact_upload', context);
+          result = { artifact: await context.upload(data), address: args.address, transfer: this.lastFlashTransfer };
+        }
       } else if (command === 'flash.write') {
         validateImages(images, physical.flash_size); context.check();
         this.setPhase('flash_write', context);
