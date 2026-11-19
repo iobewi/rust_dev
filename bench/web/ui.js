@@ -916,7 +916,7 @@ function renderPartitions() {
       const cell = document.createElement('td'); cell.textContent = value; cell.className = 'mono'; row.append(cell);
     }
     const cell = document.createElement('td'), button = document.createElement('button'); button.textContent = 'Lire'; button.dataset.hardware = ''; button.dataset.command = 'flash.read';
-    button.onclick = safely(() => { $('address').value = hex(part.address); $('size').value = hex(part.size); tab('memory'); return submit('flash.read', { address: part.address, size: part.size, reader: $('flash-reader').value }); });
+    button.onclick = safely(() => { $('address').value = hex(part.address); $('size').value = hex(part.size); tab('memory'); return submit('flash.read', flashReadArgs(part.address, part.size)); });
     cell.append(button); row.append(cell); body.append(row);
   }
   $('partition-state').textContent = rows.length ? `${rows.length} partitions lues sur ${selected()}` : 'Aucune table lue pour cette carte.';
@@ -930,10 +930,18 @@ async function showDump(artifact, offset, client) {
   const button = document.createElement('button'); button.textContent = 'Télécharger .bin'; button.onclick = () => save(new Blob([data], { type: 'application/octet-stream' }), artifact.id + '.bin');
   $('download').replaceChildren(button); tab('memory');
 }
-hook('read', () => submit('flash.read', {
-  address: address($('address').value), size: address($('size').value),
-  reader: $('flash-reader').value,
-}));
+function flashReadArgs(offset, length) {
+  const reader = $('flash-reader').value;
+  return { address: offset, size: length, reader,
+    ...(reader === 'packet-diagnostic' ? { packet_size: Number($('flash-packet-size').value) } : {}) };
+}
+function updateFlashReadControls() {
+  $('flash-packet-control').hidden = $('flash-reader').value !== 'packet-diagnostic';
+}
+$('flash-reader').addEventListener('change', updateFlashReadControls);
+updateFlashReadControls();
+hook('read', () => submit('flash.read',
+  flashReadArgs(address($('address').value), address($('size').value))));
 
 function invalidatePlan() { confirmation = null; $('program-confirmation').hidden = true; $('plan-state').textContent = 'Plan modifié · validation requise. Aucun effacement global.'; }
 function renderImages() {
