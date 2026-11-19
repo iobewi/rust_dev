@@ -252,7 +252,7 @@ export class EspEngine {
   async execute(command, args, context) {
     if (this.busy) throw new Error('Device is busy');
     if (this.hold && !['identify', 'partitions', 'flash.read', 'flash.write', 'flash.erase', 'mark'].includes(command)) throw new Error('Operator recovery required');
-    this.busy = true; this.phase = 'prepare'; this.readProgress = {}; this.lastRead = {};
+    this.busy = true; this.phase = 'prepare'; this.readProgress = {}; this.lastRead = {}; this.flashReadProfile = null;
     this.baselineTransport = this.transport; this.serialBaseline = { ...this.transport?.stats };
     let destructive = false;
     try {
