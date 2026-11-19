@@ -64,7 +64,7 @@ def validate_command(name, args, device, artifacts):
     require(isinstance(args, dict))
     schemas = {
         'identify': set(), 'reset': set(), 'console': {'return_console'},
-        'partitions': {'address', 'return_console'}, 'flash.read': {'address', 'size', 'return_console', 'reader'},
+        'partitions': {'address', 'return_console'}, 'flash.read': {'address', 'size', 'return_console', 'reader', 'packet_size'},
         'flash.write': {'images', 'chip', 'erase', 'return_console'}, 'flash.erase': {'chip', 'return_console'},
         'uart.write': {'data'}, 'uart.configure': {'baudrate'}, 'io0': {'duration_ms'}, 'boot.download': {'hold_ms'},
         'http.request': {'url', 'method', 'body', 'timeout_ms'},
@@ -76,9 +76,15 @@ def validate_command(name, args, device, artifacts):
             require(type(args[key]) is bool)
     capacity = device['flash_size']
     if name == 'flash.read':
-        require(isinstance(args.get('reader', 'reference'), str) and
-                args.get('reader', 'reference') in {'reference', 'preallocated'},
+        reader = args.get('reader', 'reference')
+        require(isinstance(reader, str) and reader in {'reference', 'preallocated', 'packet-diagnostic'},
                 'invalid_flash_reader', 'Unknown flash reader')
+        if reader == 'packet-diagnostic':
+            require(type(args.get('packet_size')) is int and args['packet_size'] in {1024, 2048, 4096},
+                    'invalid_flash_packet_size', 'Diagnostic packet size must be 1024, 2048 or 4096')
+        else:
+            require('packet_size' not in args,
+                    'invalid_flash_packet_size', 'Packet size can only be set in diagnostic mode')
         region(args.get('address'), args.get('size'), capacity)
     if name == 'partitions':
         region(args.get('address', 0x8000), 0xc00, capacity)
