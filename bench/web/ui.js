@@ -97,6 +97,7 @@ const boards = new BoardManager({
         // Hardware API commands run through this browser agent but never submit().
         // Accept only results from the current board context and server ACK.
         if (boards.get(ctx.id) !== ctx || ctx.status !== 'connected' ||
+            ctx.agent?.generation !== event.generation ||
             !Number.isFinite(event.transfer?.bytes_per_second) || event.transfer.bytes_per_second < 0) return;
         flashRates.set(ctx.id, { ...event.transfer, command: event.command });
         if (selected() === ctx.id) renderState();
