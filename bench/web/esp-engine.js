@@ -467,14 +467,17 @@ export class EspEngine {
         // Refused before any byte reached the chip (or by the loader's own pre-checks): nothing resident, release the hold.
         this.diagnosticResident = false; this.setHold(false); touched = false;
       }
+      // One structured, allowlisted report for every outcome: phase, origin code, category, RAM-load state (never loader text).
+      const failure = hardwareError(e, this.disconnected, this.diagnostics());
       if (touched) {
         this.setHold(true); this.diagnosticResident = true;
         context.complete?.({ hold: true, returnConsole: false });
-        return { state: 'indeterminate', hold: true, error: { code: 'hardware_outcome_unknown', cause: String(e?.code || e?.message || 'unknown').slice(0, 64) },
+        const { code: originCode, ...structured } = failure;
+        return { state: 'indeterminate', hold: true,
+          error: { code: 'hardware_outcome_unknown', origin_code: originCode, ...structured },
           trace: this.trace.snapshot().slice(-60) };
       }
-      const failure = hardwareError(e, this.disconnected, this.diagnostics());
-      throw Object.assign(new HardwareError(e?.code && /^diagnostic_|^manual_download|^artifact_/.test(e.code) ? e.code : failure.code, failure), { name: failure.error_type });
+      throw Object.assign(new HardwareError(failure.code, failure), { name: failure.error_type });
     } finally { this.busy = false; }
   }
 }

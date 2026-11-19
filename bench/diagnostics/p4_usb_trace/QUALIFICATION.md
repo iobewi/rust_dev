@@ -141,6 +141,16 @@ Fréquence CPU : **200 MHz** d'après le code du stub (`stub_target_clock_init`,
 
 **Reste non fait ou non prouvé.** Aucun test navigateur de bout en bout (Playwright absent : seuls des contrôles statiques de balisage ont été écrits) ; aucun essai sur matériel ; la durée de `detectChip` en `no_reset` sur la vraie ROM du P4 et le comportement réel de la ROM face aux commandes RAM ne sont **pas** démontrés ; l'intégration dans la PR #68 n'est pas faite (voir le rapport).
 
+## 6 bis. Observabilité des erreurs et analyse statique de l'échec de l'opération `c27ec324` (campagne du 2026-11-19)
+
+**Défaut corrigé.** `hardwareError` réduisait tout code inconnu à `hardware_command_failed` (liste blanche) et le nom `IdlabDiagnosticError` à `Error` : le serveur et la page ne recevaient pas la cause. Les codes `diagnostic_*`, `idlab_trace_*` et `manual_download_required` (vocabulaire fixe, minuscules, borné) sont désormais conservés ;
+le rapport est structuré : `phase` (`diagnostic_stub_load` / `diagnostic_read`), `category` (`local_validation`, `refused_before_load`, `ram_load_failed`, `stream_failed`, `unexpected`), `ram_load` (`not_started` / `started` / `unknown`, jamais deviné), `origin_code`, `origin_error_type`, `chip_revision` (entier). Aucun texte du chargeur n'est transmis (l'ancien champ libre `cause` est supprimé). Autorisations, quarantaine et récupération : inchangées.
+
+**Analyse statique, hypothèses non confirmées.** Le journal de la page montre pour `c27ec324` : réception du stub, identification, lecture, puis l'étape `diagnostic_stub_load` (affichée « Préparation » faute de libellé), puis l'échec en 70 ms, 0 lecture série, sans état indéterminé.
+Les contrôles du chargeur s'exécutent dans l'ordre : consentement, SHA-256, `CHIP_NAME`, session ROM (`IS_STUB` / `syncStubDetected`), puis la révision par lecture de registres (qui compte des lectures série). Les compteurs sont relevés après l'ouverture de la session : 0 lecture signifie que la lecture de révision n'a **pas** été atteinte.
+Un refus de révision (v3.2 ≥ 3.00 d'après la mesure antérieure) est donc peu compatible avec les faits ; le refus « session non ROM » (`syncStubDetected` : toutes les réponses de synchronisation à 0, c'est-à-dire un stub en marche) l'est, et l'absence d'événement de perte USB entre D et T dans le journal va dans ce sens.
+**Aucune de ces explications n'est établie** : la cause réelle sera lue au prochain essai grâce au code désormais transmis.
+
 ## 7. Tests exécutés
 
 | Suite | Résultat |
