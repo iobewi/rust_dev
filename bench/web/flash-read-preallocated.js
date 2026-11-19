@@ -1,9 +1,10 @@
 // Experimental ESP_READ_FLASH reader for the browser-owned Web Serial session.
-// It preserves esptool-js 0.7.0's command, 4096-byte frames, 1024 outstanding
-// packet parameter and cumulative 4-byte ACKs; only accumulation is changed:
-// one allocation with direct copies instead of repeated full-buffer append.
+// It preserves esptool-js 0.7.0's READ_FLASH command, 1024 advertised
+// outstanding packets and cumulative 4-byte ACKs. The optional packet size
+// (1/2/4 KiB) is used only in the explicitly selected diagnostic reader.
+// Accumulation uses one allocation with direct copies.
 // No port reopen, reset, retry, extra command or flash modification.
-const FRAME_SIZE = 0x1000;
+export const FLASH_READ_PACKET_SIZES = Object.freeze([1024, 2048, 4096]);
 const MAX_IN_FLIGHT = 1024;
 function u32(value) {
   const bytes = new Uint8Array(4);
@@ -11,14 +12,15 @@ function u32(value) {
   return bytes;
 }
 
-export async function readFlashPreallocated(loader, address, size, onPacketReceived = null) {
+export async function readFlashPreallocated(loader, address, size, onPacketReceived = null, packetSize = 4096) {
   if (!Number.isSafeInteger(address) || address < 0 || address > 0xffffffff ||
       !Number.isSafeInteger(size) || size <= 0 || size > 0x100000 ||
       address + size > 0x100000000) throw new RangeError('invalid_flash_read_region');
+  if (!FLASH_READ_PACKET_SIZES.includes(packetSize)) throw new RangeError('invalid_flash_packet_size');
   const command = new Uint8Array(16), view = new DataView(command.buffer);
   view.setUint32(0, address, true);
   view.setUint32(4, size, true);
-  view.setUint32(8, FRAME_SIZE, true);
+  view.setUint32(8, packetSize, true);
   view.setUint32(12, MAX_IN_FLIGHT, true);
 
   const status = await loader.checkCommand('read flash', loader.ESP_READ_FLASH, command);
@@ -29,7 +31,7 @@ export async function readFlashPreallocated(loader, address, size, onPacketRecei
   while (received < size) {
     const packet = await loader.transport.read(loader.FLASH_READ_TIMEOUT);
     if (!(packet instanceof Uint8Array) || packet.length === 0 ||
-        packet.length > FRAME_SIZE || packet.length > size - received)
+        packet.length > packetSize || packet.length > size - received)
       throw new Error('flash_read_invalid_packet');
     result.set(packet, received);
     received += packet.length;
