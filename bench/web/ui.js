@@ -93,6 +93,14 @@ const boards = new BoardManager({
   createAgent(ctx, hardware) {
     return new Agent({ engine: hardware, device: ctx.localDevice, scopedBrowserAgent: true,
       onLog: event => logAgent({ ...event, device: ctx.id }),
+      onTransfer: event => {
+        // Hardware API commands run through this browser agent but never submit().
+        // Accept only results from the current board context and server ACK.
+        if (boards.get(ctx.id) !== ctx || ctx.status !== 'connected' ||
+            !Number.isFinite(event.transfer?.bytes_per_second) || event.transfer.bytes_per_second < 0) return;
+        flashRates.set(ctx.id, { ...event.transfer, command: event.command });
+        if (selected() === ctx.id) renderState();
+      },
       onActivity: activity,
       onState: state => {
         ctx.generation = ctx.agent?.generation || null;
