@@ -202,3 +202,51 @@ test('ACK-to-first-byte timing is measured after completed 4-byte ACK, not after
  assert.equal(profile.timing.frame_receive.count,2);
  assert.equal(profile.timing.ack_to_first_byte.buckets.length,8);
 });
+
+
+test('raw Web Serial chunk cadence is recorded before SLIP decoding, without storing payloads', async () => {
+  let clock = 0;
+  const {BenchTransport} = makeBenchTransport(FakeTransport, ESPError, {now:()=>clock});
+  const tr = new BenchTransport({});
+  tr.beginFlashReadProfile();
+  // Simulate three chunks appended by upstream esptool-js readLoop at steady intervals.
+  clock = 10;
+  tr.buffer = Uint8Array.from([0xc0,1,2]);
+  clock = 100;
+  tr.buffer = Uint8Array.from([...tr.buffer,3,4]);
+  clock = 190;
+  tr.buffer = Uint8Array.from([...tr.buffer,5,0xc0]);
+  const result = await tr.read(1000);
+  assert.deepEqual(result, Uint8Array.from([1,2,3,4,5]));
+  const profile = tr.endFlashReadProfile();
+  assert.equal(profile.raw_chunks,3);
+  assert.equal(profile.raw_bytes,7);
+  assert.equal(profile.max_raw_chunk_bytes,3);
+  assert.equal(profile.timing.raw_chunk_interval.count,2);
+  assert.equal(profile.timing.raw_chunk_interval.sum_ms,180);
+  assert.equal(profile.packets,1);
+  assert.equal(Object.hasOwn(profile,'raw_payload'),false);
+});
+
+test('raw chunk ACK interval is measured before packet assembly, without modifying the ACK', async () => {
+  let clock = 0;
+  const {BenchTransport}=makeBenchTransport(FakeTransport,ESPError,{now:()=>clock});
+  const tr=new BenchTransport({writable:{getWriter(){return {
+    async write(){clock+=1;}, releaseLock(){}
+  };}}});
+  tr.slipWriter=bytes=>FakeTransport.frame(bytes);
+  tr.beginFlashReadProfile();
+  clock=10;
+  tr.buffer=FakeTransport.frame(new Uint8Array([1]));
+  assert.deepEqual(await tr.read(1000),new Uint8Array([1]));
+  clock=20;
+  await tr.write(new Uint8Array([1,0,0,0]));
+  clock=111;
+  tr.buffer=FakeTransport.frame(new Uint8Array([2]));
+  assert.deepEqual(await tr.read(1000),new Uint8Array([2]));
+  const p=tr.endFlashReadProfile();
+  assert.equal(p.timing.ack_to_raw_chunk.count,1);
+  assert.equal(p.timing.ack_to_raw_chunk.sum_ms,90);
+  assert.equal(p.timing.ack_to_first_byte.count,1);
+  assert.equal(p.timing.ack_to_first_byte.sum_ms,90);
+});
