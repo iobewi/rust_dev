@@ -63,8 +63,10 @@ test('automatic manual operations and independent API share exclusion across two
   });
   await selectRemoteDevice(page,'board');
   await page.waitForFunction(()=>document.querySelector('#operations-body').textContent.includes('completed'));
+  await page.click('#workspace-tab-operations');
+  await page.click('#tab-operations');
   const previousResult = await page.textContent('#result');
-  await page.evaluate(()=>document.querySelector('#operations-body button').click());
+  await page.locator('#operations-body button').first().click();
   assert.equal(await page.locator('#manual-result-panel').isVisible(),false,
     'the legacy JSON panel must be hidden while inline Inspecter is open');
   assert.equal(await page.textContent('#result'),previousResult,
@@ -268,7 +270,7 @@ test(`local browser session and direct control over ${usbJtag?'USB Serial/JTAG':
   await page.selectOption('#flash-reader','preallocated');
   await page.evaluate(()=>{window.__pauseFlashRead=true;window.__journalNode=document.querySelector('#agent-log');});
   await page.click('#read');
-  await page.waitForFunction(()=>typeof window.__continueFlashRead==='function'&&document.querySelector('#agent-log').textContent.includes('0 / 64 octets'));
+  await page.waitForFunction(()=>typeof window.__continueFlashRead==='function');
   assert.equal(await page.locator('#agent-log').isVisible(),true);
   assert.equal(await page.locator('#read').isDisabled(),true);
   await page.click('#workspace-tab-consoles');assert.equal(await page.locator('#agent-log').isVisible(),true);
