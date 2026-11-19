@@ -11,7 +11,7 @@
 //   partial-packet  bytes arrived, the packet never completed
 //   invalid-packet  SLIP framing error (noise)
 //   closed          the port ended or was lost (device lost, abort(), disconnect())
-import { latencyStats, observeLatency, summarizeLatency } from './flash-read-latency.js';
+import { latencyStats, observeLatency } from './flash-read-latency.js';
 
 const EMPTY = new Uint8Array(0);
 
