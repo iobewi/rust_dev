@@ -141,7 +141,7 @@ test(`local browser session and direct control over ${usbJtag?'USB Serial/JTAG':
   assert.equal(await noSidebarOverflow(),true);
   await page.locator('.loader-advanced summary').click();
   assert.equal(await page.locator('#manual-download').isVisible(),true);
-  assert.equal(await page.locator('.manual-download > span:first-of-type').textContent(),'Démarrage du chargeur par BOOT + RESET');
+  assert.equal(await page.locator('.manual-download > span:first-of-type').textContent(),'BOOT manuel');
   assert.equal(await page.locator('#loader-baud').isVisible(),true);
   assert.equal(await noSidebarOverflow(),true,'expanded advanced UART selector must fit sidebar');
   await page.locator('.loader-advanced summary').click();
