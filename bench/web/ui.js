@@ -25,7 +25,7 @@ let esptoolDeps;
 const boardBusy = new Map();
 const grantDurations = new Map(); // UI-only grant duration choice, scoped by board ID.
 let knownDevices = [], imagePlan = [], artifactList = [], confirmation;
-let format = 'text', paused = false, pausedAt = Infinity, renderPending = false, selectedOperation, lastConsoleKey;
+let format = 'text', paused = false, pausedAt = Infinity, renderPending = false, selectedOperation, inspectedOperation = null, lastConsoleKey;
 let streamController, streamGeneration = 0, refreshPromise, sessionOpened = false;
 let session, sessionPromise;
 const partitionSuggestions = new Map();
@@ -631,7 +631,7 @@ function renderState() {
 $('devices').onchange = () => {
   confirmation = null; $('program-confirmation').hidden = true; $('download').replaceChildren(); $('hex-dump').textContent = 'Aucune donnée lue pour cette carte.';
   if (paused) pausedAt = capture(selected()).sequence;
-  selectedOperation = null;
+  selectedOperation = null; inspectedOperation = null;
   syncContext(); renderActiveCards();
   renderOperations(); json({});
   renderState(); renderPartitions(); renderConsole(); renderJournal(); startStream();
@@ -754,9 +754,29 @@ function renderOperations() {
     for (const value of [record.id.slice(0, 10), record.device, record.command, record.state, Math.round((record.finished || performance.now()) - record.started) + ' ms']) {
       const cell = document.createElement('td'); cell.textContent = value; cell.className = 'mono'; row.append(cell);
     }
-    const cell = document.createElement('td'), button = document.createElement('button'); button.textContent = 'Inspecter';
-    button.onclick = () => { selectedOperation = record.id; json(record.snapshot); };
+    const cell = document.createElement('td'), button = document.createElement('button');
+    const expanded = inspectedOperation === record.id;
+    button.type = 'button';
+    button.textContent = expanded ? 'Masquer' : 'Inspecter';
+    button.setAttribute('aria-expanded', String(expanded));
+    button.setAttribute('aria-label', (expanded ? 'Masquer' : 'Inspecter') + ' l’opération ' + record.id.slice(0, 10));
+    button.onclick = () => {
+      inspectedOperation = expanded ? null : record.id;
+      selectedOperation = record.id;
+      json(record.snapshot); // Preserve the existing result panel and its consumers.
+      renderOperations();
+    };
     cell.append(button); row.append(cell); body.append(row);
+    if (expanded) {
+      const detailRow = document.createElement('tr');
+      detailRow.className = 'operation-detail-row';
+      const detailCell = document.createElement('td');
+      detailCell.colSpan = 6;
+      const details = document.createElement('pre');
+      details.className = 'operation-detail-json result';
+      details.textContent = JSON.stringify(record.snapshot, null, 2);
+      detailCell.append(details); detailRow.append(detailCell); body.append(detailRow);
+    }
   }
 }
 function recordOperation(op, started) {
