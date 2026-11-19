@@ -273,6 +273,15 @@ class P4TraceTests(unittest.TestCase):
         self.assertEqual(read['state'], 'queued')
 
     # ---------------------------------------------------------------- interruptions
+    def test_a_structured_failure_report_is_stored_verbatim_and_quarantine_policy_is_unchanged(self):
+        op = self.start()
+        error = {'code': 'diagnostic_stub_requires_a_rom_session', 'phase': 'diagnostic_stub_load', 'category': 'refused_before_load',
+                 'ram_load': 'not_started', 'origin_code': 'diagnostic_stub_requires_a_rom_session', 'origin_error_type': 'IdlabDiagnosticError'}
+        self.b.finish('agent', {'id': op['id'], 'state': 'failed', 'error': error})
+        self.assertEqual(self.b.operations[op['id']]['error'], error)       # the exact cause reaches the operation view
+        self.assertEqual(self.b.operations[op['id']]['state'], 'failed')
+        self.assertTrue(self.b.devices['p4']['quarantined'] and self.b.devices['p4']['diagnostic_resident'])   # policy untouched
+
     def test_an_agent_disconnection_during_the_run_leaves_the_board_resident_and_quarantined(self):
         self.start()
         self.b.disconnect('agent')

@@ -35,13 +35,15 @@ export function validateDiagnosticArgs(args, device) {
  * Returns { result }. On a failure after the chip was touched it throws an error with `chipTouched = true`.
  */
 export async function runP4UsbTrace({ loader, args, device, stubBytes, check = () => {}, report = () => {}, now = () => performance.now() }) {
+  // Structured, allowlisted origin report attached to every failure (see hardware-errors.js). Never carries loader text.
+  const report_ = (error, fields) => { error.diagnostic = { origin_code: error.code, origin_error_type: error.name, ...fields }; return error; };
   let stubText;
   try {   // refusals here happen before anything is sent to the chip
     validateDiagnosticArgs(args, device);
     if (await sha256(stubBytes) !== args.stub_sha256) throw fail('artifact_integrity_failed');
     stubText = new TextDecoder('utf-8', { fatal: true }).decode(stubBytes);
     check();
-  } catch (error) { error.indeterminate = false; throw error; }
+  } catch (error) { error.indeterminate = false; throw report_(error, { phase: 'diagnostic_stub_load', category: 'local_validation', ram_load: 'not_started' }); }
   let touched = false;
   const wasStub = loader.IS_STUB === true;   // a standard stub already running is refused by the loader, not 'launched' by us
   try {
@@ -69,9 +71,18 @@ export async function runP4UsbTrace({ loader, args, device, stubBytes, check = (
     const known = error instanceof IdlabDiagnosticError || error instanceof IdlabTraceError;
     // Indeterminate as soon as anything may have reached the chip: unknown failures, a loader that says so,
     // or a stub already executing (IS_STUB set by the loader after the RAM launch).
-    const indeterminate = !known || error.sessionIndeterminate === true || (loader.IS_STUB === true && !wasStub);
+    const launched = loader.IS_STUB === true && !wasStub;
+    const indeterminate = !known || error.sessionIndeterminate === true || launched;
     error.indeterminate = touched && indeterminate;
-    throw error;
+    const stubLoaded = launched || error instanceof IdlabTraceError;
+    const fields = { phase: stubLoaded ? 'diagnostic_read' : 'diagnostic_stub_load' };
+    if (error instanceof IdlabTraceError) Object.assign(fields, { category: 'stream_failed', ram_load: 'started' });
+    else if (error instanceof IdlabDiagnosticError && error.sessionIndeterminate !== true && !launched)
+      Object.assign(fields, { category: 'refused_before_load', ram_load: 'not_started' });   // the loader's pre-write checks: nothing reached the chip
+    else if (error instanceof IdlabDiagnosticError) Object.assign(fields, { category: 'ram_load_failed', ram_load: 'started' });
+    else Object.assign(fields, { category: 'unexpected', ram_load: stubLoaded ? 'started' : 'unknown' });
+    if (error instanceof IdlabDiagnosticError && Number.isInteger(error.detail) && /revision/.test(error.code)) fields.chip_revision = error.detail;
+    throw report_(error, fields);
   }
 }
 export { retireDiagnosticStub };

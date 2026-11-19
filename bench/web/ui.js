@@ -873,7 +873,9 @@ async function submit(command, args = {}, destructive = false) {
       const suggest = command === 'partitions' && args.address === 0x8000 && op.error?.code === 'partition_table_invalid';
       if (suggest) partitionSuggestions.set(target.device, target.generation);
       if (selected() === target.device) {
-        feedback(`Opération ${op.state} : ${diagnostic(op.error?.code || 'inspectez le résultat')}`);
+        feedback(`Opération ${op.state} : ${diagnostic(op.error?.code || 'inspectez le résultat')}` +
+          (op.error?.origin_code && op.error.origin_code !== op.error.code ? ` — cause : ${diagnostic(op.error.origin_code)}` : '') +
+          (op.error?.ram_load === 'not_started' ? ' (rien n’a été chargé dans la puce)' : op.error?.ram_load === 'started' ? ' (chargement RAM commencé : session indéterminée)' : ''));
         tab(suggest ? 'partitions' : 'operations');
       }
       return op;

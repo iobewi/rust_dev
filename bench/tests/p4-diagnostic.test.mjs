@@ -263,3 +263,109 @@ test('registration without the resident flag is never a basis to lift a quaranti
   await agent.message({ type: 'registered', device: 'p4', generation: 'g3', quarantined: false, diagnostic_resident: false });
   engine.setHold(false); await agent.recover(); assert.deepEqual(sent, [['recover', {}]]);
 });
+
+// ------------------------------------------------------------------ error observability (the cause of a failure must reach the operator)
+import { hardwareError, diagnostic } from '../web/hardware-errors.js';
+
+const refusal = async (options, mutate = x => x) => {
+  const loader = simP4(options), x = mutate(await engineWith(loader));
+  let thrown; try { await x.engine.execute(P4_TRACE, clean(goodArgs()), x.context); } catch (e) { thrown = e; }
+  return { thrown, loader, x };
+};
+// what the agent does with whatever the engine throws (second pass through hardwareError)
+const published = e => hardwareError(e, false, {});
+
+test('refusal BEFORE the RAM load keeps its exact code, phase, category and "not started" (the observed field failure)', async () => {
+  for (const [options, code] of [[{ isStub: true }, 'diagnostic_stub_requires_a_rom_session'], [{ chip: 'ESP32-S3' }, 'diagnostic_stub_wrong_chip'],
+      [{ revision: 200 }, 'diagnostic_stub_unsupported_chip_revision']]) {
+    const { thrown, loader, x } = await refusal(options);
+    assert.equal(thrown.code, code, 'engine keeps the code');
+    const out = published(thrown);                       // second pass: what the server receives
+    assert.deepEqual([out.code, out.phase, out.category, out.ram_load, out.origin_code, out.origin_error_type],
+      [code, 'diagnostic_stub_load', 'refused_before_load', 'not_started', code, 'IdlabDiagnosticError'], code);
+    assert.notEqual(out.code, 'hardware_command_failed'); assert.notEqual(out.error_type, 'Error');
+    assert.equal(writes(loader).length, 0); assert.equal(x.engine.hold, false); assert.equal(x.engine.diagnosticResident, false);
+    assert.match(diagnostic(out.code), /rien n’a été chargé|session ROM/i);
+    if (code.endsWith('revision')) assert.equal(out.chip_revision, 200);
+  }
+});
+
+test('local validation refusals and manual-download refusal keep their code and are "local_validation / not_started"', async () => {
+  const loader = simP4(), x = await engineWith(loader);
+  let e; try { await x.engine.execute(P4_TRACE, clean(goodArgs({ address: 0 })), x.context); } catch (err) { e = err; }
+  const out = published(e);
+  assert.deepEqual([out.code, out.category, out.ram_load, out.phase], ['diagnostic_parameter_not_allowed', 'local_validation', 'not_started', 'diagnostic_stub_load']);
+  const y = await engineWith(simP4(), { manual: false }); let f; try { await y.engine.execute(P4_TRACE, clean(goodArgs()), y.context); } catch (err) { f = err; }
+  assert.equal(published(f).code, 'diagnostic_unavailable');
+  const z = await engineWith(simP4()); z.engine.openRomSession = async () => { throw Object.assign(new Error('x'), { code: 'manual_download_required' }); };
+  let g; try { await z.engine.execute(P4_TRACE, clean(goodArgs()), z.context); } catch (err) { g = err; }
+  assert.equal(published(g).code, 'manual_download_required');
+});
+
+test('failures DURING the RAM load are indeterminate with the origin code, "ram_load_failed" and "started"', async () => {
+  for (const [fault, origin] of [['memBegin', 'diagnostic_stub_ram_load_failed'], ['load_truncated', 'diagnostic_stub_ram_load_failed'],
+      ['probe_rejected', 'diagnostic_stub_not_identified']]) {
+    const { thrown, x } = await refusal({ fault });
+    assert.equal(thrown, undefined, 'indeterminate outcomes are returned, not thrown');
+    const result = await (async () => { const y = await engineWith(simP4({ fault })); return y.engine.execute(P4_TRACE, clean(goodArgs()), y.context); })();
+    assert.equal(result.state, 'indeterminate'); assert.equal(result.error.code, 'hardware_outcome_unknown');
+    assert.deepEqual([result.error.origin_code, result.error.category, result.error.ram_load], [origin, 'ram_load_failed', 'started'], fault);
+    assert.equal(x.engine.hold, true);
+  }
+});
+
+test('stream failures after the launch: idlab_trace_* origin, "stream_failed", phase diagnostic_read, still indeterminate', async () => {
+  for (const [fault, origin] of [['read_interrupted', 'idlab_trace_stream_failed'], ['corrupt_data', 'idlab_trace_md5_mismatch'], ['bad_md5', 'idlab_trace_stream_failed']]) {
+    const x = await engineWith(simP4({ fault })), result = await x.engine.execute(P4_TRACE, clean(goodArgs()), x.context);
+    assert.equal(result.state, 'indeterminate');
+    assert.ok(result.error.origin_code.startsWith('idlab_trace_'), fault + ' ' + result.error.origin_code);
+    assert.deepEqual([result.error.category, result.error.ram_load, result.error.phase], ['stream_failed', 'started', 'diagnostic_read']);
+    assert.equal(result.error.origin_error_type, 'IdlabTraceError'); assert.equal(x.engine.hold, true); assert.equal(x.engine.diagnosticResident, true);
+  }
+});
+
+test('an unexpected error after the chip was touched is indeterminate with an UNKNOWN RAM-load state, never a guess', async () => {
+  const loader = simP4(); loader.memBlock = async () => { throw new TypeError('boom'); };
+  const x = await engineWith(loader), result = await x.engine.execute(P4_TRACE, clean(goodArgs()), x.context);
+  assert.equal(result.state, 'indeterminate'); assert.equal(result.error.code, 'hardware_outcome_unknown');
+  assert.equal(result.error.category, 'ram_load_failed');   // the loader wraps it as a RAM-load failure with sessionIndeterminate
+  const unexpected = simP4(); unexpected.chip = { CHIP_NAME: 'ESP32-P4', getChipRevision: async () => { throw new RangeError('eFuse'); } };
+  const y = await engineWith(unexpected), r2 = await y.engine.execute(P4_TRACE, clean(goodArgs()), y.context);
+  assert.equal(r2.state, 'indeterminate'); assert.deepEqual([r2.error.category, r2.error.ram_load], ['unexpected', 'unknown']);
+});
+
+test('no loader text, secret or firmware content ever reaches the published error or the journal fields', async () => {
+  const secrets = ['TOKEN=hunter2', 'Bearer abcdef', 'SSID=home-wifi', 'serial 1234-ABCD'];
+  const loader = simP4(); loader.memBegin = async () => { throw new Error(secrets.join(' ')); };
+  const x = await engineWith(loader), result = await x.engine.execute(P4_TRACE, clean(goodArgs()), x.context);
+  const wire = JSON.stringify(result);
+  for (const s of secrets) assert.ok(!wire.includes(s), s);
+  assert.ok(!wire.includes('"cause"'), 'the free-text cause field is gone');
+  const hostile = Object.assign(new Error('TOKEN=hunter2'), { code: 'DIAGNOSTIC_X', detail: 'TOKEN=hunter2',
+    diagnostic: { category: 'TOKEN=hunter2', ram_load: 'TOKEN=hunter2', origin_code: 'diagnostic_' + 'x'.repeat(200), origin_error_type: 'Bearer abc', phase: 'TOKEN=hunter2' } });
+  const out = hardwareError(hostile);
+  assert.equal(out.code, 'hardware_command_failed'); assert.ok(!JSON.stringify(out).includes('hunter2'));
+  for (const key of ['category', 'ram_load', 'origin_code']) assert.equal(out[key], undefined, key);
+  assert.equal(hardwareError(Object.assign(new Error('x'), { code: 'diagnostic_ok_code_1' })).code, 'diagnostic_ok_code_1');
+  assert.equal(hardwareError(Object.assign(new Error('x'), { code: 'idlab_trace_md5_mismatch' })).code, 'idlab_trace_md5_mismatch');
+  for (const bad of ['diagnostic_', 'Diagnostic_x', 'diagnostic_x y', 'diagnostic_x\n', 'idlab_trace_' + 'a'.repeat(90)])
+    assert.equal(hardwareError(Object.assign(new Error('x'), { code: bad })).code, 'hardware_command_failed', JSON.stringify(bad));
+});
+
+test('the observed field failure is now attributable: same inputs as operation c27ec324 give a precise, human-readable cause', async () => {
+  const { thrown } = await refusal({ isStub: true });          // a ROM-less (stub still running) session, the leading hypothesis, NOT a confirmed cause
+  const out = published(thrown);
+  assert.equal(diagnostic(out.code).startsWith('Le chargeur répond avec le stub standard'), true);
+});
+
+test('the agent journal shows the exact cause, the RAM-load state and the category, nothing else', async () => {
+  const { AgentJournal } = await import('../web/agent-journal.js');
+  const j = new AgentJournal();
+  j.append({ stage: 'result', command: P4_TRACE, id: 'c27ec3242d', state: 'failed', code: 'diagnostic_stub_requires_a_rom_session',
+    detail: { phase: 'diagnostic_stub_load', category: 'refused_before_load', ram_load: 'not_started', error_type: 'IdlabDiagnosticError',
+      origin_code: 'diagnostic_stub_requires_a_rom_session', secret: 'TOKEN=hunter2' } });
+  const line = JSON.stringify(j.rows);
+  for (const needle of ['stub standard', 'Chargement RAM du stub', 'chargement RAM non commencé', 'refused_before_load', 'IdlabDiagnosticError', 'diagnostic.p4_usb_trace'])
+    assert.ok(line.includes(needle), needle);
+  assert.ok(!line.includes('hunter2'));
+});
