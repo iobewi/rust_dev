@@ -32,7 +32,7 @@ test('API flash transfer is published only after a matching completed server ACK
   assert.deepEqual(transfers, [], 'ack of a different operation cannot publish');
   await x.agent.message({ type: 'result_ack', id: 'op', generation: 'gen', state: acknowledgedState, quarantined: false });
   if (acknowledgedState === 'completed') {
-   assert.deepEqual(transfers, [{ device: 'board', operationId: 'op', command: 'flash.read',
+   assert.deepEqual(transfers, [{ device: 'board', generation: 'gen', operationId: 'op', command: 'flash.read',
      transfer: { bytes: 4096, elapsed_ms: 200, bytes_per_second: 20480 } }]);
   } else assert.deepEqual(transfers, [], 'late physical success is not accepted server success');
   await x.agent.message({ type: 'result_ack', id: 'op', generation: 'gen', state: 'completed', quarantined: false });
