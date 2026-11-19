@@ -266,3 +266,30 @@ par l'API IDLab et les variantes de lecture sont exécutées par l'agent navigat
 Ne pas ajouter de dépendance à un outil Python local ni transférer la possession USB.
 Comparer uniquement des variantes JavaScript explicitement qualifiées ; ne pas
 assimiler un changement du protocole de lecture à une simple optimisation.
+
+
+### Comparaison A/B depuis l'interface IDLab
+
+Dans **Opérations → Lecture mémoire**, sélectionner **Lecteur** avant de cliquer sur
+**Lire la flash** :
+
+- **A — standard (esptool-js)** : méthode `readFlash()` historique, utilisée par
+  défaut, y compris pour les recettes API qui ne précisent aucun lecteur ;
+- **B — expérimentale (tampon préalloué)** : méthode JavaScript alternative
+  exécutée par le même agent navigateur et sur **le même port Web Serial**.
+  Le protocole `ESP_READ_FLASH`, les trames de 4 Kio et les ACK cumulatifs restent
+  identiques : seule la stratégie d'accumulation des octets change.
+
+Chaque lecture produit un artefact et son SHA-256, puis
+**Historique des opérations → Inspecter → `result.transfer.reader`** identifie
+la méthode réellement exécutée, avec `result.transfer.bytes_per_second` et
+`result.transfer.profile`. Aucun Python local, aucune commande shell et
+aucune déconnexion du port USB ne sont nécessaires.
+
+Recette comparative : sur la même carte, choisir une région stable de 4 Kio,
+lire A puis B, vérifier les deux SHA-256 identiques ; ensuite seulement,
+répéter à 1 Mio et comparer la durée utile, en gardant un essai A de contrôle.
+L'identité de la carte, l'état du banc et les autorisations habituelles restent
+obligatoires. La méthode B est expérimentale : elle **n'est pas censée corriger
+à elle seule une latence de 90 ms par paquet**, puisqu'elle conserve exactement
+le même protocole de transport.
