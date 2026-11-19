@@ -2,9 +2,16 @@ import { effectiveLoaderBaud, flashTransfer } from './loader-settings.js';
 // Hardware only: no DOM, REST, project readiness rules or verdicts.
 import { HardwareError, hardwareError } from './hardware-errors.js';
 import { makeBenchTransport } from './bench-transport.js';
+import { latencyStats, mergeLatency, summarizeLatency } from './flash-read-latency.js';
 import { runWrite, Tracer } from './flash-op.js';
 import { b64, unb64, family, region, validateImages, partitions, sha256 } from './protocol.js';
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+const latencyFields = ['packet_interval', 'ack_to_first_byte', 'read_to_first_byte', 'frame_receive'];
+function readProfileSnapshot(profile) {
+  if (!profile) return null;
+  const { timing, ...totals } = profile;
+  return { ...totals, timing: Object.fromEntries(latencyFields.map(key => [key, summarizeLatency(timing[key])])) };
+}
 
 export class EspEngine {
   constructor(port, deps, event, hold = () => {}) {
@@ -32,13 +39,14 @@ export class EspEngine {
       serial_reads: Math.max(0, (stats.reads || 0) - (base.reads || 0)),
       serial_bytes: Math.max(0, (stats.bytesIn || 0) - (base.bytesIn || 0)),
       serial_timeouts: Math.max(0, (stats.timeouts || 0) - (base.timeouts || 0)),
-      ...(this.flashReadProfile ? { flash_read_profile: { ...this.flashReadProfile } } : {}), ...this.lastRead };
+      ...(this.flashReadProfile ? { flash_read_profile: readProfileSnapshot(this.flashReadProfile) } : {}), ...this.lastRead };
   }
   setPhase(phase, context) { this.phase = phase; context.report?.(this.diagnostics()); }
   async readFlash(loader, address, size, context) {
     const startedAt = performance.now(); this.lastFlashTransfer = null;
     this.flashReadProfile = { blocks: 0, elapsed_ms: 0, packets: 0, payload_bytes: 0,
-      read_ms: 0, waiting_ms: 0, write_calls: 0, write_ms: 0 };
+      read_ms: 0, waiting_ms: 0, write_calls: 0, write_ms: 0,
+      timing: Object.fromEntries(latencyFields.map(key => [key, latencyStats()])) };
     // Keep esptool-js's cumulative append limited to 1 MiB per command. No retry:
     // every block is read once and only a complete region becomes an artifact.
     const data = new Uint8Array(size), blockLimit = 1024 * 1024;
@@ -66,14 +74,17 @@ export class EspEngine {
         const transportMetrics = this.transport?.endFlashReadProfile?.();
         this.flashReadProfile.blocks++;
         this.flashReadProfile.elapsed_ms += Math.round(performance.now() - blockStarted);
-        if (transportMetrics) for (const key of ['packets', 'payload_bytes', 'read_ms', 'waiting_ms', 'write_calls', 'write_ms'])
-          this.flashReadProfile[key] += transportMetrics[key];
+        if (transportMetrics) {
+          for (const key of ['packets', 'payload_bytes', 'read_ms', 'waiting_ms', 'write_calls', 'write_ms'])
+            this.flashReadProfile[key] += transportMetrics[key];
+          for (const key of latencyFields) mergeLatency(this.flashReadProfile.timing[key], transportMetrics.timing?.[key]);
+        }
       }
       if (!(block instanceof Uint8Array) || block.length !== blockSize) throw new HardwareError('short_flash_read');
       data.set(block, offset); this.readProgress.received_bytes = offset + blockSize;
       context.report?.(this.diagnostics()); check();
     }
-    this.lastFlashTransfer = { ...flashTransfer(size, performance.now() - startedAt), profile: { ...this.flashReadProfile } };
+    this.lastFlashTransfer = { ...flashTransfer(size, performance.now() - startedAt), profile: readProfileSnapshot(this.flashReadProfile) };
     return data;
   }
   setHold(value) { this.hold = value; this.persistHold(value); }
