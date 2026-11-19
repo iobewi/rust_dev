@@ -1,4 +1,4 @@
-// Static checks of the « Entrée manuelle » checkbox (markup, CSS and its wiring). There is no browser in the devcontainer: this proves the structure and the scope of the rules,
+// Static checks of the advanced manual ROM-download checkbox (markup, CSS and its wiring). There is no browser in the devcontainer: this proves the structure and the scope of the rules,
 // NOT the rendering, which is checked by the operator on the real page.
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -9,14 +9,19 @@ const css = readFileSync(new URL('../web/style.css', import.meta.url), 'utf8');
 const ui = readFileSync(new URL('../web/ui.js', import.meta.url), 'utf8');
 const block = css.slice(css.indexOf('/* manual-download:start'), css.indexOf('/* manual-download:end */'));
 
-test('compact manual entry label is clickable and owns its hover/focus tooltip', () => {
+test('advanced ROM-download entry label is clickable and owns its hover/focus tooltip', () => {
   const m = html.match(/<label class="manual-download" for="manual-download"><input id="manual-download" type="checkbox" aria-describedby="help-manual-download"><span>([^<]+)<\/span><span id="help-manual-download" class="manual-download-tooltip" role="tooltip">([^<]+)<\/span><\/label>/);
   assert.ok(m, 'checkbox and tooltip are inside the same label');
-  assert.equal(m[1], 'Entrée manuelle');
+  assert.equal(m[1], 'BOOT manuel');
   assert.match(m[2], /BOOT \+ RESET/);
   assert.equal((html.match(/id="manual-download"/g) || []).length, 1);
   assert.equal((html.match(/id="help-manual-download"/g) || []).length, 1);
   assert.ok(html.indexOf('add-card-controls') < html.indexOf('id="manual-download"'));
+  const advanced = html.slice(html.indexOf('<details class="loader-advanced">'), html.indexOf('</details>', html.indexOf('<details class="loader-advanced">')));
+  assert.ok(advanced.includes('id="manual-download"'), 'manual option must be inside advanced settings');
+  assert.ok(advanced.includes('id="loader-baud"'), 'UART override must remain in the same advanced panel');
+  assert.ok(advanced.indexOf('id="manual-download"') < advanced.indexOf('id="loader-baud"'));
+  assert.ok(!html.includes('<details class="loader-advanced" open'), 'advanced settings are collapsed by default');
   assert.doesNotMatch(html, /class="manual-download-row"|class="help manual-download-help"/);
 });
 

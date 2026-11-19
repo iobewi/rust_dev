@@ -18,6 +18,39 @@ test('agent acknowledges then executes once, duplicate execute is ignored',async
  const execute={type:'execute',id:'op',execution_deadline_ms:performance.now()+121000,deadline_ms:performance.now()+11000,remaining_ms:10000};
  await x.agent.message(execute);await x.agent.message(execute);assert.equal(x.runs(),1);assert.equal(x.messages.at(-1).state,'completed');
 });
+test('API flash transfer is published only after a matching completed server ACK', async () => {
+ for (const acknowledgedState of ['completed', 'expired']) {
+  const x = setup(), transfers = [];
+  x.agent.onTransfer = value => transfers.push(value);
+  x.engine.execute = async () => ({ artifact: { id: 'artifact-1' }, transfer: { bytes: 4096, elapsed_ms: 200, bytes_per_second: 20480 } });
+  await x.agent.message({ ...x.offer(), command: 'flash.read' });
+  await x.agent.message({ type: 'execute', id: 'op', execution_deadline_ms: performance.now() + 121000,
+    deadline_ms: performance.now() + 11000, remaining_ms: 10000 });
+  assert.equal(x.messages.at(-1).state, 'completed');
+  assert.deepEqual(transfers, [], 'unacknowledged result must not be shown');
+  await x.agent.message({ type: 'result_ack', id: 'wrong', generation: 'gen', state: 'completed', quarantined: false });
+  assert.deepEqual(transfers, [], 'ack of a different operation cannot publish');
+  await x.agent.message({ type: 'result_ack', id: 'op', generation: 'gen', state: acknowledgedState, quarantined: false });
+  if (acknowledgedState === 'completed') {
+   assert.deepEqual(transfers, [{ device: 'board', generation: 'gen', operationId: 'op', command: 'flash.read',
+     transfer: { bytes: 4096, elapsed_ms: 200, bytes_per_second: 20480 } }]);
+  } else assert.deepEqual(transfers, [], 'late physical success is not accepted server success');
+  await x.agent.message({ type: 'result_ack', id: 'op', generation: 'gen', state: 'completed', quarantined: false });
+  assert.equal(transfers.length, acknowledgedState === 'completed' ? 1 : 0, 'no duplicate notification');
+ }
+});
+
+test('failed API flash operations do not publish throughput', async () => {
+ const x = setup(), transfers = [];
+ x.agent.onTransfer = value => transfers.push(value);
+ x.engine.execute = async () => { throw new Error('failed read'); };
+ await x.agent.message({ ...x.offer(), command: 'flash.read' });
+ await x.agent.message({ type: 'execute', id: 'op', execution_deadline_ms: performance.now() + 121000,
+   deadline_ms: performance.now() + 11000, remaining_ms: 10000 });
+ await x.agent.message({ type: 'result_ack', id: 'op', generation: 'gen', state: 'failed', quarantined: false });
+ assert.deepEqual(transfers, []);
+});
+
 test('stale or expired offer never executes hardware',async()=>{
  const x=setup();await x.agent.message({...x.offer(),deadline_ms:0});
  await x.agent.message({type:'execute',id:'op',execution_deadline_ms:performance.now()+121000,deadline_ms:0,remaining_ms:0});

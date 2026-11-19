@@ -51,8 +51,8 @@ test('manual entry on an external UART bridge selects no_reset and holds the loa
   }
 });
 
-test('loader speed: native USB ports stay at 115200 (no esptool-js baud change); an external UART bridge keeps 460800', async () => {
-  for (const [vid, pid, expected] of [[0x303a, 0x0012, 115200], [0x303a, 0x1001, 115200], [0x1a86, 0x55d3, 460800], [0x10c4, 0xea60, 460800]]) {
+test('loader speed: native USB ports stay at 115200 (no esptool-js baud change); an external UART bridge defaults to 115200', async () => {
+  for (const [vid, pid, expected] of [[0x303a, 0x0012, 115200], [0x303a, 0x1001, 115200], [0x1a86, 0x55d3, 115200], [0x10c4, 0xea60, 115200]]) {
     const x = setup({ vid, pid });
     const id = await x.engine.identity();
     assert.deepEqual(x.log.baud, [expected], `${vid.toString(16)}:${pid.toString(16)}`);

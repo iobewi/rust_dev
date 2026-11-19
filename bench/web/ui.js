@@ -4,6 +4,7 @@ import { BoardManager } from './board-manager.js';
 import { AgentJournal } from './agent-journal.js';
 import { Agent } from './agent.js';
 import { EspEngine } from './esp-engine.js';
+import { effectiveLoaderBaud } from './loader-settings.js';
 import { BenchClient } from './api-client.js';
 import { b64, unb64, manifestPlan } from './protocol.js';
 import { ConsoleBuffer } from './console-buffer.js';
@@ -29,6 +30,7 @@ let streamController, streamGeneration = 0, refreshPromise, sessionOpened = fals
 let session, sessionPromise;
 const partitionSuggestions = new Map();
 const captures = new Map(), cursors = new Map(), operationLog = new Map(), partitionCache = new Map();
+const flashRates = new Map(); // Measured useful flash rates per logical board; never USB line speed.
 const api = () => new BenchClient();
 const selected = () => $('devices').value;
 const info = id => knownDevices.find(d => d.id === (id || selected()));
@@ -91,6 +93,15 @@ const boards = new BoardManager({
   createAgent(ctx, hardware) {
     return new Agent({ engine: hardware, device: ctx.localDevice, scopedBrowserAgent: true,
       onLog: event => logAgent({ ...event, device: ctx.id }),
+      onTransfer: event => {
+        // Hardware API commands run through this browser agent but never submit().
+        // Accept only results from the current board context and server ACK.
+        if (boards.get(ctx.id) !== ctx || ctx.status !== 'connected' ||
+            ctx.agent?.generation !== event.generation ||
+            !Number.isFinite(event.transfer?.bytes_per_second) || event.transfer.bytes_per_second < 0) return;
+        flashRates.set(ctx.id, { ...event.transfer, command: event.command });
+        if (selected() === ctx.id) renderState();
+      },
       onActivity: activity,
       onState: state => {
         ctx.generation = ctx.agent?.generation || null;
@@ -275,6 +286,7 @@ function renderActiveCards() {
       forget.textContent = 'Retirer'; forget.title = 'Oublier le port dans cette fenêtre sans supprimer les preuves serveur';
       forget.onclick = safely(async () => {
         await boards.forget(ctx.id);
+        flashRates.delete(ctx.id);
         renderDevices();
       });
       row.append(forget);
@@ -571,7 +583,15 @@ function renderState() {
   $('card-commands').dataset.mode = local ? engine?.mode || 'off' : 'remote';
   $('chip-info').textContent = d?.chip || '—'; $('flash-info').textContent = d?.flash_size ? `${hex(d.flash_size)} · ${d.flash_size} octets` : '—';
   $('rdid-info').textContent = local && localDevice.flash_id != null ? hex(localDevice.flash_id) : '—';
-  $('interface-info').textContent = local ? engine?.usbSerialJtag ? 'USB Serial/JTAG' : engine?.native ? 'USB natif (OTG ou non identifié)' : 'UART externe' : 'Agent du banc';
+  $('interface-info').textContent = local ? engine?.usbSerialJtag ? 'USB Serial/JTAG' : engine?.native ? 'USB natif (OTG ou non identifié)' : engine?.provenance().transport === 'external_uart' ? 'UART externe' : 'Port série non identifié' : 'Agent du banc';
+  $('loader-speed-info').textContent = local && engine ? engine.native ?
+    'USB direct · débit UART sans objet' :
+    `${effectiveLoaderBaud(false, engine.loaderBaud, engine.flashBaud).toLocaleString('fr-FR')} bauds UART` : '—';
+  $('console-speed-info').textContent = local && engine ? engine.native ?
+    'USB direct · sans débit UART physique' : `${engine.baudrate.toLocaleString('fr-FR')} bauds UART` : '—';
+  const transfer = flashRates.get(selected());
+  $('transfer-rate-info').textContent = local && transfer ?
+    `${(transfer.bytes_per_second / 1024).toLocaleString('fr-FR', { maximumFractionDigits: 1 })} Kio/s · ${transfer.command === 'flash.read' ? 'lecture' : 'écriture'} utile` : '—';
   const resetButton = $('reset-device'), usbReset = local && engine?.usbSerialJtag;
   $('card-reset-actions').hidden = !capability.has('reset');
   resetButton.hidden = !capability.has('reset');
@@ -679,13 +699,17 @@ async function addCard(id) {
     const http_origins = $('http-origins').value.split(',').map(v => v.trim()).filter(Boolean)
       .map(v => new URL(v).origin);
     await boards.add(id, port, { http_origins, manualDownload, loaderBaud });
+    flashRates.delete(id); // A reused logical ID must not inherit a previous board's throughput.
     $('loader-baud').value = '';
     $('manual-download').checked = false;
     renderDevices();
     $('devices').value = id;
     boards.select(id);
     $('devices').onchange?.();
-    feedback('Carte connectée. Les autres ports restent actifs.');
+    const nativeUSB = port.getInfo()?.usbVendorId === 0x303a;
+    feedback(nativeUSB && loaderBaud !== null
+      ? 'Carte connectée en USB natif : le débit UART sélectionné est sans effet sur ce transport.'
+      : 'Carte connectée. Les autres ports restent actifs.');
     await refreshDevices(false);
   } finally { usbBusy = false; renderActiveCards(); renderState(); }
 }
@@ -737,11 +761,17 @@ function renderOperations() {
 }
 function recordOperation(op, started) {
   const previous = operationLog.get(op.id);
+  let newRate = false;
+  if (op.state === 'completed' && ['flash.read', 'flash.write'].includes(op.command) &&
+      Number.isFinite(op.result?.transfer?.bytes_per_second) && op.result.transfer.bytes_per_second >= 0) {
+    flashRates.set(op.device, { ...op.result.transfer, command: op.command });
+    newRate = true;
+  }
   operationLog.set(op.id, { ...previous, id: op.id, device: op.device, command: op.command, state: op.state, snapshot: op,
     started: previous?.started || started, finished: terminal.has(op.state) ? previous?.finished || performance.now() : null });
   while (operationLog.size > 200) operationLog.delete(operationLog.keys().next().value);
   if (op.device === selected()) {
-    renderOperations();
+    renderOperations(); if (newRate) renderState();
     if (!selectedOperation || selectedOperation === op.id) json(op);
   }
 }

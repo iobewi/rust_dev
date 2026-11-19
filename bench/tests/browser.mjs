@@ -130,6 +130,21 @@ test(`local browser session and direct control over ${usbJtag?'USB Serial/JTAG':
   assert.equal(await page.title(),'IDLab — IOBEWI Device Lab');
   await page.locator('#add-device-id').selectOption('board');
   assert.equal(await page.locator('#card-details').isVisible(),false);
+  // Normal device selection never requires a baud choice, and the optional
+  // UART override must not force the 260px sidebar to scroll horizontally.
+  assert.equal(await page.locator('.loader-advanced').getAttribute('open'),null);
+  assert.equal(await page.locator('#loader-baud').isVisible(),false);
+  assert.equal(await page.locator('#manual-download').isVisible(),false);
+  assert.equal(await page.locator('#manual-download').isChecked(),false);
+  assert.equal(await page.locator('#loader-baud').inputValue(),'');
+  const noSidebarOverflow=()=>page.locator('.sidebar-stack').evaluate(node=>node.scrollWidth<=node.clientWidth+1);
+  assert.equal(await noSidebarOverflow(),true);
+  await page.locator('.loader-advanced summary').click();
+  assert.equal(await page.locator('#manual-download').isVisible(),true);
+  assert.equal(await page.locator('.manual-download > span:first-of-type').textContent(),'BOOT manuel');
+  assert.equal(await page.locator('#loader-baud').isVisible(),true);
+  assert.equal(await noSidebarOverflow(),true,'expanded advanced UART selector must fit sidebar');
+  await page.locator('.loader-advanced summary').click();
   await page.click('#add-device');
   await page.waitForFunction(()=>document.querySelector('[data-device="board"] .board-connection-state')?.textContent==='Connectée');
   assert.equal(await page.locator('#active-cards .active-board').count(),1);
@@ -327,6 +342,10 @@ test(`local browser session and direct control over ${usbJtag?'USB Serial/JTAG':
   await page.waitForFunction(()=>[...document.querySelectorAll('#uart-log .payload')].some(node=>node.textContent==='INFO - board connected, ip = 192.168.1.2'));
   // A narrow viewport must retain the console and put dense tables in their own horizontal scroller.
   await page.setViewportSize({width:360,height:900});assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
+  await page.locator('.loader-advanced summary').click();
+  assert.equal(await noSidebarOverflow(),true,'advanced controls stay inside narrow sidebar');
+  assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
+  await page.locator('.loader-advanced summary').click();
   // Context help remains on the upper status bar; USB is permanently in the sidebar.
   await page.focus('#status-agent');
   assert.equal(await page.locator('#status-help-agent').isVisible(),true);

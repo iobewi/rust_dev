@@ -104,8 +104,17 @@
 .active-board .board-status[data-state="usb_lost"], .active-board .board-status[data-state="reconnecting"], .active-board .board-status[data-state="recovery_required"] { color:var(--warning,#e5b15e); }
 .active-board .board-status[data-state="disconnected"] { color:var(--muted,#8793a4); }
 .add-card-controls { display:flex; flex-wrap:wrap; gap:0.4rem; align-items:center; margin-top:0.55rem; }
-.add-card-controls select { flex:1; min-width:6rem; }
+.add-card-controls > select { flex:1 1 6rem; min-width:0; }
 .add-card-controls button { flex-shrink:0; }
+/* Keep the common flow compact. Optional UART overrides must never widen the sidebar. */
+.add-card-controls { min-width:0; max-width:100%; }
+.add-card-controls > button { flex:0 0 auto; }
+.add-card-controls .loader-advanced { flex:1 1 100%; min-width:0; width:100%; max-width:100%; border:0; }
+.loader-advanced summary { padding:3px 4px; font-size:12px; color:var(--muted); }
+.loader-advanced .loader-baud-field { display:grid; grid-template-columns:minmax(0,1fr); gap:4px; min-width:0; width:100%; padding:5px 4px; }
+.loader-advanced .loader-baud-field select { display:block; width:100%; min-width:0; max-width:100%; flex:none; }
+.loader-advanced .hint { margin:4px 4px 8px; overflow-wrap:anywhere; }
+
 @media (max-width: 720px) { .app-brand p { font-size:0.65rem; } }
 
 /* manual-download:start - compact checkbox with descriptive tooltip on hover and keyboard focus. */

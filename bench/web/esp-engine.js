@@ -1,4 +1,4 @@
-import { effectiveLoaderBaud } from './loader-settings.js';
+import { effectiveLoaderBaud, flashTransfer } from './loader-settings.js';
 // Hardware only: no DOM, REST, project readiness rules or verdicts.
 import { HardwareError, hardwareError } from './hardware-errors.js';
 import { makeBenchTransport } from './bench-transport.js';
@@ -15,7 +15,7 @@ export class EspEngine {
     this.mode = 'off'; this.reader = null; this.loader = null; this.baudrate = 115200;
     // A native USB port (303a:*, USB-Serial-JTAG or the ROM's USB-OTG, e.g. 303a:0012 on the ESP32-P4) has no UART speed: esptool-js's baud change after the stub (and the port reopening it implies) is
     // only for an external UART bridge, and made the loader unreachable on the P4's USB-OTG port.
-    this.flashBaud = this.native ? 115200 : 460800; this.loaderBaud = null; this.manualDownload = false; this.identityChecks = 0; this.hold = false; this.trigger = null; this.tail = new Uint8Array();
+    this.flashBaud = 115200; this.loaderBaud = null; this.manualDownload = false; this.identityChecks = 0; this.hold = false; this.trigger = null; this.tail = new Uint8Array();
     this.trace = new Tracer(); this.busy = false; this.phase = 'prepare'; this.readProgress = {};
   }
   provenance() {
@@ -35,6 +35,7 @@ export class EspEngine {
   }
   setPhase(phase, context) { this.phase = phase; context.report?.(this.diagnostics()); }
   async readFlash(loader, address, size, context) {
+    const startedAt = performance.now(); this.lastFlashTransfer = null;
     // Keep esptool-js's cumulative append limited to 1 MiB per command. No retry:
     // every block is read once and only a complete region becomes an artifact.
     const data = new Uint8Array(size), blockLimit = 1024 * 1024;
@@ -58,6 +59,7 @@ export class EspEngine {
       data.set(block, offset); this.readProgress.received_bytes = offset + blockSize;
       context.report?.(this.diagnostics()); check();
     }
+    this.lastFlashTransfer = flashTransfer(size, performance.now() - startedAt);
     return data;
   }
   setHold(value) { this.hold = value; this.persistHold(value); }
@@ -318,13 +320,15 @@ export class EspEngine {
         this.setPhase('flash_read', context);
         const data = await this.readFlash(l, args.address, args.size, context);
         this.setPhase('artifact_upload', context);
-        result = { artifact: await context.upload(data), address: args.address };
+        result = { artifact: await context.upload(data), address: args.address, transfer: this.lastFlashTransfer };
       } else if (command === 'flash.write') {
         validateImages(images, physical.flash_size); context.check();
         this.setPhase('flash_write', context);
         destructive = true; this.setHold(true);
+        const writeStartedAt = performance.now();
         result = await runWrite(l, images.map(i => ({ data: i.data, addr: i.address, path: i.artifact, sha: i.sha256 })),
           { erase: args.erase === true, tracer: this.trace });
+        if (result.ok) result = { ...result, transfer: flashTransfer(images.reduce((sum, image) => sum + image.data.length, 0), performance.now() - writeStartedAt) };
         if (!result.ok) return { ...result, hold: true };
         if (context.live() && !context.deferCompletion) this.setHold(false);
       } else if (command === 'flash.erase') {
