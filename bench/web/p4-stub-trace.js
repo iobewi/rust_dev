@@ -9,6 +9,7 @@ const MAX_SIZE = 1024 * 1024;
 const PACKET_SIZE = 4096;
 const TIMEOUT_MS = 120000;
 import {md5hex} from './md5.js';
+import {sha256} from './protocol.js';
 const CYCLE_KEYS = ['flash_cycles', 'md5_cycles', 'send_cycles', 'ack_cycles', 'fill_cycles'];
 
 // Error raised by the trace. `sessionIndeterminate` is true once the bulk stream started: the stub
@@ -81,6 +82,23 @@ export function impliedCpuHz(report, wallMs) {
   return Number(counted) / (wallMs / 1000);
 }
 
+// Per-packet SHA-256 of the bytes RECEIVED and validated (called after the stream and after the timing is taken: it never delays an ACK).
+// One entry per packet, in order: no gap, no overlap, absolute NOR address, effective size, SHA-256, the ACK ordinal and cumulative byte count.
+// Only hashes cross the protocol, never flash bytes.
+export async function packetHashes(data, address, layout) {
+  if (!(data instanceof Uint8Array) || !Number.isSafeInteger(address) || !Array.isArray(layout)) throw new RangeError('invalid_packet_hash_input');
+  let expected = 0; const out = [];
+  for (const [i, e] of layout.entries()) {
+    if (e.offset !== expected || !Number.isSafeInteger(e.size) || e.size <= 0 || e.offset + e.size > data.length || e.ack_bytes !== e.offset + e.size)
+      throw new RangeError('invalid_packet_layout');
+    out.push({packet: i, address: address + e.offset, size: e.size, sha256: await sha256(data.subarray(e.offset, e.offset + e.size)),
+      ack_index: i + 1, ack_bytes: e.ack_bytes, acked: 1});
+    expected = e.offset + e.size;
+  }
+  if (expected !== data.length) throw new RangeError('invalid_packet_layout');
+  return out;
+}
+
 export async function readFlashWithP4StubTrace(loader, address, size, onPacket = null) {
   if (loader?.IS_STUB !== true || loader?.__idlabTraceStub !== true)
     throw new IdlabTraceError('idlab_diagnostic_stub_not_verified');
@@ -109,6 +127,7 @@ export async function readFlashWithP4StubTrace(loader, address, size, onPacket =
 
   const data = new Uint8Array(size);
   let received = 0, count = 0;
+  const layout = [];   // per received packet: offset, size and the cumulative ACK value written (recorded only; hashing happens AFTER the stream)
   try {
     while (received < size) {
       const p = await loader.transport.read(TIMEOUT_MS);
@@ -119,6 +138,7 @@ export async function readFlashWithP4StubTrace(loader, address, size, onPacket =
       received += p.length;
       count++;
       await loader.transport.write(u32(received));
+      layout.push({offset: received - p.length, size: p.length, ack_bytes: received});   // the ACK write above completed
       onPacket?.(p, received, size);
     }
     // Drain the final MD5 frame before sending another command. Otherwise
@@ -135,7 +155,7 @@ export async function readFlashWithP4StubTrace(loader, address, size, onPacket =
     if (metrics.bytes !== size || metrics.packets !== count || metrics.ack_count !== count)
       throw streaming('idlab_trace_counter_mismatch');
     return {
-      data, trace: metrics,
+      data, trace: metrics, packet_layout: layout,
       md5: announced, md5_verified: true,
       cycle_unit: 'cpu_cycles', clock_hz: null,
     };

@@ -698,3 +698,27 @@ test('the agent journal shows where the RAM download stopped and the synchronisa
   for (const needle of ['mem_block text bloc 1/2', 'commencée, non acquittée', 'timeout', '3001 ms', '1 étape(s) acquittée(s)', '8 réponse(s), 0 à zéro'])
     assert.ok(line.includes(needle), needle);
 });
+
+// ------------------------------------------------------------------ per-packet SHA-256 in the T result
+test('the T result carries 256 per-packet SHA-256 consistent with the global digest, ACKs and MD5; no flash bytes', async () => {
+  const loader = simP4();
+  const { result } = await runP4UsbTrace({ loader, romOnly: true, args: clean(goodArgs()), device, stubBytes });
+  const h = result.packet_hashes;
+  assert.equal(result.packet_hashes_algo, 'sha256_of_received_bytes'); assert.equal(h.length, 256);
+  assert.deepEqual(h.map(e => e.address), [...h.keys()].map(i => 0x8000 + i * 4096));
+  assert.ok(h.every((e, i) => e.size === 4096 && e.sha256.length === 64 && e.ack_index === i + 1 && e.ack_bytes === (i + 1) * 4096 && e.acked === 1));
+  assert.equal(h.reduce((n, e) => n + e.size, 0), result.bytes); assert.equal(h.length, result.acks);
+  const { createHash } = await import('node:crypto');
+  assert.equal(createHash('sha256').update(all()).digest('hex'), result.data_sha256);
+  for (const i of [0, 1, 100, 255]) assert.equal(h[i].sha256, createHash('sha256').update(all().subarray(i * 4096, (i + 1) * 4096)).digest('hex'));
+  assert.ok(!JSON.stringify(result).includes(Buffer.from(all().subarray(0, 64)).toString('base64').slice(0, 40)), 'no flash bytes in the result');
+  assert.ok(JSON.stringify(result).length < 200000, 'the result stays small enough for the protocol');
+});
+test('the packet hashes are computed AFTER the measured wall time (they never delay an ACK nor enter host_duration_ms)', async () => {
+  const { readFileSync } = await import('node:fs');
+  const src = readFileSync(new URL('../web/p4-diagnostic.js', import.meta.url), 'utf8');
+  assert.ok(src.indexOf('const wallMs = Math.round(now() - start)') < src.indexOf('await packetHashes('), 'order in runP4UsbTrace');
+  const trace = readFileSync(new URL('../web/p4-stub-trace.js', import.meta.url), 'utf8');
+  const loop = trace.slice(trace.indexOf('while (received < size)'), trace.indexOf('// Drain the final MD5 frame'));
+  assert.ok(!/sha256|digest|packetHashes/.test(loop), 'no hashing inside the receive/ACK loop');
+});

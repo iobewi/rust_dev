@@ -3,7 +3,7 @@
 import { HardwareError } from './hardware-errors.js';
 import { sha256 } from './protocol.js';
 import { loadDiagnosticStub, retireDiagnosticStub, IdlabDiagnosticError } from './p4-stub-loader.js';
-import { readFlashWithP4StubTrace, convertTraceCycles, impliedCpuHz, IdlabTraceError } from './p4-stub-trace.js';
+import { readFlashWithP4StubTrace, packetHashes, convertTraceCycles, impliedCpuHz, IdlabTraceError } from './p4-stub-trace.js';
 
 export const P4_TRACE = 'diagnostic.p4_usb_trace';
 export const P4_FIXED = Object.freeze({ chip: 'esp32p4', address: 0x8000, size: 1048576, packet_size: 4096, cpu_hz: 200000000 });
@@ -57,7 +57,8 @@ export async function runP4UsbTrace({ loader, args, device, stubBytes, romOnly =
     const start = now();
     let packets = 0;
     const read = await readFlashWithP4StubTrace(loader, args.address, args.size, () => { packets += 1; if (packets % 16 === 0) { report({ phase: 'diagnostic_read', packets }); check(); } });
-    const wallMs = Math.round(now() - start);
+    const wallMs = Math.round(now() - start);   // the packet hashes below are computed after this: they never enter the measured time
+    const packet_hashes = await packetHashes(read.data, args.address, read.packet_layout);
     const converted = convertTraceCycles(read.trace, args.cpu_hz);
     return { result: {
       scenario: P4_TRACE, stub_sha256: args.stub_sha256, chip_revision: loaded.chip_revision,
@@ -67,6 +68,7 @@ export async function runP4UsbTrace({ loader, args, device, stubBytes, romOnly =
       cpu_hz: { value: args.cpu_hz, basis: 'assumed_from_stub_code_not_measured', implied_by_wall_time: impliedCpuHz(read.trace, wallMs) },
       packets: read.trace.packets, acks: read.trace.ack_count, bytes: read.trace.bytes,
       rom_cdc_fill_calls: read.trace.fill_calls,
+      packet_hashes, packet_hashes_algo: 'sha256_of_received_bytes',
       admission: loaded.admission, ram_load: loaded.ram_load,   // observations of THIS operation, published on success too
       stub_resident: true, requires_operator_reset: true, nor_written: false } };
   } catch (error) {

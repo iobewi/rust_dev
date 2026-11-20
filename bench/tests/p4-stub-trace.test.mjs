@@ -154,3 +154,67 @@ test('a corrupted data packet with valid framing is caught by the MD5 of the rec
     transport:{read:async()=>frames.shift(),write:async()=>{}}};
   await assert.rejects(readFlashWithP4StubTrace(loader,0,4096),e=>e.code==='idlab_trace_md5_mismatch'&&e.sessionIndeterminate===true&&e.noRetry===true);
 });
+
+// ---------------------------------------------------------------- per-packet SHA-256 of the received bytes (localises a divergence, never exposes flash bytes)
+import {packetHashes} from '../web/p4-stub-trace.js';
+import {createHash} from 'node:crypto';
+const nodeSha=b=>createHash('sha256').update(b).digest('hex');
+// deterministic pseudo-flash: erased sectors (0xFF) and sectors with content
+const flashPattern=(size)=>{const b=new Uint8Array(size).fill(0xff);for(let i=0;i<size;i++){const sec=Math.floor(i/4096);if(sec%5===1||sec%7===3)b[i]=(i*31+sec*17)&0xff;}return b;};
+async function runTrace(flash,address,{packet=4096,mutate=null}={}){
+  const frames=[];for(let o=0;o<flash.length;o+=packet)frames.push(flash.slice(o,Math.min(o+packet,flash.length)));
+  const sent=frames.map(f=>f.slice());if(mutate)mutate(sent);
+  sent.push(md5Of(...frames));
+  const acks=[];
+  const loader={IS_STUB:true,__idlabTraceStub:true,checkCommand:async(_l,op)=>op===IDLAB_GET_FLASH_TRACE?report({bytes:flash.length,packets:frames.length,ackCount:frames.length}):0,
+    transport:{read:async()=>sent.shift(),write:async b=>{acks.push(new DataView(b.buffer).getUint32(0,true));}}};
+  return {r:await readFlashWithP4StubTrace(loader,address,flash.length),acks};
+}
+test('1 MiB read: 256 packets, one SHA-256 each, absolute NOR addresses, exact hashes, global consistency',async()=>{
+  const flash=flashPattern(1048576),{r,acks}=await runTrace(flash,0x8000);
+  assert.equal(r.packet_layout.length,256);
+  const hashes=await packetHashes(r.data,0x8000,r.packet_layout);
+  assert.equal(hashes.length,256);
+  for(const [i,h] of hashes.entries()){
+    assert.deepEqual([h.packet,h.address,h.size,h.ack_index,h.ack_bytes,h.acked],[i,0x8000+i*4096,4096,i+1,(i+1)*4096,1],'packet '+i);
+    assert.equal(h.sha256,nodeSha(flash.subarray(i*4096,(i+1)*4096)),'sha of packet '+i);
+    assert.deepEqual(Object.keys(h).sort(),['ack_bytes','ack_index','acked','address','packet','sha256','size']);
+  }
+  assert.equal(hashes.reduce((n,h)=>n+h.size,0),flash.length);
+  assert.deepEqual(acks,hashes.map(h=>h.ack_bytes),'ACK values are the cumulative sizes, one per packet');
+  assert.equal(await (await import('../web/protocol.js')).sha256(r.data),nodeSha(flash),'global SHA-256 = SHA-256 of the same bytes');
+  assert.equal(r.md5,md5hex(flash));
+});
+test('tracing does not modify, shift or duplicate the data: the received bytes are the sent bytes',async()=>{
+  const flash=flashPattern(8*4096),{r}=await runTrace(flash,0x1000);
+  assert.deepEqual(r.data,flash);
+  const hashes=await packetHashes(r.data,0x1000,r.packet_layout);
+  assert.equal(new Set(hashes.map(h=>h.address)).size,hashes.length,'no duplicated address');
+  assert.deepEqual(hashes.map(h=>h.address),[...hashes.keys()].map(i=>0x1000+i*4096),'no gap, no shift');
+});
+test('partial packets keep their effective size and the sum of sizes equals the request',async()=>{
+  const flash=flashPattern(10000),{r}=await runTrace(flash,0x8000);
+  const hashes=await packetHashes(r.data,0x8000,r.packet_layout);
+  assert.deepEqual(hashes.map(h=>h.size),[4096,4096,1808]);
+  assert.deepEqual(hashes.map(h=>h.address),[0x8000,0x9000,0xa000]);
+  assert.equal(hashes[2].sha256,nodeSha(flash.subarray(8192)));
+  // smaller packets from the stub (not 4096): layout follows what was actually received
+  const small=await runTrace(flashPattern(3000),0,{packet:1000});
+  assert.deepEqual((await packetHashes(small.r.data,0,small.r.packet_layout)).map(h=>[h.address,h.size]),[[0,1000],[1000,1000],[2000,1000]]);
+});
+test('a packet corrupted in flight changes ONLY its own hash (the global MD5 still stops the run first)',async()=>{
+  const flash=flashPattern(4*4096);
+  await assert.rejects(runTrace(flash,0,{mutate:fr=>{fr[2][10]^=0xff;}}),e=>e.code==='idlab_trace_md5_mismatch');
+  const a=await packetHashes(flash,0,[0,1,2,3].map(i=>({offset:i*4096,size:4096,ack_bytes:(i+1)*4096})));
+  const bad=flash.slice();bad[2*4096+10]^=0xff;
+  const b=await packetHashes(bad,0,[0,1,2,3].map(i=>({offset:i*4096,size:4096,ack_bytes:(i+1)*4096})));
+  assert.deepEqual(a.map((h,i)=>h.sha256===b[i].sha256),[true,true,false,true]);
+});
+test('invalid layouts or inputs are refused, never hashed partially',async()=>{
+  const data=new Uint8Array(8192);
+  for(const layout of [[{offset:0,size:4096,ack_bytes:4096}],[{offset:0,size:4096,ack_bytes:4096},{offset:4097,size:4095,ack_bytes:8192}],
+      [{offset:0,size:8192,ack_bytes:8191}],[{offset:0,size:0,ack_bytes:0},{offset:0,size:8192,ack_bytes:8192}],[{offset:0,size:9000,ack_bytes:9000}],[]]) 
+    await assert.rejects(packetHashes(data,0,layout),/invalid_packet_layout/);
+  await assert.rejects(packetHashes('x',0,[]),/invalid_packet_hash_input/); await assert.rejects(packetHashes(data,1.5,[]),/invalid_packet_hash_input/);
+  await assert.rejects(packetHashes(data,0,null),/invalid_packet_hash_input/);
+});
