@@ -66,27 +66,113 @@ class ComparePacketHashes(unittest.TestCase):
         text = json.dumps(cmp.compare(result_for(bytes(t)), ref))
         self.assertNotIn(ref[:32].hex(), text); self.assertEqual(set(cmp.compare(result_for(bytes(t)), ref)['global']) , {'bytes', 'reference_sha256', 't_data_sha256', 'global_match'})
 
-    def test_unusable_inputs_are_refused(self):
-        d = flash()
-        for mut, msg in ((lambda r: r.pop('packet_hashes'), 'no_packet_hashes'), (lambda r: r['packet_hashes'].pop(3), 'invalid_packet_layout_at_3'),
-                         (lambda r: r['packet_hashes'][2].update(address=1), 'invalid_packet_layout_at_2'), (lambda r: r['packet_hashes'][1].update(size=0), 'invalid_packet_layout_at_1')):
-            with self.assertRaises(ValueError) as c:
-                cmp.compare(result_for(d, mutate=mut), d)
-            self.assertIn(msg, str(c.exception))
-        with self.assertRaises(ValueError):
-            cmp.compare(result_for(d), d[:-PKT])             # dump of the wrong size
+    # ---- invalid evidence is never a success -------------------------------------------------------------------------------------------
+    def invalid(self, result, dump, *needles):
+        with self.assertRaises(cmp.InvalidEvidence) as c:
+            cmp.compare(result, dump)
+        text = " | ".join(c.exception.problems)
+        for n in needles:
+            self.assertIn(n, text)
+        return text
 
-    def test_cli_exit_codes_and_phase_results_format(self):
+    def test_256_matching_packets_with_a_contradictory_global_sha256_are_invalid_not_a_success(self):
+        d = flash(256)
+        r = result_for(d)
+        r['data_sha256'] = hashlib.sha256(b'another dump').hexdigest()         # well-formed but not the digest of these packets
+        self.invalid(r, d, 'per_packet_hashes_contradict_global_sha256', 'all packets match the reference')
+        self.assertEqual(cmp.compare(result_for(d), d)['status'], 'match')       # the consistent twin is a real match
+        self.assertEqual(len(result_for(d)['packet_hashes']), 256)
+
+    def test_the_reverse_contradiction_is_invalid_too(self):
+        ref = flash(); t = bytearray(ref); t[PKT * 3] ^= 1
+        r = result_for(bytes(t)); r['data_sha256'] = hashlib.sha256(ref).hexdigest()      # global says "same as reference", a packet says otherwise
+        self.invalid(r, ref, 'per_packet_hashes_contradict_global_sha256', 'some packet hashes differ')
+
+    def test_inconsistent_ack_evidence_is_invalid(self):
+        d = flash()
+        for mut, needle in ((lambda r: r['packet_hashes'][5].update(ack_bytes=1), 'packet_5_ack_bytes_expected_24576'),
+                            (lambda r: r['packet_hashes'][5].update(ack_index=9), 'packet_5_ack_index_expected_6'),
+                            (lambda r: r['packet_hashes'][5].update(acked=0), 'packet_5_not_acked'),
+                            (lambda r: r['packet_hashes'][5].update(acked=True), 'packet_5_not_acked'),
+                            (lambda r: r['packet_hashes'][0].pop('ack_bytes'), 'packet_0_ack_bytes_expected_4096'),
+                            (lambda r: r.update(acks=63), 'declared_acks_63_differs_from_packet_count_64')):
+            self.invalid(result_for(d, mutate=mut), d, needle)
+
+    def test_wrong_ranges_are_invalid(self):
+        d = flash(); total = len(d)
+        self.invalid(result_for(d, mutate=lambda r: r['packet_hashes'].pop(3)), d, 'packet_number_3')                  # dropped packet
+        self.invalid(result_for(d, mutate=lambda r: r['packet_hashes'][2].update(address=1)), d, 'packet_2_address_expected')
+        self.invalid(result_for(d, mutate=lambda r: r['packet_hashes'][2].update(address=BASE + 3 * PKT)), d, 'packet_2_address_expected')   # duplicated address
+        self.invalid(result_for(d, mutate=lambda r: r['packet_hashes'][1].update(size=0)), d, 'packet_1_size')
+        self.invalid(result_for(d, mutate=lambda r: r['packet_hashes'][1].update(size=-4096)), d, 'packet_1_size')
+        self.invalid(result_for(d, mutate=lambda r: r.update(size=total + 4096)), d, f'declared_size_{total + 4096}_differs_from_packets_total_{total}')
+        self.invalid(result_for(d, mutate=lambda r: r.update(bytes=total - 1)), d, 'declared_bytes_')
+        self.invalid(result_for(d, mutate=lambda r: r.update(packets=65)), d, 'declared_packets_65_differs')
+        self.invalid(result_for(d, mutate=lambda r: r.update(address=BASE + 4096)), d, 'first_packet_address_differs_from_declared_address')
+        self.invalid(result_for(d), d[:-PKT], 'dump_size_')                                                              # dump of the wrong size
+        self.invalid(result_for(d), d + b'\xff', 'dump_size_')
+        self.invalid(result_for(d, mutate=lambda r: r['packet_hashes'][4].update(packet=5)), d, 'packet_number_4')
+
+    def test_malformed_hashes_are_invalid(self):
+        d = flash()
+        good = result_for(d)['packet_hashes'][7]['sha256']
+        for bad in (good.upper(), good[:-1], good + '0', 'z' * 64, '', None, 123, ['a'] * 64, ' ' + good[1:]):
+            self.invalid(result_for(d, mutate=lambda r, b=bad: r['packet_hashes'][7].update(sha256=b)), d, 'packet_7_malformed_sha256')
+        for bad in ('A' * 64, 'abc', None, 0):
+            self.invalid(result_for(d, mutate=lambda r, b=bad: r.update(data_sha256=b)), d, 'malformed_global_sha256')
+        self.invalid(result_for(d, mutate=lambda r: r.pop('data_sha256')), d, 'malformed_global_sha256')
+
+    def test_no_packet_hashes_or_wrong_shapes_are_invalid(self):
+        d = flash()
+        self.invalid(result_for(d, mutate=lambda r: r.pop('packet_hashes')), d, 'no_packet_hashes_in_result')
+        self.invalid(result_for(d, mutate=lambda r: r.update(packet_hashes=[])), d, 'no_packet_hashes_in_result')
+        self.invalid(result_for(d, mutate=lambda r: r['packet_hashes'].__setitem__(2, 'x')), d, 'packet_2_not_an_object')
+        with self.assertRaises(cmp.InvalidEvidence):
+            cmp.compare(None, d)
+
+    def test_problems_are_reported_for_the_first_broken_packet_only_not_as_a_cascade(self):
+        d = flash()
+        text = self.invalid(result_for(d, mutate=lambda r: r['packet_hashes'].pop(3)), d)
+        self.assertLess(len(text), 400)
+
+    def test_the_three_outcomes_are_explicit(self):
         ref = flash(); t = bytearray(ref); t[PKT * 2 + 1] ^= 1
+        self.assertEqual(cmp.compare(result_for(ref), ref)['status'], 'match')
+        self.assertEqual(cmp.compare(result_for(bytes(t)), ref)['status'], 'content_divergence')
+        with self.assertRaises(cmp.InvalidEvidence):
+            cmp.compare(result_for(ref, mutate=lambda r: r.update(data_sha256='0' * 64)), ref)
+
+    def test_cli_exit_codes_statuses_and_phase_results_format(self):
+        import io, contextlib
+        ref = flash(); t = bytearray(ref); t[PKT * 2 + 1] ^= 1
+
+        def run(*argv):
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                code = cmp.main(list(argv))
+            out = buf.getvalue()
+            return code, (json.loads(out) if out.lstrip().startswith('{') else out)
         with tempfile.TemporaryDirectory() as tmp:
-            same, diff, dump = (os.path.join(tmp, n) for n in ('same.json', 'diff.json', 'ref.bin'))
-            open(dump, 'wb').write(ref)
-            json.dump({'status': 'completed', 'result': result_for(ref)}, open(same, 'w'))     # phaseN-results.json shape
-            json.dump(result_for(bytes(t)), open(diff, 'w'))                                    # bare result shape
-            self.assertEqual(cmp.main([same, dump]), 0)
-            self.assertEqual(cmp.main([diff, dump]), 1)
-            self.assertEqual(cmp.main([diff, os.path.join(tmp, 'missing.bin')]), 2)
-            self.assertEqual(cmp.main([diff]), 2)
+            p = lambda n: os.path.join(tmp, n)
+            open(p('ref.bin'), 'wb').write(ref)
+            json.dump({'status': 'completed', 'result': result_for(ref)}, open(p('same.json'), 'w'))          # phaseN-results.json shape
+            json.dump(result_for(bytes(t)), open(p('diff.json'), 'w'))                                         # bare result shape
+            json.dump(result_for(ref, mutate=lambda r: r.update(data_sha256='1' * 64)), open(p('contradiction.json'), 'w'))
+            json.dump(result_for(ref, mutate=lambda r: r['packet_hashes'][1].update(ack_bytes=5)), open(p('ack.json'), 'w'))
+            open(p('notjson.json'), 'w').write('{nope')
+            open(p('list.json'), 'w').write('[1, 2]')
+            code, out = run(p('same.json'), p('ref.bin')); self.assertEqual((code, out['status']), (0, 'match'))
+            code, out = run(p('diff.json'), p('ref.bin')); self.assertEqual((code, out['status'], out['different_packets']), (1, 'content_divergence', [2]))
+            code, out = run(p('contradiction.json'), p('ref.bin')); self.assertEqual((code, out['status']), (2, 'invalid_evidence'))
+            self.assertIn('per_packet_hashes_contradict_global_sha256', out['problems'][0])
+            code, out = run(p('ack.json'), p('ref.bin')); self.assertEqual((code, out['status']), (2, 'invalid_evidence'))
+            for bad in (p('notjson.json'), p('list.json'), p('missing.json')):
+                code, out = run(bad, p('ref.bin')); self.assertEqual((code, out['status']), (2, 'invalid_evidence'), bad)
+            code, out = run(p('diff.json'), p('missing.bin')); self.assertEqual((code, out['status']), (2, 'invalid_evidence'))
+            code, out = run(p('same.json'), p('ref.bin'), '--address', 'zz'); self.assertEqual((code, out['status']), (2, 'invalid_evidence'))
+            code, out = run(p('same.json'), p('ref.bin'), '--address', str(BASE)); self.assertEqual((code, out['status']), (0, 'match'))
+            code, out = run(p('same.json'), p('ref.bin'), '--address', str(BASE + 1)); self.assertEqual(code, 2)     # wrong base: addresses no longer match
+            code, out = run(p('same.json')); self.assertEqual(code, 2)
 
 
 if __name__ == '__main__':
