@@ -44,13 +44,14 @@ export async function runP4UsbTrace({ loader, args, device, stubBytes, check = (
     stubText = new TextDecoder('utf-8', { fatal: true }).decode(stubBytes);
     check();
   } catch (error) { error.indeterminate = false; throw report_(error, { phase: 'diagnostic_stub_load', category: 'local_validation', ram_load: 'not_started' }); }
-  let touched = false;
+  let touched = false, loadedInfo = null;
   const wasStub = loader.IS_STUB === true;   // a standard stub already running is refused by the loader, not 'launched' by us
   try {
     report({ phase: 'diagnostic_stub_load' });
     // loadDiagnosticStub refuses (chip untouched) unless: consent, sha, ESP32-P4, rev >= 3.00, ROM session.
     touched = true; // conservative: from here a failure may have reached the chip, unless the loader says otherwise
     const loaded = await loadDiagnosticStub(loader, stubText, { consent: true, expectedSha256: args.stub_sha256 });
+    loadedInfo = loaded;
     check();
     report({ phase: 'diagnostic_read' });
     const start = now();
@@ -66,6 +67,7 @@ export async function runP4UsbTrace({ loader, args, device, stubBytes, check = (
       cpu_hz: { value: args.cpu_hz, basis: 'assumed_from_stub_code_not_measured', implied_by_wall_time: impliedCpuHz(read.trace, wallMs) },
       packets: read.trace.packets, acks: read.trace.ack_count, bytes: read.trace.bytes,
       rom_cdc_fill_calls: read.trace.fill_calls,
+      admission: loaded.admission, ram_load: loaded.ram_load,   // observations of THIS operation, published on success too
       stub_resident: true, requires_operator_reset: true, nor_written: false } };
   } catch (error) {
     const known = error instanceof IdlabDiagnosticError || error instanceof IdlabTraceError;
@@ -83,7 +85,18 @@ export async function runP4UsbTrace({ loader, args, device, stubBytes, check = (
     else Object.assign(fields, { category: 'unexpected', ram_load: stubLoaded ? 'started' : 'unknown' });
     if (error instanceof IdlabDiagnosticError && Number.isInteger(error.detail) && /revision/.test(error.code)) fields.chip_revision = error.detail;
     if (error instanceof IdlabDiagnosticError && error.sessionState && typeof error.sessionState === 'object') Object.assign(fields, error.sessionState);
+    const ramLoad = error instanceof IdlabDiagnosticError ? error.ramLoad : loadedInfo?.ram_load;   // typed per-step report (never loader text)
+    if (ramLoad && typeof ramLoad === 'object') Object.assign(fields, ramLoadFields(ramLoad));
+    if (!(error instanceof IdlabDiagnosticError) && loadedInfo?.admission) Object.assign(fields, loadedInfo.admission);
     throw report_(error, fields);
   }
+}
+// Flat, allowlisted view of the RAM-load report for the structured error (hardware-errors.js validates it again).
+function ramLoadFields(r) {
+  const out = { ram_block_size: r.ram_block, ram_acked_count: r.acked_count, ram_steps: r.steps };
+  if (r.steps_omitted > 0) out.ram_steps_omitted = r.steps_omitted;
+  if (Number.isInteger(r.failed_index)) out.ram_failed_index = r.failed_index;
+  if (Number.isInteger(r.last_acked_index)) out.ram_last_acked_index = r.last_acked_index;
+  return out;
 }
 export { retireDiagnosticStub };

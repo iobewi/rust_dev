@@ -645,3 +645,55 @@ test('the diagnostic itself does not depend on the capacity: it runs on an unkno
   const done = await engine.execute(P4_TRACE, clean(goodArgs()), context);
   assert.equal(done.stub_resident, true);
 });
+
+// ------------------------------------------------------------------ RAM-load observability, end to end (engine -> structured error -> journal)
+test('success: the operation result carries the admission observations and the per-step RAM report', async () => {
+  const x = await engineWith(simP4());
+  const done = await x.engine.execute(P4_TRACE, clean(goodArgs()), x.context);
+  assert.deepEqual([done.admission.admission_verdict, done.admission.sync_count, done.admission.sync_zero_count, done.admission.sync_completed, done.admission.sync_stub_detected, done.admission.loader_stub], ['rom', 8, 0, 1, 0, 0]);
+  assert.equal(done.admission.sync_values.length, 8);
+  assert.ok(done.ram_load.steps.length >= 3 && done.ram_load.steps.every(e => e.acked === 1) && done.ram_load.failed_index === null);
+  assert.equal(done.ram_load.ram_block, 64);
+});
+
+test('RAM-load failure: the published error localises the failing command and keeps the last acknowledged one (allowlisted fields only)', async () => {
+  for (const [fault, failedStep] of [['memBegin', 'mem_begin'], ['load_truncated', 'mem_block']]) {
+    const loader = simP4({ fault }), x = await engineWith(loader);
+    const returned = await x.engine.execute(P4_TRACE, clean(goodArgs()), x.context);   // a failure after the load began is RETURNED as indeterminate
+    assert.deepEqual([returned.state, returned.hold], ['indeterminate', true]);
+    const out = returned.error;
+    assert.deepEqual([out.code, out.origin_code, out.phase, out.category, out.ram_load], ['hardware_outcome_unknown', 'diagnostic_stub_ram_load_failed', 'diagnostic_stub_load', 'ram_load_failed', 'started']);
+    const failed = out.ram_steps[out.ram_failed_index];
+    assert.deepEqual([failed.step, failed.started, failed.acked, failed.outcome], [failedStep, 1, 0, 'error']);
+    assert.equal(out.ram_acked_count, out.ram_failed_index); assert.equal(out.ram_block_size, 64);
+    if (out.ram_failed_index > 0) assert.equal(out.ram_last_acked_index, out.ram_failed_index - 1); else assert.ok(!('ram_last_acked_index' in out));
+    assert.equal(out.admission_verdict, 'rom'); assert.equal(out.sync_count, 8); assert.equal(out.sync_zero_count, 0);
+    assert.ok(!JSON.stringify(out).includes('lost') && !JSON.stringify(out).includes('truncated'), 'loader text never crosses the protocol');
+    assert.equal(x.engine.diagnosticResident, true, 'indeterminate: the hold and the resident mark stay');
+  }
+});
+
+test('the allowlist keeps well-formed RAM steps only and drops the whole list on any malformed entry', () => {
+  const good = { step: 'mem_block', segment: 'text', block: 0, blocks: 2, address: 0x4ff50000, size: 64, ram_block: 64, started: 1, acked: 1, duration_ms: 5, outcome: 'ack' };
+  const make = steps => hardwareError(Object.assign(new Error('x'), { code: 'diagnostic_stub_ram_load_failed', diagnostic: { ram_steps: steps, ram_acked_count: 1, ram_failed_index: 1, ram_last_acked_index: 0, ram_block_size: 64 } }));
+  assert.deepEqual(make([good]).ram_steps, [good]);
+  assert.deepEqual([make([good]).ram_acked_count, make([good]).ram_failed_index, make([good]).ram_last_acked_index, make([good]).ram_block_size], [1, 1, 0, 64]);
+  for (const bad of [{ ...good, step: 'flash_begin' }, { ...good, segment: 'bss' }, { ...good, outcome: 'ok' }, { ...good, acked: 2 }, { ...good, acked: 0 }, { ...good, address: -1 },
+      { ...good, size: 1.5 }, { ...good, duration_ms: 'x' }, { ...good, block: -1 }, { ...good, outcome: 'timeout', acked: 1 }, null, 'x'])
+    assert.ok(!('ram_steps' in make([good, bad])), JSON.stringify(bad));
+  assert.ok(!('ram_steps' in make(new Array(33).fill(good)))); assert.ok(!('ram_steps' in make([]))); assert.ok(!('ram_steps' in make('abc')));
+  const extra = make([{ ...good, bytes: 'AAAA', note: 'TOKEN=x' }]).ram_steps[0];
+  assert.ok(!('bytes' in extra) && !('note' in extra), 'unknown fields are not copied');
+});
+
+test('the agent journal shows where the RAM download stopped and the synchronisation counts', async () => {
+  const { AgentJournal } = await import('../web/agent-journal.js'), j = new AgentJournal();
+  j.append({ stage: 'result', command: P4_TRACE, id: '0e66794a', state: 'indeterminate', code: 'diagnostic_stub_ram_load_failed',
+    detail: { phase: 'diagnostic_stub_load', category: 'ram_load_failed', ram_load: 'started', error_type: 'IdlabDiagnosticError',
+      ram_acked_count: 1, sync_values: new Array(8).fill(5), sync_count: 8, sync_zero_count: 0,
+      ram_steps: [{ step: 'mem_begin', segment: 'text', blocks: 2, address: 1, size: 2, ram_block: 64, started: 1, acked: 1, duration_ms: 4, outcome: 'ack' },
+        { step: 'mem_block', segment: 'text', block: 0, blocks: 2, address: 1, size: 2, ram_block: 64, started: 1, acked: 0, duration_ms: 3001, outcome: 'timeout' }] } });
+  const line = JSON.stringify(j.rows);
+  for (const needle of ['mem_block text bloc 1/2', 'commencée, non acquittée', 'timeout', '3001 ms', '1 étape(s) acquittée(s)', '8 réponse(s), 0 à zéro'])
+    assert.ok(line.includes(needle), needle);
+});

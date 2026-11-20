@@ -81,3 +81,32 @@ test('admission on the real loader: a stub is refused and a ROM-looking session 
   await assert.rejects(loadDiagnosticStub(rom, json, opts), e => e.code === 'diagnostic_stub_unsupported_chip_revision');   // admitted as ROM, then stopped by the revision check
   assert.ok(romTransport.writes.every(p => p[1] === SYNC_OPCODE), 'no memory command was transmitted');
 });
+
+// ---------------------------------------------------------------- RAM download steps with the REAL esptool-js 0.7.0 memBegin / memBlock / memFinish
+test('real loader: the RAM download is traced step by step; a silent line on one command is a localised timeout (real ESPError message)', async () => {
+  const text = Buffer.from(new Uint8Array(100).fill(0x13)).toString('base64'), data = Buffer.from(new Uint8Array(40).fill(7)).toString('base64');
+  const json = JSON.stringify({entry: 0x4ff50010, text, text_start: 0x4ff50000, data, data_start: 0x4ff60040, bss_start: 0x4ff60000});
+  const opts = {consent: true, expectedSha256: await sha256Hex(new TextEncoder().encode(json))};
+  const memOps = {0x05: 'mem_begin', 0x07: 'mem_block', 0x06: 'mem_finish'};
+  for (const [silentAt, expectFailed, expectOutcome] of [[null, null, null], [0, 0, 'timeout'], [2, 2, 'timeout'], [4, 4, 'timeout']]) {   // nth RAM command that gets no answer
+    let nth = 0;
+    const transport = scriptedTransport(op => op === 0x08 ? new Array(8).fill(0x0000ab12) : memOps[op] ? (nth++ === silentAt ? [] : [0]) : [0]);
+    const loader = loaderOn(transport);
+    loader.chip = {CHIP_NAME: 'ESP32-P4', async getChipRevision() { return 302; }};
+    loader.ESP_RAM_BLOCK = 64;
+    loader.DEFAULT_TIMEOUT = 50;
+    let outcome = null;
+    try { await loadDiagnosticStub(loader, json, opts); } catch (e) { outcome = e; }
+    const memWrites = transport.writes.filter(p => memOps[p[1]]);
+    if (silentAt === null) {
+      // everything acknowledged up to the greeting, which the scripted line does not provide: a different, later failure
+      assert.equal(outcome.code, 'diagnostic_stub_no_greeting'); assert.equal(outcome.ramLoad.acked_count, 6); assert.equal(outcome.ramLoad.failed_index, null);
+      assert.deepEqual(memWrites.map(p => memOps[p[1]]), ['mem_begin', 'mem_block', 'mem_block', 'mem_begin', 'mem_block', 'mem_finish']);
+    } else {
+      assert.equal(outcome.code, 'diagnostic_stub_ram_load_failed', String(silentAt));
+      assert.deepEqual([outcome.ramLoad.failed_index, outcome.ramLoad.steps[expectFailed].outcome, outcome.ramLoad.steps[expectFailed].acked, outcome.ramLoad.acked_count],
+        [expectFailed, expectOutcome, 0, expectFailed]);
+      assert.equal(memWrites.length, expectFailed + 1, 'the failing command was sent once, nothing after, no retry');
+    }
+  }
+});

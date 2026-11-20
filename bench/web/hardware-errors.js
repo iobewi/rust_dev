@@ -15,8 +15,26 @@ const categories = new Set(['local_validation', 'session_open', 'refused_before_
 const ramLoad = new Set(['not_started', 'started', 'unknown']);
 const counters = ['chip_revision', 'elapsed_ms', 'received_bytes', 'expected_bytes', 'block_address', 'block_size', 'serial_reads', 'serial_bytes',
   'serial_timeouts', 'silence_limit_ms', 'last_read_ms', 'last_packet_bytes', 'execution_remaining_ms', 'lease_remaining_ms',
-  'grant_remaining_ms', 'start_remaining_ms', 'http_status', 'jedec_id', 'identify_index', 'loader_stub', 'sync_zero_count', 'sync_stub_detected', 'sync_count', 'sync_completed'];
+  'grant_remaining_ms', 'start_remaining_ms', 'http_status', 'jedec_id', 'identify_index', 'loader_stub', 'sync_zero_count', 'sync_stub_detected', 'sync_count', 'sync_completed',
+  'ram_block_size', 'ram_acked_count', 'ram_failed_index', 'ram_last_acked_index', 'ram_steps_omitted'];
 const md5Shapes = new Set(['rom', 'stub', 'unknown']);
+// Typed per-step report of the RAM download. All-or-nothing: one malformed step drops the whole list (no partial, no free text).
+const stepNames = new Set(['mem_begin', 'mem_block', 'mem_finish']), segments = new Set(['text', 'data', 'entry']);
+const stepOutcomes = new Set(['ack', 'timeout', 'closed', 'invalid', 'error']);
+const u32 = v => Number.isInteger(v) && v >= 0 && v <= 0xffffffff;
+export function ramStepsOf(list) {
+  if (!Array.isArray(list) || list.length === 0 || list.length > 32) return null;
+  const out = [];
+  for (const e of list) {
+    if (!e || typeof e !== 'object' || !stepNames.has(e.step) || !segments.has(e.segment) || !stepOutcomes.has(e.outcome)) return null;
+    if (![e.address, e.size, e.ram_block, e.duration_ms].every(u32) || ![e.started, e.acked].every(v => v === 0 || v === 1)) return null;
+    if (e.acked === 1 && e.outcome !== 'ack' || e.acked === 0 && e.outcome === 'ack') return null;
+    const step = { step: e.step, segment: e.segment, address: e.address, size: e.size, ram_block: e.ram_block, started: e.started, acked: e.acked, duration_ms: e.duration_ms, outcome: e.outcome };
+    for (const key of ['block', 'blocks']) if (e[key] !== undefined) { if (!u32(e[key])) return null; step[key] = e[key]; }
+    out.push(step);
+  }
+  return out;
+}
 export function hardwareError(error, disconnected = false, details = {}) {
   // `error.diagnostic` is the structured, allowlisted origin report built by the P4 orchestrator (never the loader's own text).
   const origin = error?.diagnostic && typeof error.diagnostic === 'object' ? error.diagnostic : {};
@@ -37,6 +55,8 @@ export function hardwareError(error, disconnected = false, details = {}) {
   if (Array.isArray(input.sync_values) && input.sync_values.length <= 8 && input.sync_values.every(v => Number.isInteger(v) && v >= -0x80000000 && v <= 0x7fffffff))
     out.sync_values = [...input.sync_values];
   if (md5Shapes.has(input.md5_shape)) out.md5_shape = input.md5_shape;
+  if (['rom', 'stub', 'indeterminate'].includes(input.admission_verdict)) out.admission_verdict = input.admission_verdict;
+  const ramSteps = ramStepsOf(input.ram_steps); if (ramSteps) out.ram_steps = ramSteps;
   for (const key of counters) if (Number.isFinite(input[key]) && input[key] >= 0) out[key] = Math.round(input[key]);
   return out;
 }

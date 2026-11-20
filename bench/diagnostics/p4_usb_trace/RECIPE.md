@@ -113,3 +113,58 @@ Elle réutilise la même détection fraîche (aucun reset, chargement RAM ni éc
 
 ### Connexion « ROM seule » : capacité flash inconnue
 Le constat du 2026-11-20 : `identity()` exigeait un JEDEC valide (`flash_capacity_unknown`) avant l'enregistrement de l'agent, ce qui bloquait la connexion puis la récupération. En « ROM seule » uniquement (P4), l'identité du MCU est vérifiée (famille + MAC lisible et valide, sinon refus `physical_identity_unverified`), et la capacité est soit **mesurée** (JEDEC valide), soit **déclarée inconnue** : `flash_size: null`, `flash_size_known: false`, JEDEC brut et contexte de lecture (`ok`/`invalid`/`error`, rang de lecture, stub) conservés dans `flash_capacity` et affichés dans la console (« JEDEC ROM seule : … »). Une capacité mémorisée n'est jamais reprise comme mesurée ; `flash_id` reste `null` (un JEDEC non exploitable n'est pas un identifiant physique). À la reconnexion, famille et MAC sont toujours comparées ; capacité et JEDEC seulement si les deux côtés ont été mesurés. Le serveur n'accepte `flash_size: null` que sur déclaration explicite, pour un P4 dont les capacités sont limitées à `identify`, `mark` et `diagnostic.p4_usb_trace` ; `flash.read`, `partitions`, `flash.write` et `flash.erase` sont refusés (`flash_capacity_unknown`). Le diagnostic lui-même (région fixe 0x8000, 1 Mio, lecture seule) ne dépend pas de la capacité. Une perte de transport pendant la lecture du JEDEC n'est pas rétrogradée en « inconnue ».
+
+
+### Observabilité de l'admission et du chargement RAM (observation seule)
+Origine : run-003 (2026-11-20), échec indéterminé `diagnostic_stub_ram_load_failed` après un timeout de 3 s, sans autre localisation. Ajouté, **sans changer** commandes ROM, taille de bloc, délais, adresses, contenu du stub, admission, quarantaine ni récupération :
+- **Admission réussie** : `admission` (résultat de l'opération) et, en cas d'échec ultérieur, les mêmes champs plats dans l'erreur : `sync_values`, `sync_count`, `sync_zero_count`, `sync_completed`, `sync_stub_detected`, `loader_stub`, `admission_verdict` (`rom`/`stub`/`indeterminate`).
+- **Chargement RAM** : `ram_load` (résultat) et, dans l'erreur, `ram_steps` (≤ 32 entrées, tout-ou-rien), `ram_block_size`, `ram_acked_count`, `ram_failed_index`, `ram_last_acked_index`. Une entrée = `step` (`mem_begin`/`mem_block`/`mem_finish`), `segment` (`text`/`data`/`entry`), `block`, `blocks`, `address`, `size`, `ram_block`, `started`, `acked`, `duration_ms`, `outcome` (`ack`/`timeout`/`closed`/`invalid`/`error`). Une entrée est écrite **avant** la commande (commencée, `acked: 0`) et passée à `acked: 1` seulement à la réponse du MCU. Aucune donnée du stub, aucun texte du chargeur : la classe d'erreur est dérivée localement de signaux fixes.
+- Le journal de l'agent affiche l'étape (`étape RAM : mem_block text bloc 1/2 commencée, non acquittée (timeout, 3001 ms)`) et les comptes de synchronisation. Le journal SQLite du serveur n'est pas modifié (le résultat complet reste dans la vue de l'opération en mémoire et dans les preuves de campagne).
+
+Exemple (timeout du premier `memBegin`, produit par le vrai code) :
+```json
+{
+ "code": "hardware_outcome_unknown",
+ "origin_code": "diagnostic_stub_ram_load_failed",
+ "phase": "diagnostic_stub_load",
+ "error_type": "IdlabDiagnosticError",
+ "category": "ram_load_failed",
+ "ram_load": "started",
+ "origin_error_type": "IdlabDiagnosticError",
+ "sync_values": [
+  32273,
+  32273,
+  32273,
+  32273,
+  32273,
+  32273,
+  32273,
+  32273
+ ],
+ "admission_verdict": "rom",
+ "ram_steps": [
+  {
+   "step": "mem_begin",
+   "segment": "text",
+   "address": 1341456384,
+   "size": 9000,
+   "ram_block": 6144,
+   "started": 1,
+   "acked": 0,
+   "duration_ms": 31,
+   "outcome": "timeout",
+   "blocks": 2
+  }
+ ],
+ "loader_stub": 0,
+ "sync_zero_count": 0,
+ "sync_stub_detected": 0,
+ "sync_count": 8,
+ "sync_completed": 1,
+ "ram_block_size": 6144,
+ "ram_acked_count": 0,
+ "ram_failed_index": 0
+}
+```
+
+**Borne de la liste d'étapes.** `ram_steps` publie au plus 32 entrées (tout-ou-rien côté liste blanche). Le stub instrumenté qualifié (texte 8952 octets, données 276 octets) exige **9 commandes** avec des blocs de 0x800 (6 avec 0x1800) : la borne n'est jamais atteinte. Pour un stub plus long, le rapport garde les 30 premières entrées **plus les deux dernières** (dernière commande acquittée et commande fautive, ou les deux dernières commandes en cas de succès) et publie `ram_steps_omitted` ; `ram_failed_index`, `ram_acked_count` et `ram_last_acked_index` gardent la numérotation d'origine. Aucune donnée du stub, aucun texte libre.
