@@ -23,8 +23,9 @@ const FLASH_METHODS = ['flashBegin', 'flashBlock', 'flashFinish', 'flashDeflBegi
   'flashDeflFinish', 'writeFlash', 'eraseFlash', 'eraseRegion', 'flashSpiAttach', 'flashSetParameters'];
 
 export class IdlabDiagnosticError extends Error {
-  constructor(code, {chipTouched = false, detail, sessionState} = {}) {
+  constructor(code, {chipTouched = false, detail, sessionState, ramLoad} = {}) {
     super(code);
+    this.ramLoad = ramLoad;             // typed per-step report of the RAM download (see ramLoadReport)
     this.sessionState = sessionState;   // allowlisted raw observations of the admission (see hardware-errors.js)
     this.name = 'IdlabDiagnosticError';
     this.code = code;
@@ -81,11 +82,43 @@ async function admitRomSession(loader, options) {
       sessionState: {is_stub: loader.IS_STUB === true ? 1 : 0}});
   }
   const judged = judgeSessionState(evidence);
-  const sessionState = sessionStateReport(evidence, judged);
-  if (judged.verdict === 'rom') return judged;
+  const sessionState = { ...sessionStateReport(evidence, judged), admission_verdict: judged.verdict };
+  if (judged.verdict === 'rom') return sessionState;   // published with the operation even when the admission succeeds
   throw new IdlabDiagnosticError(judged.verdict === 'stub' ? 'diagnostic_stub_reported_running' : 'diagnostic_session_state_indeterminate',
     {sessionState});
 }
+
+// Per-step trace of the RAM download (MEM_BEGIN / MEM_DATA / MEM_END): it only OBSERVES, the commands, their arguments, their
+// order and the loader's own timeouts are untouched. Each entry distinguishes a command that was started from one the chip
+// acknowledged. Only typed, bounded fields are kept: never the stub bytes, never loader text.
+const OUTCOMES = new Set(['ack', 'timeout', 'closed', 'invalid', 'error']);
+export function classifyRamLoadError(error) {
+  if (error?.kind === 'no-response' || /^(No serial data received|Serial data stream stopped)/.test(String(error?.message ?? ''))) return 'timeout';
+  if (error?.kind === 'closed' || error?.name === 'NetworkError') return 'closed';
+  if (error?.kind === 'partial-packet' || error?.kind === 'invalid-packet') return 'invalid';
+  return 'error';
+}
+function ramLoadReport(ramBlock) {
+  const entries = [];
+  const view = () => {
+    const acked = entries.filter(e => e.acked === 1).length;
+    const failed = entries.findIndex(e => e.acked === 0);
+    return {ram_block: ramBlock, steps: entries.map(e => ({...e})), acked_count: acked, failed_index: failed >= 0 ? failed : null,
+      last_acked_index: acked > 0 && entries.slice(0, acked).every(e => e.acked === 1) ? acked - 1 : null};
+  };
+  return {
+    snapshot: view,
+    async run(meta, now, command) {
+      const entry = {...meta, ram_block: ramBlock, started: 1, acked: 0, duration_ms: 0, outcome: 'error'};
+      entries.push(entry);                              // recorded BEFORE the command: started, not yet acknowledged
+      const t0 = now();
+      try { await command(); entry.acked = 1; entry.outcome = 'ack'; }
+      catch (error) { entry.outcome = classifyRamLoadError(error); throw error; }
+      finally { entry.duration_ms = Math.max(0, Math.round(now() - t0)); }
+    },
+  };
+}
+export const RAM_LOAD_OUTCOMES = OUTCOMES;
 
 // Loads the reviewed diagnostic stub into RAM of a ROM-mode ESP32-P4 and positively identifies it.
 //   options.consent         must be exactly true (operator's explicit consent for THIS binary)
@@ -96,22 +129,29 @@ export async function loadDiagnosticStub(loader, stubJsonText, options = {}) {
   const actual = await sha256Hex(new TextEncoder().encode(stubJsonText));
   if (actual !== options.expectedSha256) throw new IdlabDiagnosticError('diagnostic_stub_sha256_mismatch', {detail: actual});
   if (loader?.chip?.CHIP_NAME !== DIAGNOSTIC_STUB_CHIP) throw new IdlabDiagnosticError('diagnostic_stub_wrong_chip');
-  await admitRomSession(loader, options);
+  const admission = await admitRomSession(loader, options);
   const revision = await loader.chip.getChipRevision(loader);  // read-only eFuse reads
   if (!Number.isInteger(revision) || revision < MIN_CHIP_REVISION)
     throw new IdlabDiagnosticError('diagnostic_stub_unsupported_chip_revision', {detail: revision});
   const {json, decodedText, decodedData} = parseStubJson(stubJsonText);
 
   // ---- from here on the chip is touched: any failure leaves the session undetermined ----
-  const touched = (code, detail) => new IdlabDiagnosticError(code, {chipTouched: true, detail});
+  const now = options.now ?? (() => performance.now());
+  const steps = ramLoadReport(loader.ESP_RAM_BLOCK);
+  const touched = (code, detail) => new IdlabDiagnosticError(code, {chipTouched: true, detail, sessionState: admission, ramLoad: steps.snapshot()});
   try {
-    for (const [bytes, start] of [[decodedText, json.text_start], [decodedData, json.data_start]]) {
+    for (const [segment, bytes, start] of [['text', decodedText, json.text_start], ['data', decodedData, json.data_start]]) {
       const block = loader.ESP_RAM_BLOCK;
       const blocks = Math.floor((bytes.length + block - 1) / block);
-      await loader.memBegin(bytes.length, blocks, block, start);
-      for (let seq = 0; seq < blocks; seq++) await loader.memBlock(bytes.slice(seq * block, (seq + 1) * block), seq);
+      await steps.run({step: 'mem_begin', segment, blocks, address: start, size: bytes.length}, now,
+        () => loader.memBegin(bytes.length, blocks, block, start));
+      for (let seq = 0; seq < blocks; seq++) {
+        const chunk = bytes.slice(seq * block, (seq + 1) * block);
+        await steps.run({step: 'mem_block', segment, block: seq, blocks, address: start + seq * block, size: chunk.length}, now,
+          () => loader.memBlock(chunk, seq));
+      }
     }
-    await loader.memFinish(json.entry);
+    await steps.run({step: 'mem_finish', segment: 'entry', address: json.entry, size: 0}, now, () => loader.memFinish(json.entry));
   } catch (error) {
     throw touched('diagnostic_stub_ram_load_failed', String(error?.message ?? error));
   }
@@ -131,7 +171,7 @@ export async function loadDiagnosticStub(loader, stubJsonText, options = {}) {
   loader.__idlabTraceStub = true;
   loader.__idlabTraceStubSha256 = actual;
   return {sha256: actual, entry: json.entry, chip_revision: revision, text_bytes: decodedText.length,
-    data_bytes: decodedData.length, ram_only: true};
+    data_bytes: decodedData.length, ram_only: true, admission, ram_load: steps.snapshot()};
 }
 
 // Explicit end of the diagnostic mode, on the browser side only. The stub stays in the chip RAM until

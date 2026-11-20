@@ -368,6 +368,29 @@ class P4TraceTests(unittest.TestCase):
                 self.assertEqual((d['quarantined'], d['diagnostic_resident']), expected)
                 again.journal.close()
 
+    def test_a_ram_load_failure_with_its_step_report_is_stored_verbatim_and_the_quarantine_is_kept(self):
+        op = self.start()
+        step = {'step': 'mem_begin', 'segment': 'text', 'blocks': 2, 'address': 0x4ff50000, 'size': 100, 'ram_block': 6144, 'started': 1,
+                'acked': 0, 'duration_ms': 3001, 'outcome': 'timeout'}
+        error = {'code': 'hardware_outcome_unknown', 'origin_code': 'diagnostic_stub_ram_load_failed', 'phase': 'diagnostic_stub_load',
+                 'category': 'ram_load_failed', 'ram_load': 'started', 'admission_verdict': 'rom', 'sync_count': 8, 'sync_zero_count': 0,
+                 'ram_block_size': 6144, 'ram_acked_count': 0, 'ram_failed_index': 0, 'ram_steps': [step]}
+        self.b.finish('agent', {'id': op['id'], 'state': 'indeterminate', 'hold': True, 'error': error})
+        self.assertEqual(self.b.operations[op['id']]['error'], error)          # the step report reaches the operation view unchanged
+        d = self.b.devices['p4']
+        self.assertTrue(d['quarantined'] and d['diagnostic_resident'])        # started RAM load: never restored, never lifted
+        self.b.agent_event('agent', {'type': 'settled', 'device': 'p4', 'generation': self.generation, 'id': op['id']})
+        with self.assertRaises(Fault) as context:
+            self.b.agent_event('agent', {'type': 'recover', 'device': 'p4', 'generation': self.generation})
+        self.assertEqual(context.exception.code, 'rom_proof_required')
+
+    def test_a_ram_load_failure_reported_as_a_plain_failure_is_not_restored_either(self):
+        op = self.start()
+        error = {'code': 'diagnostic_stub_ram_load_failed', 'phase': 'diagnostic_stub_load', 'category': 'ram_load_failed', 'ram_load': 'started',
+                 'origin_code': 'diagnostic_stub_ram_load_failed'}
+        self.b.finish('agent', {'id': op['id'], 'state': 'failed', 'error': error})
+        self.assertTrue(self.b.devices['p4']['quarantined'] and self.b.devices['p4']['diagnostic_resident'])
+
     def test_an_agent_disconnection_during_the_run_leaves_the_board_resident_and_quarantined(self):
         self.start()
         self.b.disconnect('agent')

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {loadDiagnosticStub, retireDiagnosticStub, parseStubJson, sha256Hex, RAM_WINDOWS,
+import {classifyRamLoadError, loadDiagnosticStub, retireDiagnosticStub, parseStubJson, sha256Hex, RAM_WINDOWS,
   IdlabDiagnosticError, FORBIDDEN_FLASH_METHODS} from '../web/p4-stub-loader.js';
 import {IDLAB_GET_FLASH_TRACE} from '../web/p4-stub-trace.js';
 
@@ -19,7 +19,10 @@ function report() {
 // A loader that records every call, so that a test can assert what was (not) done.
 // syncVals: the eight raw `val` of the fresh ESP_SYNC exchange; syncDetected: esptool's own flag after loader.sync().
 function makeLoader({chip = 'ESP32-P4', revision = 302, isStub = false, greeting = 'OHAI', probe = 'ok',
-    syncVals = null, syncDetected = null, syncError = null} = {}) {
+    syncVals = null, syncDetected = null, syncError = null, memFault = null} = {}) {
+  const seen = {memBegin: 0, memBlock: 0, memFinish: 0};
+  // memFault: {call, nth, error}: the nth (0-based) call of `call` throws `error` (a timeout, a closed port, ...)
+  const maybeFail = call => { const n = seen[call]++; if (memFault && memFault.call === call && memFault.nth === n) throw memFault.error; };
   const calls = [];
   const loader = {
     IS_STUB: isStub, ESP_RAM_BLOCK: 64, DEFAULT_TIMEOUT: 1000, calls,
@@ -35,9 +38,9 @@ function makeLoader({chip = 'ESP32-P4', revision = 302, isStub = false, greeting
     async readPacket() { if (!loader.pending.length) throw new Error('no data'); return [loader.pending.shift(), new Uint8Array(0)]; },
     pending: [],
     chip: {CHIP_NAME: chip, async getChipRevision() { calls.push('getChipRevision'); return revision; }},
-    async memBegin(...a) { calls.push(['memBegin', ...a]); },
-    async memBlock(bytes, seq) { calls.push(['memBlock', bytes.length, seq]); },
-    async memFinish(entry) { calls.push(['memFinish', entry]); },
+    async memBegin(...a) { calls.push(['memBegin', ...a]); maybeFail('memBegin'); },
+    async memBlock(bytes, seq) { calls.push(['memBlock', bytes.length, seq]); maybeFail('memBlock'); },
+    async memFinish(entry) { calls.push(['memFinish', entry]); maybeFail('memFinish'); },
     async checkCommand(_label, op) {
       calls.push(['checkCommand', op]);
       if (probe !== 'ok') throw new Error('stock stub rejects the opcode');
@@ -182,7 +185,7 @@ test('ROM confirmed by every index: the sync is redone BEFORE the first RAM writ
 test('stub confirmed (a stub answers once with 0 and sync() throws): explicit refusal with the raw values, nothing written', async () => {
   const {loader, error} = await admit({isStub: true});
   assert.equal(error.code, 'diagnostic_stub_reported_running'); assert.equal(error.sessionIndeterminate, false);
-  assert.deepEqual(error.sessionState, {sync_values: [0], sync_count: 1, sync_zero_count: 1, sync_completed: 0, sync_stub_detected: 1, loader_stub: 1});
+  assert.deepEqual(error.sessionState, {sync_values: [0], sync_count: 1, sync_zero_count: 1, sync_completed: 0, sync_stub_detected: 1, loader_stub: 1, admission_verdict: 'stub'});
   assert.equal(chipWrites(loader).length, 0);
 });
 
@@ -242,4 +245,95 @@ test('the optional independent MD5 probe: agreeing passes; disagreeing or "unkno
   assert.equal((await admit({isStub: true}, {md5Probe: async () => ascii})).error.code, 'diagnostic_session_state_indeterminate');
   const plain = await admit({});
   assert.ok(!plain.loader.calls.some(c => Array.isArray(c) && c[0] === 'checkCommand' && c[1] !== IDLAB_GET_FLASH_TRACE), 'no md5 probe by default');
+});
+
+// ---------------------------------------------------------------- RAM download observability (observation only)
+const timeoutError = () => Object.assign(new Error('No serial data received.'), {kind: 'no-response'});
+let tick = 0;
+const clock = () => { tick += 7; return tick; };           // deterministic: every command lasts exactly 7 ms (one reading before, one after)
+async function load(loaderOptions) {
+  const json = stubJson(), loader = makeLoader(loaderOptions);
+  let error = null, result = null; tick = 0;
+  try { result = await loadDiagnosticStub(loader, json, {...await options(json), now: clock}); } catch (e) { error = e; }
+  return {loader, error, result, json};
+}
+const step = (name, segment, extra) => ({step: name, segment, ram_block: 64, started: 1, ...extra});
+
+test('success: the admission observations and one acknowledged entry per RAM command are returned with the load', async () => {
+  const {result} = await load({});
+  assert.deepEqual(result.admission, {sync_values: ROM, sync_count: 8, sync_zero_count: 0, sync_completed: 1, sync_stub_detected: 0, loader_stub: 0, admission_verdict: 'rom'});
+  const r = result.ram_load;
+  assert.deepEqual([r.ram_block, r.acked_count, r.failed_index, r.last_acked_index], [64, 6, null, 5]);
+  assert.deepEqual(r.steps.map(e => [e.step, e.segment, e.block ?? null, e.blocks ?? null, e.address, e.size, e.acked, e.outcome, e.duration_ms]), [
+    ['mem_begin', 'text', null, 2, 0x4ff50000, 100, 1, 'ack', 7], ['mem_block', 'text', 0, 2, 0x4ff50000, 64, 1, 'ack', 7],
+    ['mem_block', 'text', 1, 2, 0x4ff50040, 36, 1, 'ack', 7], ['mem_begin', 'data', null, 1, 0x4ff60040, 40, 1, 'ack', 7],
+    ['mem_block', 'data', 0, 1, 0x4ff60040, 40, 1, 'ack', 7], ['mem_finish', 'entry', null, null, 0x4ff50010, 0, 1, 'ack', 7]]);
+  assert.ok(r.steps.every(e => e.started === 1 && e.ram_block === 64));
+});
+
+test('the instrumentation changes nothing on the chip: same commands, same arguments, same order, no retry', async () => {
+  const {loader} = await load({});
+  const commands = loader.calls.filter(c => Array.isArray(c) && /^mem/.test(c[0]));
+  assert.deepEqual(commands, [['memBegin', 100, 2, 64, 0x4ff50000], ['memBlock', 64, 0], ['memBlock', 36, 1],
+    ['memBegin', 40, 1, 64, 0x4ff60040], ['memBlock', 40, 0], ['memFinish', 0x4ff50010]]);
+  const failed = await load({memFault: {call: 'memBlock', nth: 1, error: timeoutError()}});
+  assert.equal(failed.loader.calls.filter(c => Array.isArray(c) && /^mem/.test(c[0])).length, 3, 'nothing is sent after the failure');
+});
+
+const failures = [
+  ['timeout on the first memBegin', {call: 'memBegin', nth: 0}, 0, null, [step('mem_begin', 'text', {blocks: 2, address: 0x4ff50000, size: 100, acked: 0, outcome: 'timeout', duration_ms: 7})]],
+  ['timeout on an intermediate memBlock', {call: 'memBlock', nth: 1}, 2, 1, null],
+  ['failure on the second memBegin', {call: 'memBegin', nth: 1}, 3, 2, null],
+  ['failure on memFinish', {call: 'memFinish', nth: 0}, 5, 4, null],
+];
+for (const [name, fault, failedIndex, lastAcked, exactSteps] of failures) {
+  test(`RAM load: ${name} — localised, last acknowledged command kept, session indeterminate, admission kept`, async () => {
+    const {error} = await load({memFault: {...fault, error: timeoutError()}});
+    assert.equal(error.code, 'diagnostic_stub_ram_load_failed'); assert.equal(error.sessionIndeterminate, true);
+    const r = error.ramLoad;
+    assert.equal(r.failed_index, failedIndex); assert.equal(r.last_acked_index, lastAcked);
+    assert.equal(r.acked_count, failedIndex); assert.equal(r.steps.length, failedIndex + 1, 'nothing after the failing command');
+    const failedStep = r.steps[failedIndex];
+    assert.deepEqual([failedStep.started, failedStep.acked, failedStep.outcome, failedStep.duration_ms], [1, 0, 'timeout', 7]);
+    assert.ok(r.steps.slice(0, failedIndex).every(e => e.acked === 1 && e.outcome === 'ack'));
+    if (exactSteps) assert.deepEqual(r.steps, exactSteps);
+    assert.equal(error.sessionState.admission_verdict, 'rom'); assert.equal(error.sessionState.sync_count, 8);
+  });
+}
+
+test('error classes are derived locally from fixed signals, never from free text; the loader message is not kept', async () => {
+  const cases = [[timeoutError(), 'timeout'], [Object.assign(new Error('No serial data received.'), {}), 'timeout'], [new Error('Serial data stream stopped: Possible serial noise or corruption.'), 'timeout'],
+    [Object.assign(new Error('x'), {kind: 'closed'}), 'closed'], [Object.assign(new Error('x'), {name: 'NetworkError'}), 'closed'],
+    [Object.assign(new Error('x'), {kind: 'partial-packet'}), 'invalid'], [Object.assign(new Error('x'), {kind: 'invalid-packet'}), 'invalid'],
+    [new Error('Failed to enter RAM download mode TOKEN=hunter2'), 'error']];
+  for (const [err, outcome] of cases) {
+    const {error} = await load({memFault: {call: 'memBegin', nth: 0, error: err}});
+    assert.equal(error.ramLoad.steps[0].outcome, outcome, err.message);
+    assert.ok(!JSON.stringify(error.ramLoad).includes('hunter2') && !JSON.stringify(error.ramLoad).includes('Failed to'));
+  }
+  assert.equal(classifyRamLoadError(undefined), 'error');
+});
+
+test('the report holds typed numbers and fixed words only: no stub bytes, no free text', async () => {
+  const {result} = await load({});
+  const allowed = new Set(['step', 'segment', 'block', 'blocks', 'address', 'size', 'ram_block', 'started', 'acked', 'duration_ms', 'outcome']);
+  for (const e of result.ram_load.steps) {
+    assert.ok(Object.keys(e).every(k => allowed.has(k)), Object.keys(e).join());
+    assert.ok(Object.values(e).every(v => Number.isInteger(v) || ['mem_begin', 'mem_block', 'mem_finish', 'text', 'data', 'entry', 'ack'].includes(v)));
+  }
+  assert.ok(!JSON.stringify(result.ram_load).includes(Buffer.from(new Uint8Array(100).fill(0x13)).toString('base64')));
+});
+
+test('greeting / identification failures after the RAM load keep the complete (acknowledged) RAM report and the admission', async () => {
+  const bad = await load({greeting: 'NOPE'});
+  assert.equal(bad.error.code, 'diagnostic_stub_bad_greeting');
+  assert.deepEqual([bad.error.ramLoad.acked_count, bad.error.ramLoad.failed_index, bad.error.ramLoad.last_acked_index], [6, null, 5]);
+  assert.equal(bad.error.sessionState.admission_verdict, 'rom');
+  const silent = await load({probe: 'reject'});
+  assert.equal(silent.error.code, 'diagnostic_stub_not_identified'); assert.equal(silent.error.ramLoad.acked_count, 6);
+});
+
+test('refusals before the RAM load carry no RAM report (nothing started)', async () => {
+  const {error} = await load({isStub: true});
+  assert.equal(error.ramLoad, undefined); assert.equal(error.sessionState.admission_verdict, 'stub');
 });
