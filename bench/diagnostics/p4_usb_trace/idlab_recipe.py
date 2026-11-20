@@ -25,8 +25,8 @@ SCENARIO = "diagnostic.p4_usb_trace"
 STEPS = [
     ("A1", "flash.read", "standard reader (reference), standard stub"),
     ("D", "flash.read", "reader md5-only (stub-side MD5, no transfer)"),
-    ("T", SCENARIO, "OPERATOR: put the P4 in ROM download mode (BOOT + reset) with manual download enabled; RAM load + traced read"),
-    ("A2", "flash.read", "OPERATOR: local recovery, own reset, re-identify; then the standard reader again"),
+    ("T", SCENARIO, "OPERATOR: BOOT + reset, then (re)add the board with the advanced option 'ROM seule' (a normal connection loads the standard stub); RAM load + traced read"),
+    ("A2", "flash.read", "OPERATOR: BOOT + reset, reconnect 'ROM seule', click Recovery (ROM proof); then a NORMAL connection and the standard reader again"),
 ]
 
 

@@ -46,6 +46,8 @@ export const diagnostic = code => ({
   diagnostic_consent_invalid: 'Consentement du diagnostic absent ou ne correspondant pas à la carte et au stub.',
   diagnostic_parameter_not_allowed: 'Paramètre du diagnostic différent de la valeur figée.',
   diagnostic_stub_still_running: 'Un stub tourne encore : le retour en ROM n’est pas démontré.',
+  diagnostic_rom_only_required: 'Le diagnostic exige une connexion « ROM seule » (option avancée de connexion).',
+  diagnostic_rom_only_session: 'Session « ROM seule » : seules l’identification, les repères et le diagnostic P4 sont disponibles.',
   manual_download_required: 'Entrée manuelle en mode ROM requise (case « BOOT manuel »).',
   idlab_trace_md5_mismatch: 'MD5 des octets reçus différent de celui du stub : session indéterminée.',
   idlab_trace_stream_failed: 'Flux de lecture diagnostique interrompu : session indéterminée.',
