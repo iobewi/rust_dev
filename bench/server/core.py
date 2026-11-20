@@ -13,7 +13,7 @@ from protocol import (CAPABILITIES, MAX_ARTIFACT, P4_TRACE, PROGRAM, Fault,
 TERMINAL = {'completed', 'failed', 'expired', 'cancelled', 'indeterminate'}
 # While a board is quarantined, only operations that re-read its state may run.
 QUARANTINE_ALLOWED = {'identify', 'partitions', 'flash.read', 'mark'}
-# Refusals of the P4 diagnostic after which the chip provably received nothing and the refusal itself reveals no
+# Refusals of the P4 diagnostic after which the chip received no RAM/flash write (at most ESP_SYNC frames) and the refusal reveals no
 # doubtful hardware state: the board keeps exactly the flags it had before the command (never a new quarantine, never
 # a lifted one). Every other failure, in particular a stub reported running, an indeterminate or unobservable
 # session state, and anything unknown, keeps the conservative quarantine + resident flag.
@@ -437,7 +437,7 @@ class Broker:
         if state == 'indeterminate' or message.get('hold') is True or op['command'] == P4_TRACE:
             d['quarantined'] = True
         if was_running and self.refused_before_any_chip_write(op, state, error, message):
-            # Nothing reached the chip: back to the flags held before the command (an earlier quarantine stays).
+            # No RAM/flash write reached the chip: back to the flags held before the command (an earlier quarantine stays).
             d['quarantined'], d['diagnostic_resident'] = op['diag_prior']['quarantined'], op['diag_prior']['resident']
             self.event(d['id'], 'diagnostic_refused_before_load', {'id': op['id']})
         self.event(d['id'], 'operation', {'id': op['id'], 'state': op['state']})

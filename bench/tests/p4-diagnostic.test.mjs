@@ -35,9 +35,11 @@ function simP4({ fault = null, chip = 'ESP32-P4', revision = 302, isStub = false
   const loader = {
     IS_STUB: isStub, ESP_RAM_BLOCK: 64, DEFAULT_TIMEOUT: 1000, calls,
     chip: { CHIP_NAME: chip, getChipRevision: async () => revision },
-    sync: async () => { calls.push(['sync']); loader.syncStubDetected = loader.IS_STUB === true; },
-    ESP_SYNC: 8, syncValue: () => loader.IS_STUB === true ? 0 : 1,     // a ROM answers a sync with a non-zero val, a stub with 0
-    command: async () => { calls.push(['sync_frame']); return [loader.syncValue(), new Uint8Array(0)]; },
+    // esptool-js 0.7.0: a ROM answers an ESP_SYNC (0x08) eight times with a non-zero val, a stub once with 0; sync() throws on a stub
+    syncAnswers: () => loader.IS_STUB === true ? [0] : [1, 1, 1, 1, 1, 1, 1, 1], pending: [],
+    sync: async () => { calls.push(['sync']); loader.syncStubDetected = loader.IS_STUB === true; if (loader.syncStubDetected) throw new Error('invalid response'); },
+    command: async (op) => { calls.push(['sync_frame', op]); loader.pending = [...loader.syncAnswers()]; return [loader.pending.shift(), new Uint8Array(0)]; },
+    readPacket: async () => { if (!loader.pending.length) throw new Error('no data'); return [loader.pending.shift(), new Uint8Array(0)]; },
     memBegin: async (...a) => { calls.push(['memBegin', ...a]); if (fault === 'memBegin') throw new Error('lost'); },
     memBlock: async (bytes, seq) => { calls.push(['memBlock', seq]); if (fault === 'load_truncated' && seq === 0) throw new Error('truncated'); },
     memFinish: async entry => { calls.push(['memFinish', entry]); },
@@ -386,8 +388,8 @@ function esptoolFor(world) {
     constructor() {
       const sim = simP4(); world.loaders.push(sim);
       sim.syncStubDetected = false; sim.chip = null;
-      sim.sync = async () => { sim.syncStubDetected = world.stubRunning; };
-      sim.syncValue = () => world.stubRunning ? 0 : 1;
+      sim.sync = async () => { sim.syncStubDetected = world.stubRunning; };   // connection-time/recovery sync: the flag path (real esptool-js would throw on a stub)
+      sim.syncAnswers = () => world.stubRunning ? [0] : new Array(8).fill(1);
       sim.detectChip = async mode => {
         world.detectModes.push(mode); await sim.sync();
         sim.chip = { CHIP_NAME: 'ESP32-P4', getChipRevision: async () => 302, getChipDescription: async () => 'ESP32-P4 (revision v3.2)', readMac: async () => 'aa:bb:cc:dd:ee:ff' };
@@ -488,25 +490,25 @@ test('the recovery proof is a FRESH ROM sync: a stub that starts after the conne
 });
 
 test('admission refusals publish the raw observations (allowlisted) and stay "not started": contradiction, communication error', async () => {
-  for (const [world, code] of [[{ syncVals: [1, 0, 1, 1, 1, 1, 1, 1], syncDetected: false }, 'diagnostic_session_state_indeterminate'], [{ failSync: true }, 'diagnostic_admission_sync_failed']]) {
+  for (const [world, code] of [[{ syncVals: [1, 0, 1, 1, 1, 1, 1, 1] }, 'diagnostic_session_state_indeterminate'], [{ failSync: true }, 'diagnostic_admission_sync_failed']]) {
     const loader = simP4(), x = await engineWith(loader);
-    if (world.failSync) loader.sync = async () => { throw new Error('serial lost TOKEN=hunter2'); };
-    else { let i = 0; loader.command = async () => [world.syncVals[i++ % 8], new Uint8Array(0)]; }
+    if (world.failSync) loader.command = async () => { throw new Error('serial lost TOKEN=hunter2'); };
+    else loader.syncAnswers = () => world.syncVals;
     let thrown; try { await x.engine.execute(P4_TRACE, clean(goodArgs()), x.context); } catch (e) { thrown = e; }
     const out = published(thrown);
     assert.deepEqual([out.code, out.phase, out.category, out.ram_load], [code, 'diagnostic_stub_load', 'refused_before_load', 'not_started']);
     assert.equal(writes(loader).length, 0); assert.equal(x.engine.diagnosticResident, false);
     assert.ok(!JSON.stringify(out).includes('hunter2'), 'loader text never crosses the protocol');
-    if (!world.failSync) assert.deepEqual(out.sync_values, world.syncVals);
+    if (!world.failSync) { assert.deepEqual(out.sync_values, world.syncVals); assert.equal(out.sync_count, 8); }
     assert.ok(diagnostic(code).length > 20);
   }
 });
 
 test('the published report accepts only well-formed raw observations', () => {
   const out = hardwareError(Object.assign(new Error('x'), { code: 'diagnostic_stub_reported_running', diagnostic: {
-    sync_values: [0, 0, 0, 0, 0, 0, 0, 0], sync_zero_count: 8, sync_stub_detected: 1, loader_stub: 1, md5_shape: 'stub' } }));
-  assert.deepEqual([out.sync_values.length, out.sync_zero_count, out.sync_stub_detected, out.md5_shape], [8, 8, 1, 'stub']);
-  for (const bad of [{ sync_values: new Array(9).fill(0) }, { sync_values: ['0x1'] }, { sync_values: [-1] }, { sync_values: 'abc' }, { md5_shape: 'TOKEN=x' }]) {
+    sync_values: [0, -1, 0x7fffffff, 0, 0, 0, 0, 0], sync_zero_count: 6, sync_stub_detected: 1, sync_count: 8, sync_completed: 0, loader_stub: 1, md5_shape: 'stub' } }));
+  assert.deepEqual([out.sync_values.length, out.sync_zero_count, out.sync_stub_detected, out.sync_count, out.sync_completed, out.md5_shape], [8, 6, 1, 8, 0, 'stub']);
+  for (const bad of [{ sync_values: new Array(9).fill(0) }, { sync_values: ['0x1'] }, { sync_values: [0x80000000] }, { sync_values: [1.5] }, { sync_values: 'abc' }, { md5_shape: 'TOKEN=x' }]) {
     const o = hardwareError(Object.assign(new Error('x'), { code: 'diagnostic_stub_reported_running', diagnostic: bad }));
     assert.ok(!('sync_values' in o) && !('md5_shape' in o), JSON.stringify(bad));
   }

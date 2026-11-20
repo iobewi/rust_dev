@@ -15,7 +15,7 @@ const categories = new Set(['local_validation', 'session_open', 'refused_before_
 const ramLoad = new Set(['not_started', 'started', 'unknown']);
 const counters = ['chip_revision', 'elapsed_ms', 'received_bytes', 'expected_bytes', 'block_address', 'block_size', 'serial_reads', 'serial_bytes',
   'serial_timeouts', 'silence_limit_ms', 'last_read_ms', 'last_packet_bytes', 'execution_remaining_ms', 'lease_remaining_ms',
-  'grant_remaining_ms', 'start_remaining_ms', 'http_status', 'jedec_id', 'identify_index', 'loader_stub', 'sync_zero_count', 'sync_stub_detected'];
+  'grant_remaining_ms', 'start_remaining_ms', 'http_status', 'jedec_id', 'identify_index', 'loader_stub', 'sync_zero_count', 'sync_stub_detected', 'sync_count', 'sync_completed'];
 const md5Shapes = new Set(['rom', 'stub', 'unknown']);
 export function hardwareError(error, disconnected = false, details = {}) {
   // `error.diagnostic` is the structured, allowlisted origin report built by the P4 orchestrator (never the loader's own text).
@@ -33,8 +33,8 @@ export function hardwareError(error, disconnected = false, details = {}) {
   if (diagnosticCode(input.origin_code)) out.origin_code = input.origin_code;
   if (types.has(input.origin_error_type)) out.origin_error_type = input.origin_error_type;
   if (['visible', 'hidden', 'prerender', 'unavailable'].includes(input.visibility)) out.visibility = input.visibility;
-  // Raw observations of the ROM/stub admission: eight 32-bit sync values at most, a fixed vocabulary for the MD5 shape.
-  if (Array.isArray(input.sync_values) && input.sync_values.length <= 8 && input.sync_values.every(v => Number.isInteger(v) && v >= 0 && v <= 0xffffffff))
+  // Raw observations of the ROM/stub admission: eight signed 32-bit sync values at most, a fixed vocabulary for the MD5 shape.
+  if (Array.isArray(input.sync_values) && input.sync_values.length <= 8 && input.sync_values.every(v => Number.isInteger(v) && v >= -0x80000000 && v <= 0x7fffffff))
     out.sync_values = [...input.sync_values];
   if (md5Shapes.has(input.md5_shape)) out.md5_shape = input.md5_shape;
   for (const key of counters) if (Number.isFinite(input[key]) && input[key] >= 0) out[key] = Math.round(input[key]);

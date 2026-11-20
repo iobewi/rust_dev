@@ -71,7 +71,8 @@ export function parseStubJson(text) {
 }
 
 // Fresh, traced ROM/stub admission: never trusts the connection-time flags. The refusal carries the raw observations
-// (allowlisted fields only, see hardware-errors.js); no write happens here, and a refusal never retries.
+// (allowlisted fields only, see hardware-errors.js). It transmits ESP_SYNC frames to the chip (no RAM/flash write, no reset)
+// and a refusal never retries.
 async function admitRomSession(loader, options) {
   let evidence;
   try { evidence = await observeSessionState(loader, { md5Probe: options.md5Probe }); }
@@ -80,8 +81,8 @@ async function admitRomSession(loader, options) {
       sessionState: {is_stub: loader.IS_STUB === true ? 1 : 0}});
   }
   const judged = judgeSessionState(evidence);
-  const sessionState = {sync_values: evidence.syncValues, sync_zero_count: judged.zero_count, sync_stub_detected: evidence.syncStubDetected ? 1 : 0,
-    loader_stub: evidence.isStub ? 1 : 0, ...(evidence.md5 ? {md5_shape: evidence.md5} : {})};
+  const sessionState = {sync_values: evidence.syncValues, sync_count: evidence.syncValues.length, sync_zero_count: judged.zero_count,
+    sync_completed: evidence.syncCompleted ? 1 : 0, sync_stub_detected: evidence.syncStubDetected ? 1 : 0, loader_stub: evidence.isStub ? 1 : 0, ...(evidence.md5 ? {md5_shape: evidence.md5} : {})};
   if (judged.verdict === 'rom') return judged;
   throw new IdlabDiagnosticError(judged.verdict === 'stub' ? 'diagnostic_stub_reported_running' : 'diagnostic_session_state_indeterminate',
     {sessionState});
