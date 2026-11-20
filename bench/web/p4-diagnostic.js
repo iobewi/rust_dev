@@ -34,7 +34,7 @@ export function validateDiagnosticArgs(args, device) {
  * Never retries, never resets, never falls back to the standard stub.
  * Returns { result }. On a failure after the chip was touched it throws an error with `chipTouched = true`.
  */
-export async function runP4UsbTrace({ loader, args, device, stubBytes, check = () => {}, report = () => {}, now = () => performance.now() }) {
+export async function runP4UsbTrace({ loader, args, device, stubBytes, romOnly = false, check = () => {}, report = () => {}, now = () => performance.now() }) {
   // Structured, allowlisted origin report attached to every failure (see hardware-errors.js). Never carries loader text.
   const report_ = (error, fields) => { error.diagnostic = { origin_code: error.code, origin_error_type: error.name, ...fields }; return error; };
   let stubText;
@@ -50,7 +50,7 @@ export async function runP4UsbTrace({ loader, args, device, stubBytes, check = (
     report({ phase: 'diagnostic_stub_load' });
     // loadDiagnosticStub refuses (chip untouched) unless: consent, sha, ESP32-P4, rev >= 3.00, ROM session.
     touched = true; // conservative: from here a failure may have reached the chip, unless the loader says otherwise
-    const loaded = await loadDiagnosticStub(loader, stubText, { consent: true, expectedSha256: args.stub_sha256 });
+    const loaded = await loadDiagnosticStub(loader, stubText, { consent: true, expectedSha256: args.stub_sha256, romOnly });
     loadedInfo = loaded;
     check();
     report({ phase: 'diagnostic_read' });
@@ -95,6 +95,9 @@ export async function runP4UsbTrace({ loader, args, device, stubBytes, check = (
 function ramLoadFields(r) {
   const out = { ram_block_size: r.ram_block, ram_acked_count: r.acked_count, ram_steps: r.steps };
   if (r.steps_omitted > 0) out.ram_steps_omitted = r.steps_omitted;
+  if (Number.isInteger(r.ram_block_default)) out.ram_block_default = r.ram_block_default;
+  if (r.ram_block_source) out.ram_block_source = r.ram_block_source;
+  if (r.usb_otg_confirmed === 1) out.usb_otg_confirmed = 1;
   if (Number.isInteger(r.failed_index)) out.ram_failed_index = r.failed_index;
   if (Number.isInteger(r.last_acked_index)) out.ram_last_acked_index = r.last_acked_index;
   return out;

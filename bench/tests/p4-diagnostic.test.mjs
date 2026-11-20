@@ -33,8 +33,9 @@ function simP4({ fault = null, chip = 'ESP32-P4', revision = 302, isStub = false
   const calls = [];
   let reads = 0;
   const loader = {
-    IS_STUB: isStub, ESP_RAM_BLOCK: 64, DEFAULT_TIMEOUT: 1000, calls,
-    chip: { CHIP_NAME: chip, getChipRevision: async () => revision },
+    IS_STUB: isStub, ESP_RAM_BLOCK: 0x1800, DEFAULT_TIMEOUT: 1000, calls,
+    usesUsbOtg: async () => { calls.push(['usesUsbOtg']); return true; },   // VID 303a / PID 0012 on the bench board
+    chip: { CHIP_NAME: chip, USB_RAM_BLOCK: 0x800, getChipRevision: async () => revision },
     // esptool-js 0.7.0: a ROM answers an ESP_SYNC (0x08) eight times with a non-zero val, a stub once with 0; sync() throws on a stub
     syncAnswers: () => loader.IS_STUB === true ? [0] : [1, 1, 1, 1, 1, 1, 1, 1], pending: [],
     sync: async () => { calls.push(['sync']); loader.syncStubDetected = loader.IS_STUB === true; if (loader.syncStubDetected) throw new Error('invalid response'); },
@@ -85,7 +86,7 @@ test('every deviation from the fixed request is refused locally with nothing sen
     { consent: { ...expectedConsent('p4', STUB_SHA), extra: true } }];
   for (const over of bad) {
     const loader = simP4();
-    await assert.rejects(runP4UsbTrace({ loader, args: clean(goodArgs(over)), device, stubBytes }),
+    await assert.rejects(runP4UsbTrace({ loader, romOnly: true, args: clean(goodArgs(over)), device, stubBytes }),
       e => e.indeterminate === false && /^diagnostic_/.test(e.code), JSON.stringify(over).slice(0, 60));
     assert.equal(loader.calls.length, 0);
   }
@@ -94,7 +95,7 @@ test('every deviation from the fixed request is refused locally with nothing sen
 
 test('a stub whose bytes do not match the announced SHA-256 never reaches the chip', async () => {
   const loader = simP4();
-  await assert.rejects(runP4UsbTrace({ loader, args: clean(goodArgs()), device, stubBytes: new TextEncoder().encode(stubText + ' ') }),
+  await assert.rejects(runP4UsbTrace({ loader, romOnly: true, args: clean(goodArgs()), device, stubBytes: new TextEncoder().encode(stubText + ' ') }),
     e => e.code === 'artifact_integrity_failed' && e.indeterminate === false);
   assert.equal(loader.calls.length, 0);
 });
@@ -102,7 +103,7 @@ test('a stub whose bytes do not match the announced SHA-256 never reaches the ch
 // ------------------------------------------------------------------ orchestrator: loader + reader
 test('nominal run: RAM load, 256 packets with cumulative ACKs, MD5, IDT1, raw cycles, assumed clock flagged', async () => {
   const loader = simP4(), steps = [];
-  const { result } = await runP4UsbTrace({ loader, args: clean(goodArgs()), device, stubBytes, report: d => steps.push(d.phase) });
+  const { result } = await runP4UsbTrace({ loader, romOnly: true, args: clean(goodArgs()), device, stubBytes, report: d => steps.push(d.phase) });
   assert.equal(result.packets, 256); assert.equal(result.acks, 256); assert.equal(result.bytes, 1048576);
   assert.equal(result.md5, MD5_ALL); assert.match(result.data_sha256, /^[0-9a-f]{64}$/);
   assert.equal(result.trace.flash_cycles, '100000'); assert.equal(result.converted.cycles.fill_cycles, '3000000');
@@ -118,7 +119,7 @@ test('nominal run: RAM load, 256 packets with cumulative ACKs, MD5, IDT1, raw cy
 test('loader refusals before any write are not indeterminate: wrong chip, old revision, standard stub already running', async () => {
   for (const options of [{ chip: 'ESP32-S3' }, { revision: 200 }, { isStub: true }]) {
     const loader = simP4(options);
-    await assert.rejects(runP4UsbTrace({ loader, args: clean(goodArgs()), device, stubBytes }), e => e.indeterminate === false);
+    await assert.rejects(runP4UsbTrace({ loader, romOnly: true, args: clean(goodArgs()), device, stubBytes }), e => e.indeterminate === false);
     assert.equal(writes(loader).length, 0); noForbidden(loader);
   }
 });
@@ -126,7 +127,7 @@ test('loader refusals before any write are not indeterminate: wrong chip, old re
 test('failures after the first RAM write are indeterminate and never retried', async () => {
   for (const fault of ['memBegin', 'load_truncated', 'probe_rejected', 'read_interrupted', 'bad_md5', 'corrupt_data', 'bad_counters', 'bad_idt1']) {
     const loader = simP4({ fault });
-    await assert.rejects(runP4UsbTrace({ loader, args: clean(goodArgs()), device, stubBytes }), e => e.indeterminate === true, fault);
+    await assert.rejects(runP4UsbTrace({ loader, romOnly: true, args: clean(goodArgs()), device, stubBytes }), e => e.indeterminate === true, fault);
     assert.ok(loader.calls.filter(c => c[0] === 'memBegin').length <= 2, 'no retry (one text + one data segment): ' + fault);
     assert.ok(loader.calls.filter(c => c[1] === IDLAB_READ_FLASH_TRACE).length <= 1);
     noForbidden(loader);
@@ -135,7 +136,7 @@ test('failures after the first RAM write are indeterminate and never retried', a
 
 test('losing the lease or the grant while reading is indeterminate (the stub is already running)', async () => {
   const loader = simP4(); let n = 0;
-  await assert.rejects(runP4UsbTrace({ loader, args: clean(goodArgs()), device, stubBytes,
+  await assert.rejects(runP4UsbTrace({ loader, romOnly: true, args: clean(goodArgs()), device, stubBytes,
     check: () => { if (++n > 3) throw Object.assign(new Error('x'), { code: 'reservation_expired' }); } }), e => e.indeterminate === true);
 });
 
@@ -392,7 +393,7 @@ function esptoolFor(world) {
       sim.syncAnswers = () => world.stubRunning ? [0] : new Array(8).fill(1);
       sim.detectChip = async mode => {
         world.detectModes.push(mode); await sim.sync();
-        sim.chip = { CHIP_NAME: 'ESP32-P4', getChipRevision: async () => 302, getChipDescription: async () => 'ESP32-P4 (revision v3.2)', readMac: async () => { if (world.macError) throw world.macError; return world.mac ?? 'aa:bb:cc:dd:ee:ff'; } };
+        sim.chip = { CHIP_NAME: 'ESP32-P4', IMAGE_CHIP_ID: 18, USB_RAM_BLOCK: 0x800, getChipRevision: async () => 302, getChipDescription: async () => 'ESP32-P4 (revision v3.2)', readMac: async () => { if (world.macError) throw world.macError; return world.mac ?? 'aa:bb:cc:dd:ee:ff'; } };
       };
       sim.runStub = async () => { world.runStubCalls++; if (!sim.syncStubDetected) world.stubRunning = true; sim.IS_STUB = true; };
       sim.main = async mode => { world.mainCalls++; await sim.detectChip(mode); await sim.runStub(); return sim.chip.getChipDescription(sim); };
@@ -653,7 +654,7 @@ test('success: the operation result carries the admission observations and the p
   assert.deepEqual([done.admission.admission_verdict, done.admission.sync_count, done.admission.sync_zero_count, done.admission.sync_completed, done.admission.sync_stub_detected, done.admission.loader_stub], ['rom', 8, 0, 1, 0, 0]);
   assert.equal(done.admission.sync_values.length, 8);
   assert.ok(done.ram_load.steps.length >= 3 && done.ram_load.steps.every(e => e.acked === 1) && done.ram_load.failed_index === null);
-  assert.equal(done.ram_load.ram_block, 64);
+  assert.deepEqual([done.ram_load.ram_block, done.ram_load.ram_block_default, done.ram_load.ram_block_source, done.ram_load.usb_otg_confirmed], [2048, 0x1800, 'usb_otg_cap', 1]);
 });
 
 test('RAM-load failure: the published error localises the failing command and keeps the last acknowledged one (allowlisted fields only)', async () => {
@@ -665,7 +666,7 @@ test('RAM-load failure: the published error localises the failing command and ke
     assert.deepEqual([out.code, out.origin_code, out.phase, out.category, out.ram_load], ['hardware_outcome_unknown', 'diagnostic_stub_ram_load_failed', 'diagnostic_stub_load', 'ram_load_failed', 'started']);
     const failed = out.ram_steps[out.ram_failed_index];
     assert.deepEqual([failed.step, failed.started, failed.acked, failed.outcome], [failedStep, 1, 0, 'error']);
-    assert.equal(out.ram_acked_count, out.ram_failed_index); assert.equal(out.ram_block_size, 64);
+    assert.equal(out.ram_acked_count, out.ram_failed_index); assert.deepEqual([out.ram_block_size, out.ram_block_default, out.ram_block_source, out.usb_otg_confirmed], [2048, 0x1800, 'usb_otg_cap', 1]);
     if (out.ram_failed_index > 0) assert.equal(out.ram_last_acked_index, out.ram_failed_index - 1); else assert.ok(!('ram_last_acked_index' in out));
     assert.equal(out.admission_verdict, 'rom'); assert.equal(out.sync_count, 8); assert.equal(out.sync_zero_count, 0);
     assert.ok(!JSON.stringify(out).includes('lost') && !JSON.stringify(out).includes('truncated'), 'loader text never crosses the protocol');

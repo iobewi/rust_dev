@@ -10,6 +10,10 @@ import {observeSessionState, judgeSessionState, sessionStateReport} from './p4-s
 import {decodeTraceReport, IDLAB_GET_FLASH_TRACE} from './p4-stub-trace.js';
 
 export const DIAGNOSTIC_STUB_CHIP = 'ESP32-P4';
+// Block size of the RAM download over USB-OTG. References: esptool-js 0.7.0 targets/esp32p4.js (USB_RAM_BLOCK = 0x800, applied by
+// postConnect() when usesUsbOtg()) and esptool 5.6.0 loader.py (USB_OTG_BLOCK_SIZE = 0x800, applied by _post_connect()): the USB-OTG
+// ROM cannot take the default 0x1800 blocks. A ROM-only session never runs main()/postConnect(), so it is applied here, alone.
+export const P4_USB_OTG_RAM_BLOCK = 0x800;
 // esptool-js 0.7.0: getChipRevision() = major*100 + minor; the stub JSON `esp32p4.json` (the ROM
 // that this diagnostic is built for, "ECO5 and later") is selected for revisions >= 3.00.
 export const MIN_CHIP_REVISION = 300;
@@ -108,13 +112,13 @@ function boundedSteps(entries) {
   if (copy.length <= MAX_REPORTED_RAM_STEPS) return {steps: copy, omitted: 0};
   return {steps: [...copy.slice(0, MAX_REPORTED_RAM_STEPS - 2), ...copy.slice(-2)], omitted: copy.length - MAX_REPORTED_RAM_STEPS};
 }
-function ramLoadReport(ramBlock) {
+function ramLoadReport(ramBlock, adaptation = {}) {
   const entries = [];
   const view = () => {
     const acked = entries.filter(e => e.acked === 1).length;
     const failed = entries.findIndex(e => e.acked === 0);
     const {steps, omitted} = boundedSteps(entries);
-    return {ram_block: ramBlock, steps, steps_omitted: omitted, acked_count: acked, failed_index: failed >= 0 ? failed : null,
+    return {ram_block: ramBlock, ...adaptation, steps, steps_omitted: omitted, acked_count: acked, failed_index: failed >= 0 ? failed : null,
       last_acked_index: acked > 0 && entries.slice(0, acked).every(e => e.acked === 1) ? acked - 1 : null};
   };
   return {
@@ -131,12 +135,33 @@ function ramLoadReport(ramBlock) {
 }
 export const RAM_LOAD_OUTCOMES = OUTCOMES;
 
+// Applies the official USB-OTG RAM block size, and nothing else of postConnect() (no watchdog change, no flash power-on, no
+// register write, no reset). The transport must be POSITIVELY identified as USB-OTG: anything else is refused, never assumed.
+async function adaptRamBlock(loader, admission) {
+  const defaultBlock = loader.ESP_RAM_BLOCK;
+  let otg;
+  try { otg = typeof loader.usesUsbOtg === 'function' ? await loader.usesUsbOtg() : undefined; }
+  catch (error) {
+    if (['closed', 'no-response', 'partial-packet', 'invalid-packet'].includes(error?.kind) || error?.name === 'NetworkError') throw error;   // a lost transport keeps its own code
+    otg = undefined;
+  }
+  if (otg !== true) throw new IdlabDiagnosticError('diagnostic_transport_unconfirmed', {sessionState: admission});
+  // The library's own USB-OTG value must be present AND equal to the reviewed one: an absent, mistyped or different value is refused,
+  // never defaulted (esptool-js 0.7.0 esp32p4.js declares USB_RAM_BLOCK = 0x800).
+  if (loader.chip?.USB_RAM_BLOCK !== P4_USB_OTG_RAM_BLOCK)
+    throw new IdlabDiagnosticError('diagnostic_ram_block_unexpected', {sessionState: admission});
+  loader.ESP_RAM_BLOCK = P4_USB_OTG_RAM_BLOCK;
+  return {ram_block_default: defaultBlock, ram_block_source: 'usb_otg_cap', usb_otg_confirmed: 1};
+}
+
 // Loads the reviewed diagnostic stub into RAM of a ROM-mode ESP32-P4 and positively identifies it.
 //   options.consent         must be exactly true (operator's explicit consent for THIS binary)
 //   options.expectedSha256  SHA-256 (hex) of the stub JSON text that was reviewed and qualified
 export async function loadDiagnosticStub(loader, stubJsonText, options = {}) {
   if (options.consent !== true) throw new IdlabDiagnosticError('diagnostic_stub_consent_missing');
   if (!/^[0-9a-f]{64}$/.test(options.expectedSha256 ?? '')) throw new IdlabDiagnosticError('diagnostic_stub_sha256_missing');
+  if (options.romOnly !== true) throw new IdlabDiagnosticError('diagnostic_rom_only_required');   // the adaptation below exists for the ROM-only session only
+  if (loader?.__idlabRamLoadStarted === true) throw new IdlabDiagnosticError('diagnostic_ram_load_already_started');
   const actual = await sha256Hex(new TextEncoder().encode(stubJsonText));
   if (actual !== options.expectedSha256) throw new IdlabDiagnosticError('diagnostic_stub_sha256_mismatch', {detail: actual});
   if (loader?.chip?.CHIP_NAME !== DIAGNOSTIC_STUB_CHIP) throw new IdlabDiagnosticError('diagnostic_stub_wrong_chip');
@@ -146,9 +171,12 @@ export async function loadDiagnosticStub(loader, stubJsonText, options = {}) {
     throw new IdlabDiagnosticError('diagnostic_stub_unsupported_chip_revision', {detail: revision});
   const {json, decodedText, decodedData} = parseStubJson(stubJsonText);
 
+  const adaptation = await adaptRamBlock(loader, admission);   // before the first memBegin; a refusal here leaves the RAM untouched
+
   // ---- from here on the chip is touched: any failure leaves the session undetermined ----
+  loader.__idlabRamLoadStarted = true;
   const now = options.now ?? (() => performance.now());
-  const steps = ramLoadReport(loader.ESP_RAM_BLOCK);
+  const steps = ramLoadReport(loader.ESP_RAM_BLOCK, adaptation);
   const touched = (code, detail) => new IdlabDiagnosticError(code, {chipTouched: true, detail, sessionState: admission, ramLoad: steps.snapshot()});
   try {
     for (const [segment, bytes, start] of [['text', decodedText, json.text_start], ['data', decodedData, json.data_start]]) {
