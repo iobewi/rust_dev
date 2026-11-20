@@ -13,6 +13,14 @@ from protocol import (CAPABILITIES, MAX_ARTIFACT, P4_TRACE, PROGRAM, Fault,
 TERMINAL = {'completed', 'failed', 'expired', 'cancelled', 'indeterminate'}
 # While a board is quarantined, only operations that re-read its state may run.
 QUARANTINE_ALLOWED = {'identify', 'partitions', 'flash.read', 'mark'}
+# Refusals of the P4 diagnostic after which the chip received no RAM/flash write (at most ESP_SYNC frames) and the refusal reveals no
+# doubtful hardware state: the board keeps exactly the flags it had before the command (never a new quarantine, never
+# a lifted one). Every other failure, in particular a stub reported running, an indeterminate or unobservable
+# session state, and anything unknown, keeps the conservative quarantine + resident flag.
+P4_REFUSALS_BEFORE_ANY_CHIP_WRITE = frozenset({
+    'diagnostic_consent_invalid', 'diagnostic_parameter_not_allowed', 'diagnostic_stub_sha256_invalid',
+    'diagnostic_stub_consent_missing', 'diagnostic_stub_sha256_missing', 'diagnostic_stub_sha256_mismatch',
+    'diagnostic_stub_wrong_chip', 'diagnostic_stub_unsupported_chip_revision', 'artifact_integrity_failed'})
 
 
 def uid():
@@ -383,12 +391,24 @@ class Broker:
         if op['command'] == P4_TRACE:
             # From the moment the agent starts, the chip may run the diagnostic stub: recorded durably,
             # cleared only by the operator's local recovery.
+            op['diag_prior'] = {'quarantined': d['quarantined'], 'resident': d.get('diagnostic_resident') is True}
             d['diagnostic_resident'] = True
             self.event(d['id'], 'diagnostic_started', {'id': key})
         op['deadline'] = self.clock() + op['timeout']
         return {'type': 'execute', 'id': key, 'remaining_ms': op['start_remaining_ms'],
                 'deadline_ms': self.clock() * 1000 + op['start_remaining_ms'],
                 'execution_deadline_ms': op['deadline'] * 1000}
+
+    @staticmethod
+    def refused_before_any_chip_write(op, state, error, message):
+        """Strict: a plain failure while the operation was running, with the agent's structured report agreeing on
+        category and ram_load AND an allowlisted code, no hold flag and a recorded prior state. Anything else is uncertain."""
+        return (op['command'] == P4_TRACE and state == 'failed' and message.get('hold') is not True
+                and isinstance(op.get('diag_prior'), dict) and isinstance(error, dict)
+                and error.get('code') in P4_REFUSALS_BEFORE_ANY_CHIP_WRITE
+                and error.get('ram_load') == 'not_started'
+                and error.get('category') in {'refused_before_load', 'local_validation'}
+                and error.get('origin_code', error.get('code')) == error.get('code'))
 
     @checkpoint
     def finish(self, agent, message):
@@ -406,6 +426,7 @@ class Broker:
                 'invalid_result', 'Errors must be structured')
         # Timeouts/cancel requests never turn into a fabricated success. Late evidence remains inspectable.
         op['unsettled'] = False
+        was_running = op['state'] == 'running'
         if op['state'] == 'running':
             op['state'] = state
             op['result'], op['error'] = message.get('result'), message.get('error')
@@ -415,6 +436,10 @@ class Broker:
             op['late_result'] = {'state': state, 'result': message.get('result'), 'error': message.get('error')}
         if state == 'indeterminate' or message.get('hold') is True or op['command'] == P4_TRACE:
             d['quarantined'] = True
+        if was_running and self.refused_before_any_chip_write(op, state, error, message):
+            # No RAM/flash write reached the chip: back to the flags held before the command (an earlier quarantine stays).
+            d['quarantined'], d['diagnostic_resident'] = op['diag_prior']['quarantined'], op['diag_prior']['resident']
+            self.event(d['id'], 'diagnostic_refused_before_load', {'id': op['id']})
         self.event(d['id'], 'operation', {'id': op['id'], 'state': op['state']})
         return {'type': 'result_ack', 'id': op['id'], 'device': d['id'], 'generation': d['generation'],
                 'state': op['state'], 'quarantined': d['quarantined']}

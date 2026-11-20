@@ -85,3 +85,28 @@ La part de l'écart que ni `send` ni `ack` n'expliquent est publiée comme `unat
 - Un intervalle isolé de plus de 21 s à 200 MHz ferait déborder le compteur 32 bits ; la trace ne le détecterait pas.
 - Un run par séquence : un écart de mesure, pas une borne statistique.
 - La mesure est faite avec l'instrumentation, qui ajoute quelques cycles par lecture du compteur (négligeables devant les ms par paquet, non nuls).
+
+## Admission de T : détection ROM / stub (PR « fiabilité de la détection »)
+
+À l'instant de T, avant toute écriture RAM, la page **refait** la synchronisation de la session courante. Elle **transmet** des trames `ESP_SYNC` (opcode `0x08`, il n'existe pas de `loader.ESP_SYNC` dans esptool-js 0.7.0) ; aucune écriture mémoire/flash, aucun reset, aucune nouvelle tentative. Relevés : `loader.sync()` (échec ou non, `syncStubDetected`), un échange brut propre (`command(0x08)` puis jusqu'à sept `readPacket(0x08)`, valeurs `val` conservées telles que reçues, int32 signé) et `IS_STUB`. Une ROM répond 8 fois, un stub une seule fois (avec `val` 0) et `sync()` échoue alors : un `sync()` incomplet n'est compatible qu'avec un stub. Aucun indice n'est une preuve absolue.
+
+| Indices | Code | Effet |
+| --- | --- | --- |
+| `sync()` complet, `syncStubDetected` faux, 8 réponses non nulles | — | le chargement continue |
+| une réponse à 0 (ou 8 zéros), `sync()` incomplet ou `syncStubDetected` vrai, `IS_STUB` éventuel | `diagnostic_stub_reported_running` | refus, carte laissée en quarantaine résidente |
+| contradiction ou observation incomplète (valeurs mixtes, 2 à 7 réponses, heuristique ≠ échange, `IS_STUB` vrai mais synchro ROM, sonde MD5 ≠ synchro, **sonde MD5 `unknown`**) | `diagnostic_session_state_indeterminate` | refus, quarantaine résidente |
+| erreur de communication, première réponse absente, **valeur invalide** (jamais convertie en 0) | `diagnostic_admission_sync_failed` | refus, quarantaine résidente |
+
+`IS_STUB` faux n'apporte aucune information ; seul `true` compte. Le refus publie, en liste blanche : `sync_values` (≤ 8 int32), `sync_count`, `sync_completed`, `sync_zero_count`, `sync_stub_detected`, `loader_stub`, `md5_shape`. L'ancien code `diagnostic_stub_requires_a_rom_session` (runs 001–002) n'est plus produit ; son message est conservé pour lire ces preuves.
+
+### Quarantaine après un refus avant chargement
+Le serveur mémorise les drapeaux de la carte au démarrage de T (`diag_prior`). Seuls les refus de la liste fermée `P4_REFUSALS_BEFORE_ANY_CHIP_WRITE` (consentement, empreinte, paramètres, intégrité, puce ou révision inadaptée : le chargeur n'a rien reçu et le refus ne révèle aucun doute matériel), avec un échec simple, `ram_load: not_started` et une catégorie `refused_before_load`/`local_validation` cohérentes, rétablissent ces drapeaux. Tout le reste (stub signalé, état indéterminé, synchro impossible, code inconnu, `hold`, résultat tardif) garde la quarantaine + `diagnostic_resident`. Aucune quarantaine préexistante n'est levée : une carte résidente ne peut pas démarrer T, et seule la récupération avec preuve ROM la lève.
+
+### Sonde MD5 indépendante : pertinence (non exécutée)
+Une réponse `ESP_SPI_FLASH_MD5` fait 32 octets ASCII en ROM et 16 octets bruts avec un stub (observé : PC-9 `rom-ascii32`). Elle serait un indice **indépendant** de la synchro, mais c'est une commande matérielle (lecture NOR) : elle ne fait **pas** partie de l'admission par défaut. Le classificateur pur `classifyMd5Answer` et l'option `md5Probe` de `loadDiagnosticStub` existent et sont testés avec des chargeurs simulés ; rien ne les branche dans l'agent. L'usage réel exige une autorisation matérielle séparée de l'opérateur.
+
+### Vérification contre esptool-js 0.7.0
+`tests/esptool-real-sync.test.mjs` pilote le **vrai** `ESPLoader` 0.7.0 (épinglé en `devDependencies`) avec un transport scripté, hors Web Serial et hors matériel. Il établit : pas de `ESP_SYNC`, signature de `command()`/`readPacket()`, 8 réponses d'une ROM, 1 d'un stub, aucune réponse résiduelle, trames transmises limitées à l'opcode `0x08`. Reste inconnu (donc visible à la première observation réelle) : le nombre de réponses effectif de la ROM du P4 en USB OTG ; un écart donne un refus `diagnostic_session_state_indeterminate`, sans effet sur la puce.
+
+### Preuve de retour ROM (`verifyRomReturn`)
+Elle réutilise la même détection fraîche (aucun reset, chargement RAM ni écriture NOR : seules des trames `ESP_SYNC` sont transmises). Seul le verdict `rom` est une preuve. `stub` → `diagnostic_stub_still_running`, `indeterminate` → `diagnostic_recovery_state_indeterminate`, exception de synchronisation → `diagnostic_recovery_sync_failed` (valeurs brutes publiées en liste blanche) ; une perte de transport garde son propre code (`serial_disconnected`, `serial_timeout`…). Un refus n'envoie rien au serveur : la quarantaine et le drapeau résident restent.

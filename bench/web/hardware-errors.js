@@ -15,7 +15,8 @@ const categories = new Set(['local_validation', 'session_open', 'refused_before_
 const ramLoad = new Set(['not_started', 'started', 'unknown']);
 const counters = ['chip_revision', 'elapsed_ms', 'received_bytes', 'expected_bytes', 'block_address', 'block_size', 'serial_reads', 'serial_bytes',
   'serial_timeouts', 'silence_limit_ms', 'last_read_ms', 'last_packet_bytes', 'execution_remaining_ms', 'lease_remaining_ms',
-  'grant_remaining_ms', 'start_remaining_ms', 'http_status', 'jedec_id', 'identify_index', 'loader_stub'];
+  'grant_remaining_ms', 'start_remaining_ms', 'http_status', 'jedec_id', 'identify_index', 'loader_stub', 'sync_zero_count', 'sync_stub_detected', 'sync_count', 'sync_completed'];
+const md5Shapes = new Set(['rom', 'stub', 'unknown']);
 export function hardwareError(error, disconnected = false, details = {}) {
   // `error.diagnostic` is the structured, allowlisted origin report built by the P4 orchestrator (never the loader's own text).
   const origin = error?.diagnostic && typeof error.diagnostic === 'object' ? error.diagnostic : {};
@@ -32,11 +33,18 @@ export function hardwareError(error, disconnected = false, details = {}) {
   if (diagnosticCode(input.origin_code)) out.origin_code = input.origin_code;
   if (types.has(input.origin_error_type)) out.origin_error_type = input.origin_error_type;
   if (['visible', 'hidden', 'prerender', 'unavailable'].includes(input.visibility)) out.visibility = input.visibility;
+  // Raw observations of the ROM/stub admission: eight signed 32-bit sync values at most, a fixed vocabulary for the MD5 shape.
+  if (Array.isArray(input.sync_values) && input.sync_values.length <= 8 && input.sync_values.every(v => Number.isInteger(v) && v >= -0x80000000 && v <= 0x7fffffff))
+    out.sync_values = [...input.sync_values];
+  if (md5Shapes.has(input.md5_shape)) out.md5_shape = input.md5_shape;
   for (const key of counters) if (Number.isFinite(input[key]) && input[key] >= 0) out[key] = Math.round(input[key]);
   return out;
 }
 export const diagnostic = code => ({
-  diagnostic_stub_requires_a_rom_session: 'Le chargeur répond avec le stub standard : la carte n’est pas dans une session ROM neuve (BOOT + reset requis). Rien n’a été chargé.',
+  diagnostic_stub_requires_a_rom_session: 'Ancien code (runs 001-002) : un stub était signalé en marche ; l’indice n’était pas démontré. Rien n’a été chargé.',
+  diagnostic_stub_reported_running: 'Tous les indices frais indiquent qu’un stub tourne (aucune preuve absolue) : rien n’a été chargé ; BOOT + reset requis.',
+  diagnostic_session_state_indeterminate: 'Indices ROM/stub contradictoires ou incomplets : état de la session indéterminé, rien n’a été chargé ; la carte reste sous quarantaine.',
+  diagnostic_admission_sync_failed: 'Synchronisation d’admission impossible : état ROM/stub inobservable, rien n’a été chargé ; la carte reste sous quarantaine.',
   diagnostic_stub_wrong_chip: 'Puce différente d’un ESP32-P4 : rien n’a été chargé.',
   diagnostic_stub_unsupported_chip_revision: 'Révision de puce non prise en charge (≥ 3.00 requise) : rien n’a été chargé.',
   diagnostic_stub_ram_load_failed: 'Chargement RAM du stub interrompu : état de la session indéterminé.',
@@ -45,6 +53,8 @@ export const diagnostic = code => ({
   diagnostic_stub_not_identified: 'Le stub diagnostique n’a pas été identifié : état de la session indéterminé.',
   diagnostic_consent_invalid: 'Consentement du diagnostic absent ou ne correspondant pas à la carte et au stub.',
   diagnostic_parameter_not_allowed: 'Paramètre du diagnostic différent de la valeur figée.',
+  diagnostic_recovery_state_indeterminate: 'Indices ROM/stub contradictoires ou incomplets : le retour en ROM n’est pas démontré ; la carte reste sous quarantaine.',
+  diagnostic_recovery_sync_failed: 'Synchronisation de preuve impossible : le retour en ROM n’est pas démontré ; la carte reste sous quarantaine.',
   diagnostic_stub_still_running: 'Un stub tourne encore : le retour en ROM n’est pas démontré.',
   diagnostic_rom_only_required: 'Le diagnostic exige une connexion « ROM seule » (option avancée de connexion).',
   diagnostic_rom_only_session: 'Session « ROM seule » : seules l’identification, les repères et le diagnostic P4 sont disponibles.',

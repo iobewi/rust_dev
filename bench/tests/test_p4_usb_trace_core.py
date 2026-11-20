@@ -273,14 +273,100 @@ class P4TraceTests(unittest.TestCase):
         self.assertEqual(read['state'], 'queued')
 
     # ---------------------------------------------------------------- interruptions
-    def test_a_structured_failure_report_is_stored_verbatim_and_quarantine_policy_is_unchanged(self):
+    def test_a_structured_failure_report_is_stored_verbatim_and_an_uncertain_state_stays_quarantined(self):
         op = self.start()
-        error = {'code': 'diagnostic_stub_requires_a_rom_session', 'phase': 'diagnostic_stub_load', 'category': 'refused_before_load',
-                 'ram_load': 'not_started', 'origin_code': 'diagnostic_stub_requires_a_rom_session', 'origin_error_type': 'IdlabDiagnosticError'}
+        error = {'code': 'diagnostic_stub_reported_running', 'phase': 'diagnostic_stub_load', 'category': 'refused_before_load',
+                 'ram_load': 'not_started', 'origin_code': 'diagnostic_stub_reported_running', 'origin_error_type': 'IdlabDiagnosticError',
+                 'sync_values': [0] * 8, 'sync_zero_count': 8}
         self.b.finish('agent', {'id': op['id'], 'state': 'failed', 'error': error})
         self.assertEqual(self.b.operations[op['id']]['error'], error)       # the exact cause reaches the operation view
         self.assertEqual(self.b.operations[op['id']]['state'], 'failed')
-        self.assertTrue(self.b.devices['p4']['quarantined'] and self.b.devices['p4']['diagnostic_resident'])   # policy untouched
+        self.assertTrue(self.b.devices['p4']['quarantined'] and self.b.devices['p4']['diagnostic_resident'])   # a stub is reported: stay safe
+
+    def refusal(self, code, **over):
+        return {'code': code, 'phase': 'diagnostic_stub_load', 'category': 'refused_before_load', 'ram_load': 'not_started',
+                'origin_code': code, 'origin_error_type': 'IdlabDiagnosticError', **over}
+
+    def test_every_uncertain_admission_outcome_keeps_the_quarantine_and_the_resident_flag(self):
+        for code in ('diagnostic_stub_reported_running', 'diagnostic_session_state_indeterminate', 'diagnostic_admission_sync_failed',
+                     'diagnostic_stub_requires_a_rom_session', 'diagnostic_stub_ram_load_failed', 'something_unknown'):
+            with self.subTest(code=code):
+                self.setUp()
+                op = self.start()
+                self.b.finish('agent', {'id': op['id'], 'state': 'failed', 'error': self.refusal(code)})
+                self.assertTrue(self.b.devices['p4']['quarantined'] and self.b.devices['p4']['diagnostic_resident'])
+
+    def test_a_refusal_proving_nothing_reached_the_chip_restores_the_flags_held_before_the_command(self):
+        for code in ('diagnostic_consent_invalid', 'diagnostic_stub_wrong_chip', 'diagnostic_stub_unsupported_chip_revision', 'artifact_integrity_failed'):
+            with self.subTest(code=code):
+                self.setUp()
+                op = self.start()
+                self.assertTrue(self.b.devices['p4']['diagnostic_resident'])          # durable mark while it runs
+                self.b.finish('agent', {'id': op['id'], 'state': 'failed', 'error': self.refusal(code)})
+                d = self.b.devices['p4']
+                self.assertFalse(d['quarantined']); self.assertFalse(d['diagnostic_resident'])
+                self.assertEqual(self.b.operations[op['id']]['error']['code'], code)
+
+    def test_a_safe_refusal_restores_the_recorded_prior_flags_it_never_clears_more_than_it_set(self):
+        # A quarantined board cannot start the diagnostic, so the recorded prior is normally clean; whatever it is, it wins.
+        for prior in ({'quarantined': True, 'resident': True}, {'quarantined': True, 'resident': False}):
+            with self.subTest(prior=prior):
+                self.setUp()
+                op = self.start()
+                self.assertEqual(self.b.operations[op['id']]['diag_prior'], {'quarantined': False, 'resident': False})
+                self.b.operations[op['id']]['diag_prior'] = prior
+                self.b.finish('agent', {'id': op['id'], 'state': 'failed', 'error': self.refusal('diagnostic_stub_wrong_chip')})
+                d = self.b.devices['p4']
+                self.assertEqual((d['quarantined'], d['diagnostic_resident']), (prior['quarantined'], prior['resident']))
+
+    def test_a_board_that_was_resident_cannot_start_the_diagnostic_so_no_refusal_can_lift_that_state(self):
+        d = self.b.devices['p4']
+        d['quarantined'], d['diagnostic_resident'] = True, True
+        with self.assertRaises(Fault) as context:
+            self.submit()
+        self.assertEqual(context.exception.code, 'device_quarantined')
+        self.assertTrue(d['quarantined'] and d['diagnostic_resident'])
+
+    def test_the_safe_refusal_needs_the_whole_report_and_a_plain_failure(self):
+        base = self.refusal('diagnostic_stub_wrong_chip')
+        cases = {'ram_load started': ('failed', {**base, 'ram_load': 'started'}, False),
+                 'ram_load unknown': ('failed', {**base, 'ram_load': 'unknown'}, False),
+                 'no ram_load': ('failed', {k: v for k, v in base.items() if k != 'ram_load'}, False),
+                 'wrong category': ('failed', {**base, 'category': 'ram_load_failed'}, False),
+                 'origin differs': ('failed', {**base, 'origin_code': 'diagnostic_stub_not_identified'}, False),
+                 'indeterminate state': ('indeterminate', base, False),
+                 'hold flag': ('failed', base, True)}
+        for name, (state, error, hold) in cases.items():
+            with self.subTest(name):
+                self.setUp()
+                op = self.start()
+                message = {'id': op['id'], 'state': state, 'error': error}
+                if hold:
+                    message['hold'] = True
+                self.b.finish('agent', message)
+                self.assertTrue(self.b.devices['p4']['quarantined'] and self.b.devices['p4']['diagnostic_resident'])
+
+    def test_a_late_safe_refusal_after_the_deadline_never_clears_the_flags(self):
+        op = self.start()
+        self.b.operations[op['id']]['state'] = 'indeterminate'          # the execution deadline already passed
+        self.b.finish('agent', {'id': op['id'], 'state': 'failed', 'error': self.refusal('diagnostic_stub_wrong_chip')})
+        self.assertTrue(self.b.devices['p4']['quarantined'] and self.b.devices['p4']['diagnostic_resident'])
+
+    def test_the_durable_state_survives_a_restart_in_both_outcomes(self):
+        import tempfile
+        for code, expected in (('diagnostic_stub_wrong_chip', (False, False)), ('diagnostic_session_state_indeterminate', (True, True))):
+            with self.subTest(code=code), tempfile.TemporaryDirectory() as tmp:
+                self.setUp()
+                from server.journal import Journal
+                self.b.journal = Journal(tmp); self.b.journal.save(self.b)
+                op = self.start()
+                self.b.finish('agent', {'id': op['id'], 'state': 'failed', 'error': self.refusal(code)})
+                self.b.agent_event('agent', {'type': 'settled', 'device': 'p4', 'generation': self.generation, 'id': op['id']})
+                self.b.journal.close()
+                again = Broker(state_dir=tmp)
+                d = again.devices['p4']
+                self.assertEqual((d['quarantined'], d['diagnostic_resident']), expected)
+                again.journal.close()
 
     def test_an_agent_disconnection_during_the_run_leaves_the_board_resident_and_quarantined(self):
         self.start()

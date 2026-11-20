@@ -8,6 +8,7 @@ import { latencyStats, mergeLatency, summarizeLatency } from './flash-read-laten
 import { runWrite, Tracer } from './flash-op.js';
 import { b64, unb64, family, region, validateImages, partitions, sha256 } from './protocol.js';
 import { P4_TRACE, runP4UsbTrace } from './p4-diagnostic.js';
+import { observeSessionState, judgeSessionState, sessionStateReport } from './p4-session-state.js';
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const latencyFields = ['packet_interval', 'ack_to_first_byte', 'read_to_first_byte', 'frame_receive',
   'raw_chunk_interval', 'ack_to_raw_chunk'];
@@ -209,8 +210,9 @@ export class EspEngine {
     } catch (e) { try { await this.close(); } catch { /* Preserve the original serial failure. */ } throw e; }
     return this.loader;
   }
-  // Proof that no stub runs: a fresh ROM sync on the CURRENT ROM-only connection (no reset, no write, port left open).
-  // The sync answer of a ROM is non-zero; a running stub answers zero (esptool-js sets syncStubDetected).
+  // Proof that no stub runs: the fresh ROM/stub detection of p4-session-state.js on the CURRENT ROM-only connection. It transmits
+  // ESP_SYNC frames only (no reset, no RAM load, no NOR write; port left open). Only a `rom` verdict is a proof; `stub` and
+  // `indeterminate` are refused with a structured error (the server then keeps the quarantine). A lost transport is not masked.
   async verifyRomReturn() {
     if (this.romOnly !== true) throw new HardwareError('diagnostic_rom_only_required');
     if (this.busy) throw new Error('Device is busy');
@@ -218,8 +220,16 @@ export class EspEngine {
     try {
       const loader = await this.openLoader();
       if (loader.IS_STUB === true) throw new HardwareError('diagnostic_stub_still_running');
-      await loader.sync();
-      if (loader.IS_STUB === true || loader.syncStubDetected === true) throw new HardwareError('diagnostic_stub_still_running');
+      let evidence;
+      try { evidence = await observeSessionState(loader); }
+      catch (error) {
+        const lost = ['closed', 'no-response', 'partial-packet', 'invalid-packet'].includes(error?.kind) || error?.name === 'NetworkError';
+        if (lost) throw error;   // a disconnection / serial fault keeps its own code (serial_disconnected, serial_timeout, …)
+        throw new HardwareError('diagnostic_recovery_sync_failed', { phase: 'control' });
+      }
+      const judged = judgeSessionState(evidence), sessionState = { phase: 'control', ...sessionStateReport(evidence, judged) };
+      if (judged.verdict === 'stub') throw new HardwareError('diagnostic_stub_still_running', sessionState);
+      if (judged.verdict !== 'rom') throw new HardwareError('diagnostic_recovery_state_indeterminate', sessionState);
       if (loader.chip?.CHIP_NAME !== 'ESP32-P4') throw new HardwareError('diagnostic_chip_unsupported');
       return true;
     } finally { this.busy = false; }

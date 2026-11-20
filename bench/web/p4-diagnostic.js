@@ -78,10 +78,11 @@ export async function runP4UsbTrace({ loader, args, device, stubBytes, check = (
     const fields = { phase: stubLoaded ? 'diagnostic_read' : 'diagnostic_stub_load' };
     if (error instanceof IdlabTraceError) Object.assign(fields, { category: 'stream_failed', ram_load: 'started' });
     else if (error instanceof IdlabDiagnosticError && error.sessionIndeterminate !== true && !launched)
-      Object.assign(fields, { category: 'refused_before_load', ram_load: 'not_started' });   // the loader's pre-write checks: nothing reached the chip
+      Object.assign(fields, { category: 'refused_before_load', ram_load: 'not_started' });   // the loader's pre-write checks: no RAM/flash write (only ESP_SYNC frames may have been sent)
     else if (error instanceof IdlabDiagnosticError) Object.assign(fields, { category: 'ram_load_failed', ram_load: 'started' });
     else Object.assign(fields, { category: 'unexpected', ram_load: stubLoaded ? 'started' : 'unknown' });
     if (error instanceof IdlabDiagnosticError && Number.isInteger(error.detail) && /revision/.test(error.code)) fields.chip_revision = error.detail;
+    if (error instanceof IdlabDiagnosticError && error.sessionState && typeof error.sessionState === 'object') Object.assign(fields, error.sessionState);
     throw report_(error, fields);
   }
 }

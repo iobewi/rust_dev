@@ -35,7 +35,11 @@ function simP4({ fault = null, chip = 'ESP32-P4', revision = 302, isStub = false
   const loader = {
     IS_STUB: isStub, ESP_RAM_BLOCK: 64, DEFAULT_TIMEOUT: 1000, calls,
     chip: { CHIP_NAME: chip, getChipRevision: async () => revision },
-    sync: async () => { calls.push(['sync']); loader.syncStubDetected = loader.IS_STUB === true; },
+    // esptool-js 0.7.0: a ROM answers an ESP_SYNC (0x08) eight times with a non-zero val, a stub once with 0; sync() throws on a stub
+    syncAnswers: () => loader.IS_STUB === true ? [0] : [1, 1, 1, 1, 1, 1, 1, 1], pending: [],
+    sync: async () => { calls.push(['sync']); loader.syncStubDetected = loader.IS_STUB === true; if (loader.syncStubDetected) throw new Error('invalid response'); },
+    command: async (op) => { calls.push(['sync_frame', op]); loader.pending = [...loader.syncAnswers()]; return [loader.pending.shift(), new Uint8Array(0)]; },
+    readPacket: async () => { if (!loader.pending.length) throw new Error('no data'); return [loader.pending.shift(), new Uint8Array(0)]; },
     memBegin: async (...a) => { calls.push(['memBegin', ...a]); if (fault === 'memBegin') throw new Error('lost'); },
     memBlock: async (bytes, seq) => { calls.push(['memBlock', seq]); if (fault === 'load_truncated' && seq === 0) throw new Error('truncated'); },
     memFinish: async entry => { calls.push(['memFinish', entry]); },
@@ -189,7 +193,7 @@ test('engine refuses without any hold change when the request is invalid or the 
 
 test('a standard stub still running (operator did not enter ROM mode) is refused and leaves no hold', async () => {
   const loader = simP4({ isStub: true }), x = await engineWith(loader);
-  await assert.rejects(x.engine.execute(P4_TRACE, clean(goodArgs()), x.context), e => /requires_a_rom_session/.test(e.code));
+  await assert.rejects(x.engine.execute(P4_TRACE, clean(goodArgs()), x.context), e => e.code === 'diagnostic_stub_reported_running');
   assert.equal(x.engine.hold, false); assert.equal(x.engine.diagnosticResident, false); assert.equal(writes(loader).length, 0);
 });
 
@@ -279,7 +283,7 @@ const refusal = async (options, mutate = x => x) => {
 const published = e => hardwareError(e, false, {});
 
 test('refusal BEFORE the RAM load keeps its exact code, phase, category and "not started" (the observed field failure)', async () => {
-  for (const [options, code] of [[{ isStub: true }, 'diagnostic_stub_requires_a_rom_session'], [{ chip: 'ESP32-S3' }, 'diagnostic_stub_wrong_chip'],
+  for (const [options, code] of [[{ isStub: true }, 'diagnostic_stub_reported_running'], [{ chip: 'ESP32-S3' }, 'diagnostic_stub_wrong_chip'],
       [{ revision: 200 }, 'diagnostic_stub_unsupported_chip_revision']]) {
     const { thrown, loader, x } = await refusal(options);
     assert.equal(thrown.code, code, 'engine keeps the code');
@@ -358,17 +362,19 @@ test('no loader text, secret or firmware content ever reaches the published erro
 test('the observed field failure is now attributable: same inputs as operation c27ec324 give a precise, human-readable cause', async () => {
   const { thrown } = await refusal({ isStub: true });          // a ROM-less (stub still running) session, the leading hypothesis, NOT a confirmed cause
   const out = published(thrown);
-  assert.equal(diagnostic(out.code).startsWith('Le chargeur répond avec le stub standard'), true);
+  assert.equal(out.code, 'diagnostic_stub_reported_running');
+  assert.ok(diagnostic(out.code).startsWith('Tous les indices frais indiquent'));
+  assert.ok(!/stub standard/.test(diagnostic(out.code)), 'the unproven "standard stub" claim is gone');
 });
 
 test('the agent journal shows the exact cause, the RAM-load state and the category, nothing else', async () => {
   const { AgentJournal } = await import('../web/agent-journal.js');
   const j = new AgentJournal();
-  j.append({ stage: 'result', command: P4_TRACE, id: 'c27ec3242d', state: 'failed', code: 'diagnostic_stub_requires_a_rom_session',
+  j.append({ stage: 'result', command: P4_TRACE, id: 'c27ec3242d', state: 'failed', code: 'diagnostic_stub_reported_running',
     detail: { phase: 'diagnostic_stub_load', category: 'refused_before_load', ram_load: 'not_started', error_type: 'IdlabDiagnosticError',
-      origin_code: 'diagnostic_stub_requires_a_rom_session', secret: 'TOKEN=hunter2' } });
+      origin_code: 'diagnostic_stub_reported_running', secret: 'TOKEN=hunter2' } });
   const line = JSON.stringify(j.rows);
-  for (const needle of ['stub standard', 'Chargement RAM du stub', 'chargement RAM non commencé', 'refused_before_load', 'IdlabDiagnosticError', 'diagnostic.p4_usb_trace'])
+  for (const needle of ['un stub tourne', 'Chargement RAM du stub', 'chargement RAM non commencé', 'refused_before_load', 'IdlabDiagnosticError', 'diagnostic.p4_usb_trace'])
     assert.ok(line.includes(needle), needle);
   assert.ok(!line.includes('hunter2'));
 });
@@ -382,7 +388,8 @@ function esptoolFor(world) {
     constructor() {
       const sim = simP4(); world.loaders.push(sim);
       sim.syncStubDetected = false; sim.chip = null;
-      sim.sync = async () => { sim.syncStubDetected = world.stubRunning; };
+      sim.sync = async () => { sim.syncStubDetected = world.stubRunning; };   // connection-time/recovery sync: the flag path (real esptool-js would throw on a stub)
+      sim.syncAnswers = () => world.stubRunning ? [0] : new Array(8).fill(1);
       sim.detectChip = async mode => {
         world.detectModes.push(mode); await sim.sync();
         sim.chip = { CHIP_NAME: 'ESP32-P4', getChipRevision: async () => 302, getChipDescription: async () => 'ESP32-P4 (revision v3.2)', readMac: async () => 'aa:bb:cc:dd:ee:ff' };
@@ -434,7 +441,7 @@ test('a stub still running at T (the operator did not really return to ROM) is a
   const world = chipWorld(true), x = await connect(world, { romOnly: true });        // the chip answers the sync like a stub
   let thrown; try { await x.engine.execute(P4_TRACE, clean(goodArgs()), x.context); } catch (e) { thrown = e; }
   const out = hardwareError(thrown);
-  assert.deepEqual([out.code, out.ram_load, out.category], ['diagnostic_stub_requires_a_rom_session', 'not_started', 'refused_before_load']);
+  assert.deepEqual([out.code, out.ram_load, out.category], ['diagnostic_stub_reported_running', 'not_started', 'refused_before_load']);
   assert.equal(x.engine.hold, false); assert.equal(writes(world.loaders[0]).length, 0);
 });
 
@@ -480,4 +487,82 @@ test('the recovery proof is a FRESH ROM sync: a stub that starts after the conne
   world.stubRunning = true;                                   // something launched a stub afterwards
   await assert.rejects(x.engine.verifyRomReturn(), e => e.code === 'diagnostic_stub_still_running');
   world.stubRunning = false; assert.equal(await x.engine.verifyRomReturn(), true);
+});
+
+test('admission refusals publish the raw observations (allowlisted) and stay "not started": contradiction, communication error', async () => {
+  for (const [world, code] of [[{ syncVals: [1, 0, 1, 1, 1, 1, 1, 1] }, 'diagnostic_session_state_indeterminate'], [{ failSync: true }, 'diagnostic_admission_sync_failed']]) {
+    const loader = simP4(), x = await engineWith(loader);
+    if (world.failSync) loader.command = async () => { throw new Error('serial lost TOKEN=hunter2'); };
+    else loader.syncAnswers = () => world.syncVals;
+    let thrown; try { await x.engine.execute(P4_TRACE, clean(goodArgs()), x.context); } catch (e) { thrown = e; }
+    const out = published(thrown);
+    assert.deepEqual([out.code, out.phase, out.category, out.ram_load], [code, 'diagnostic_stub_load', 'refused_before_load', 'not_started']);
+    assert.equal(writes(loader).length, 0); assert.equal(x.engine.diagnosticResident, false);
+    assert.ok(!JSON.stringify(out).includes('hunter2'), 'loader text never crosses the protocol');
+    if (!world.failSync) { assert.deepEqual(out.sync_values, world.syncVals); assert.equal(out.sync_count, 8); }
+    assert.ok(diagnostic(code).length > 20);
+  }
+});
+
+test('the published report accepts only well-formed raw observations', () => {
+  const out = hardwareError(Object.assign(new Error('x'), { code: 'diagnostic_stub_reported_running', diagnostic: {
+    sync_values: [0, -1, 0x7fffffff, 0, 0, 0, 0, 0], sync_zero_count: 6, sync_stub_detected: 1, sync_count: 8, sync_completed: 0, loader_stub: 1, md5_shape: 'stub' } }));
+  assert.deepEqual([out.sync_values.length, out.sync_zero_count, out.sync_stub_detected, out.sync_count, out.sync_completed, out.md5_shape], [8, 6, 1, 8, 0, 'stub']);
+  for (const bad of [{ sync_values: new Array(9).fill(0) }, { sync_values: ['0x1'] }, { sync_values: [0x80000000] }, { sync_values: [1.5] }, { sync_values: 'abc' }, { md5_shape: 'TOKEN=x' }]) {
+    const o = hardwareError(Object.assign(new Error('x'), { code: 'diagnostic_stub_reported_running', diagnostic: bad }));
+    assert.ok(!('sync_values' in o) && !('md5_shape' in o), JSON.stringify(bad));
+  }
+});
+
+// ------------------------------------------------------------------ recovery proof = the same fresh ROM/stub detection
+async function recoveryWorld(arrange) {
+  const { Agent } = await import('../web/agent.js'), world = chipWorld(), r = await connect(world, { romOnly: true });
+  r.engine.setHold(true); r.engine.diagnosticResident = true;
+  const sim = world.loaders[0]; sim.calls.length = 0; world.detectModes.length = 0; arrange(sim, world);
+  const sent = [], agent = Object.create(Agent.prototype);
+  Object.assign(agent, { engine: r.engine, active: null, awaitingResult: null, generation: 'g', event: (n, d) => sent.push([n, d]) });
+  const outcome = await agent.recover().then(() => null, e => e);
+  const kept = r.engine.hold === true && r.engine.diagnosticResident === true && r.closes() === 0;
+  return { sim, sent, outcome, kept, world };
+}
+const onlySyncTraffic = sim => sim.calls.every(c => ['sync', 'sync_frame', 'ack'].includes(Array.isArray(c) ? c[0] : c)) && writes(sim).length === 0;
+
+test('recovery proof: ROM confirmed by every index is the only accepted verdict, with no reset, RAM load or NOR write', async () => {
+  const x = await recoveryWorld(() => {});
+  assert.equal(x.outcome, null); assert.deepEqual(x.sent, [['recover', { rom_verified: true }]]);
+  assert.ok(onlySyncTraffic(x.sim)); assert.deepEqual(x.world.detectModes, [], 'no new chip detection / reset'); assert.equal(x.world.runStubCalls, 0);
+});
+
+test('recovery proof: an active stub (one zero answer, sync incomplete) is refused explicitly, quarantine kept, nothing sent', async () => {
+  const x = await recoveryWorld((sim, world) => { world.stubRunning = true; sim.sync = async () => { sim.syncStubDetected = false; throw new Error('invalid response'); }; });
+  assert.equal(x.outcome.code, 'diagnostic_stub_still_running');
+  const out = hardwareError(x.outcome);
+  assert.deepEqual([out.sync_values, out.sync_count, out.sync_completed, out.phase], [[0], 1, 0, 'control']);
+  assert.deepEqual(x.sent, []); assert.ok(x.kept); assert.ok(onlySyncTraffic(x.sim));
+});
+
+test('recovery proof: contradictory answers are refused as indeterminate, never as a proof', async () => {
+  for (const [name, arrange] of [
+    ['mixed values', sim => { sim.syncAnswers = () => [1, 0, 1, 1, 1, 1, 1, 1]; }],
+    ['partial ROM answers', sim => { sim.syncAnswers = () => [1, 1, 1]; }],
+    ['heuristic says stub, exchange says ROM', sim => { const s = sim.sync; sim.sync = async () => { await s(); sim.syncStubDetected = true; }; }],
+    ['heuristic says ROM, exchange says stub', (sim, world) => { sim.syncAnswers = () => [0]; }],
+  ]) {
+    const x = await recoveryWorld(arrange);
+    assert.equal(x.outcome.code, 'diagnostic_recovery_state_indeterminate', name);
+    assert.equal(hardwareError(x.outcome).phase, 'control'); assert.ok(diagnostic(x.outcome.code).length > 20);
+    assert.deepEqual(x.sent, [], name); assert.ok(x.kept, name); assert.ok(onlySyncTraffic(x.sim), name);
+  }
+});
+
+test('recovery proof: an interrupted communication is a structured failure, a lost transport keeps its own code', async () => {
+  let x = await recoveryWorld(sim => { sim.command = async () => { throw new Error('serial lost TOKEN=hunter2'); }; });
+  assert.equal(x.outcome.code, 'diagnostic_recovery_sync_failed'); assert.ok(!JSON.stringify(hardwareError(x.outcome)).includes('hunter2'));
+  assert.deepEqual(x.sent, []); assert.ok(x.kept);
+  x = await recoveryWorld(sim => { sim.command = async () => { throw Object.assign(new Error('closed'), { kind: 'closed' }); }; });
+  assert.equal(hardwareError(x.outcome).code, 'serial_disconnected'); assert.deepEqual(x.sent, []); assert.ok(x.kept);
+  x = await recoveryWorld(sim => { sim.command = async () => { throw Object.assign(new Error('x'), { name: 'NetworkError' }); }; });
+  assert.equal(hardwareError(x.outcome, true).code, 'serial_disconnected'); assert.ok(x.kept);
+  x = await recoveryWorld(sim => { sim.syncAnswers = () => [NaN]; });                      // an invalid value is a failure, not a zero
+  assert.equal(x.outcome.code, 'diagnostic_recovery_sync_failed'); assert.ok(x.kept);
 });
