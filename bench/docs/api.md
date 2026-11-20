@@ -119,6 +119,8 @@ Réponse `welcome` : version, epoch, `server_ms` monotone. Puis `register` :
 
 ```json
 {"type":"register","device":{"id":"esp32-local","chip":"esp32s3","flash_size":4194304,"capabilities":["identify","flash.read","flash.write"],"hold":false,"http_origins":[]}}
+
+La capacité flash est un entier (4096 à 64 Mio). Seule la session « ROM seule » d'un ESP32-P4 (capacités limitées à `identify`, `mark`, `diagnostic.p4_usb_trace`) peut la déclarer inconnue, explicitement : `"flash_size": null, "flash_size_known": false`. `flash.read`, `partitions`, `flash.write` et `flash.erase` sont alors refusés avec `flash_capacity_unknown` ; une capacité inconnue n'est jamais reprise d'une inscription précédente.
 ```
 
 Réponse `registered` : `device`, `generation`. Une connexion concurrente du même agent ou de la même carte est refusée. Les événements de carte portent toujours `device` et `generation`.
