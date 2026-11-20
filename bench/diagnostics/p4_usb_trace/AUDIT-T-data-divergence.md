@@ -17,7 +17,7 @@ Date : 2026-11-20. Audit **statique, hors matériel**. Constat : A1 = A2 (SHA-25
 Seuls deux fichiers diffèrent : `esp-stub-lib/src/usb_otg.c` et `src/command_handler.c`. `main.c` et **toutes les sources de flash** (`flash.c`, `target/esp32p4/src/flash.c`, `target/common/src/flash.c`, `flash_4byte.c`) sont **identiques**.
 - `usb_otg.c` : `stub_lib_usb_otg_tx_flush` encadre l'appel inchangé `esp_rom_cdc_acm_fifo_fill(...)` par deux lectures du compteur de cycles (`rdcycle`) et incrémente deux compteurs statiques.
 - `command_handler.c` : deux opcodes ajoutés (`0xDF` lecture tracée, `0xE0` rapport IDT1). La lecture tracée appelle **la même** `s_read_flash` ; dans `s_read_flash_post_process`, des lectures de `rdcycle` entourent `stub_lib_flash_read_buff`, `stub_lib_md5_update`, `send_frame` et la réception d'ACK. **Aucune écriture dans le tampon de données** ; les arguments (`aligned_offset`, `aligned_size`, `actual_data`) et l'ordre des appels sont inchangés ; la seule branche ajoutée sort en erreur (`RESPONSE_FAILED_SPI_OP`) sans émettre de données.
-- Conséquence sur la mémoire : ≈ 56 octets de variables statiques supplémentaires dans `.bss` (qui commence à `0x4ff60000`, 77 Ko avant `.data`) ; aucun chevauchement constaté avec le texte (`0x4ff50000` + 8952 octets).
+- Conséquence sur la mémoire : ≈ 60 octets de variables statiques (16 dans `usb_otg.c`, 44 dans `command_handler.c`) supplémentaires dans `.bss` (qui commence à `0x4ff60000`, 77 Ko avant `.data`) ; aucun chevauchement constaté avec le texte (`0x4ff50000` + 8952 octets).
 
 ## 3. Chemin de lecture : comparaison de référence
 | | A1/A2 (lecture standard) | T (lecture instrumentée) | Écart / conséquence possible |
