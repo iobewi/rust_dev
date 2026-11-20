@@ -393,7 +393,7 @@ function esptoolFor(world) {
       sim.syncAnswers = () => world.stubRunning ? [0] : new Array(8).fill(1);
       sim.detectChip = async mode => {
         world.detectModes.push(mode); await sim.sync();
-        sim.chip = { CHIP_NAME: 'ESP32-P4', getChipRevision: async () => 302, getChipDescription: async () => 'ESP32-P4 (revision v3.2)', readMac: async () => { if (world.macError) throw world.macError; return world.mac ?? 'aa:bb:cc:dd:ee:ff'; } };
+        sim.chip = { CHIP_NAME: 'ESP32-P4', IMAGE_CHIP_ID: 18, USB_RAM_BLOCK: 0x800, getChipRevision: async () => 302, getChipDescription: async () => 'ESP32-P4 (revision v3.2)', readMac: async () => { if (world.macError) throw world.macError; return world.mac ?? 'aa:bb:cc:dd:ee:ff'; } };
       };
       sim.runStub = async () => { world.runStubCalls++; if (!sim.syncStubDetected) world.stubRunning = true; sim.IS_STUB = true; };
       sim.main = async mode => { world.mainCalls++; await sim.detectChip(mode); await sim.runStub(); return sim.chip.getChipDescription(sim); };

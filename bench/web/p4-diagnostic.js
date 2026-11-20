@@ -94,6 +94,7 @@ export async function runP4UsbTrace({ loader, args, device, stubBytes, romOnly =
 // Flat, allowlisted view of the RAM-load report for the structured error (hardware-errors.js validates it again).
 function ramLoadFields(r) {
   const out = { ram_block_size: r.ram_block, ram_acked_count: r.acked_count, ram_steps: r.steps };
+  if (r.steps_omitted > 0) out.ram_steps_omitted = r.steps_omitted;
   if (Number.isInteger(r.ram_block_default)) out.ram_block_default = r.ram_block_default;
   if (r.ram_block_source) out.ram_block_source = r.ram_block_source;
   if (r.usb_otg_confirmed === 1) out.usb_otg_confirmed = 1;

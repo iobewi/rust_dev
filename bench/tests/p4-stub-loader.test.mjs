@@ -1,8 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {P4_USB_OTG_RAM_BLOCK, classifyRamLoadError, loadDiagnosticStub, retireDiagnosticStub, parseStubJson, sha256Hex, RAM_WINDOWS,
+import {P4_USB_OTG_RAM_BLOCK, MAX_REPORTED_RAM_STEPS, classifyRamLoadError, loadDiagnosticStub, retireDiagnosticStub, parseStubJson, sha256Hex, RAM_WINDOWS,
   IdlabDiagnosticError, FORBIDDEN_FLASH_METHODS} from '../web/p4-stub-loader.js';
 import {IDLAB_GET_FLASH_TRACE} from '../web/p4-stub-trace.js';
+import {hardwareError} from '../web/hardware-errors.js';
 
 const b64 = bytes => Buffer.from(bytes).toString('base64');
 function stubJson(over = {}) {
@@ -370,9 +371,20 @@ test('a lost transport during the OTG check keeps its own error (not "unconfirme
   }
 });
 
-test('a library value that differs from the reviewed 0x800 is refused rather than guessed', async () => {
-  const {loader, error} = await load({chipBlock: 0x1000});
-  assert.equal(error.code, 'diagnostic_ram_block_unexpected'); assert.equal(chipWrites(loader).length, 0); assert.equal(loader.ESP_RAM_BLOCK, 0x1800);
+test('the library USB_RAM_BLOCK must be present and exactly 0x800: absent, null, mistyped or different values are refused, never defaulted', async () => {
+  for (const chipBlock of [0x1000, 0x1800, 0x400, 0, null, '0x800', '2048', 2048.5, NaN, [0x800], {}]) {
+    const {loader, error} = await load({chipBlock});
+    assert.equal(error.code, 'diagnostic_ram_block_unexpected', String(chipBlock)); assert.equal(error.sessionIndeterminate, false);
+    assert.equal(chipWrites(loader).length, 0); assert.equal(loader.ESP_RAM_BLOCK, 0x1800, 'block size untouched'); assert.equal(error.ramLoad, undefined);
+    assert.equal(error.sessionState.admission_verdict, 'rom');
+  }
+  // regression: an ABSENT value (the property does not exist on the chip class) is refused too
+  const json = stubJson(), loader = makeLoader({}); delete loader.chip.USB_RAM_BLOCK;
+  await assert.rejects(loadDiagnosticStub(loader, json, await options(json)), e => e.code === 'diagnostic_ram_block_unexpected');
+  assert.equal(chipWrites(loader).length, 0); assert.equal(loader.ESP_RAM_BLOCK, 0x1800);
+  const noChipValue = makeLoader({}); noChipValue.chip = {CHIP_NAME: 'ESP32-P4', async getChipRevision() { return 302; }};
+  await assert.rejects(loadDiagnosticStub(noChipValue, json, await options(json)), e => e.code === 'diagnostic_ram_block_unexpected');
+  assert.equal(chipWrites(noChipValue).length, 0);
 });
 
 test('the adaptation exists for the ROM-only session only: any other call is refused before any I/O', async () => {
@@ -408,4 +420,45 @@ test('another chip is refused before any frame, as before', async () => {
   const json = stubJson(), loader = makeLoader({chip: 'ESP32-S3'});
   await assert.rejects(loadDiagnosticStub(loader, json, await options(json)), e => e.code === 'diagnostic_stub_wrong_chip');
   assert.deepEqual(loader.calls, []); assert.equal(loader.ESP_RAM_BLOCK, 0x1800);
+});
+
+// ---------------------------------------------------------------- bounded step list (never lets the whole trace disappear)
+const bigDataJson = () => stubJson({data: b64(new Uint8Array(90000).fill(7))});     // many blocks whatever the block size
+async function loadBig(loaderOptions) {
+  const json = bigDataJson(), loader = makeLoader(loaderOptions);
+  let error = null, result = null; tick = 0;
+  try { result = await loadDiagnosticStub(loader, json, {...await options(json), now: clock}); } catch (e) { error = e; }
+  return {loader, error, result};
+}
+
+test('a long RAM load keeps at most 32 entries: the first ones, the last acknowledged command and the failing one; the omitted count is exact', async () => {
+  const {error} = await loadBig({memFault: {call: 'memBlock', nth: 40, error: timeoutError()}});
+  const r = error.ramLoad;
+  assert.ok(r.failed_index > MAX_REPORTED_RAM_STEPS, 'the failure happens beyond the bound');
+  assert.equal(r.steps.length, MAX_REPORTED_RAM_STEPS);
+  assert.equal(r.steps_omitted, r.failed_index + 1 - MAX_REPORTED_RAM_STEPS);
+  const [lastAcked, failed] = r.steps.slice(-2);
+  assert.deepEqual([failed.acked, failed.outcome, lastAcked.acked, lastAcked.outcome], [0, 'timeout', 1, 'ack']);
+  assert.deepEqual([r.acked_count, r.failed_index, r.last_acked_index], [r.failed_index, r.failed_index, r.failed_index - 1]);
+  assert.equal(r.steps[0].step, 'mem_begin');
+  // what crosses the protocol keeps the trace (the list is accepted as a whole) and the omitted count
+  const out = hardwareError(Object.assign(new Error('x'), {code: 'diagnostic_stub_ram_load_failed', diagnostic: {ram_steps: r.steps, ram_steps_omitted: r.steps_omitted, ram_failed_index: r.failed_index, ram_acked_count: r.acked_count}}));
+  assert.equal(out.ram_steps.length, MAX_REPORTED_RAM_STEPS); assert.equal(out.ram_steps_omitted, r.steps_omitted);
+  assert.deepEqual(out.ram_steps.slice(-2), r.steps.slice(-2));
+});
+
+test('a short RAM load is untouched by the bound (the qualified stub needs 9 commands with 0x800 blocks)', async () => {
+  const {result} = await load({});
+  assert.ok(result.ram_load.steps.length <= MAX_REPORTED_RAM_STEPS); assert.equal(result.ram_load.steps_omitted, 0);
+  // text 8952 B + data 276 B (qualified stub): 2 begins + ceil(8952/2048)=5 + ceil(276/2048)=1 blocks + 1 finish
+  const count = block => 2 + Math.ceil(8952 / block) + Math.ceil(276 / block) + 1;
+  assert.deepEqual([count(0x800), count(0x1800)], [9, 6]);
+});
+
+test('a successful long load reports its first entries and its final two commands', async () => {
+  const {result} = await loadBig({});
+  const r = result.ram_load;
+  assert.equal(r.steps.length, MAX_REPORTED_RAM_STEPS); assert.ok(r.steps_omitted > 0);
+  assert.deepEqual(r.steps.slice(-1)[0].step, 'mem_finish'); assert.equal(r.failed_index, null);
+  assert.equal(r.acked_count, r.steps_omitted + MAX_REPORTED_RAM_STEPS);
 });

@@ -102,12 +102,23 @@ export function classifyRamLoadError(error) {
   if (error?.kind === 'partial-packet' || error?.kind === 'invalid-packet') return 'invalid';
   return 'error';
 }
+// The published list is bounded (hardware-errors.js accepts at most 32 entries, all or nothing). Beyond that, the first entries are kept
+// together with the LAST TWO (the last acknowledged command and the failing one, or the final two commands on success), and
+// `steps_omitted` counts the dropped middle entries. `failed_index` / `acked_count` keep the original numbering. The qualified
+// stub (text 8952 B + data 276 B) needs 9 commands with 0x800 blocks (6 with 0x1800): the bound is never reached by it.
+export const MAX_REPORTED_RAM_STEPS = 32;
+function boundedSteps(entries) {
+  const copy = entries.map(e => ({...e}));
+  if (copy.length <= MAX_REPORTED_RAM_STEPS) return {steps: copy, omitted: 0};
+  return {steps: [...copy.slice(0, MAX_REPORTED_RAM_STEPS - 2), ...copy.slice(-2)], omitted: copy.length - MAX_REPORTED_RAM_STEPS};
+}
 function ramLoadReport(ramBlock, adaptation = {}) {
   const entries = [];
   const view = () => {
     const acked = entries.filter(e => e.acked === 1).length;
     const failed = entries.findIndex(e => e.acked === 0);
-    return {ram_block: ramBlock, ...adaptation, steps: entries.map(e => ({...e})), acked_count: acked, failed_index: failed >= 0 ? failed : null,
+    const {steps, omitted} = boundedSteps(entries);
+    return {ram_block: ramBlock, ...adaptation, steps, steps_omitted: omitted, acked_count: acked, failed_index: failed >= 0 ? failed : null,
       last_acked_index: acked > 0 && entries.slice(0, acked).every(e => e.acked === 1) ? acked - 1 : null};
   };
   return {
@@ -135,8 +146,9 @@ async function adaptRamBlock(loader, admission) {
     otg = undefined;
   }
   if (otg !== true) throw new IdlabDiagnosticError('diagnostic_transport_unconfirmed', {sessionState: admission});
-  const chipBlock = loader.chip?.USB_RAM_BLOCK;
-  if (chipBlock !== undefined && chipBlock !== P4_USB_OTG_RAM_BLOCK)   // the library's own value must agree with the reviewed one
+  // The library's own USB-OTG value must be present AND equal to the reviewed one: an absent, mistyped or different value is refused,
+  // never defaulted (esptool-js 0.7.0 esp32p4.js declares USB_RAM_BLOCK = 0x800).
+  if (loader.chip?.USB_RAM_BLOCK !== P4_USB_OTG_RAM_BLOCK)
     throw new IdlabDiagnosticError('diagnostic_ram_block_unexpected', {sessionState: admission});
   loader.ESP_RAM_BLOCK = P4_USB_OTG_RAM_BLOCK;
   return {ram_block_default: defaultBlock, ram_block_source: 'usb_otg_cap', usb_otg_confirmed: 1};
