@@ -237,6 +237,7 @@ export class EspEngine {
   async identity() {
     const l = await this.openLoader();
     this.identityChecks += 1;
+    if (this.romOnly === true) return this.romOnlyIdentity(l);
     const id = await l.readFlashId();
     const code = id >>> 16 & 255;
     if (code < 12 || code > 26) {
@@ -247,6 +248,35 @@ export class EspEngine {
     }
     const chip = family(this.chipDescription.replace(/\s*\(.*$/, ''));
     return { chip, flash_size: 2 ** code, flash_id: id, mac: await l.chip.readMac(l) };
+  }
+  // "ROM seule" only. The MCU identity (family + MAC) is mandatory and verified; the flash capacity is MEASURED from a valid
+  // JEDEC id or declared unknown (flash_size null, flash_size_known false): it is never invented nor taken from a remembered
+  // identity. The raw JEDEC id and its read context are kept (console event + `flash_capacity`), without assuming a cause.
+  async romOnlyIdentity(l) {
+    const chip = family(String(this.chipDescription || '').replace(/\s*\(.*$/, ''));
+    if (chip !== 'esp32p4') {   // the unknown-capacity path exists for the P4 diagnostic only: any other chip keeps the strict rule
+      const id = await l.readFlashId(), code = id >>> 16 & 255;
+      if (code < 12 || code > 26) throw new HardwareError('flash_capacity_unknown', { phase: 'identify', jedec_id: id >>> 0, identify_index: this.identityChecks, loader_stub: l.IS_STUB ? 1 : 0 });
+      return { chip, flash_size: 2 ** code, flash_id: id, mac: await l.chip.readMac(l) };
+    }
+    const mac = await l.chip.readMac(l);   // a failure here (communication or chip) refuses the connection
+    if (typeof mac !== 'string' || !/^([0-9a-f]{2}:){5}[0-9a-f]{2}$/i.test(mac) || /^(00:){5}00$|^(ff:){5}ff$/i.test(mac))
+      throw new HardwareError('physical_identity_unverified', { phase: 'identify' });
+    let jedec = null, read = 'ok';
+    try { jedec = await l.readFlashId(); }
+    catch (error) {
+      if (['closed', 'no-response', 'partial-packet', 'invalid-packet'].includes(error?.kind) || error?.name === 'NetworkError') throw error;   // a lost transport is not "unavailable"
+      read = 'error';
+    }
+    const raw = Number.isInteger(jedec) ? jedec >>> 0 : null, code = raw === null ? -1 : raw >>> 16 & 255;
+    const valid = code >= 12 && code <= 26;
+    if (!valid && read === 'ok') read = 'invalid';
+    const evidence = { jedec_id: raw, read, identify_index: this.identityChecks, loader_stub: l.IS_STUB ? 1 : 0, rom_only: true };
+    this.flashCapacityEvidence = evidence;
+    this.event('transport', { detail: `JEDEC ROM seule : ${raw === null ? 'non lu' : '0x' + raw.toString(16).padStart(8, '0')} · lecture ${read} · tentative ${this.identityChecks} · stub ${evidence.loader_stub ? 'oui' : 'non'}${valid ? '' : ' · capacité flash inconnue'}` });
+    if (valid) return { chip, flash_size: 2 ** code, flash_id: raw, mac, flash_size_known: true };
+    // flash_id stays null: a garbage JEDEC must not become a physical identifier that a reconnection would compare.
+    return { chip, flash_size: null, flash_id: null, mac, flash_size_known: false, flash_capacity: evidence };
   }
   async reset() {
     if (this.native && !this.usbSerialJtag) throw new HardwareError('external_uart_required');
@@ -399,6 +429,7 @@ export class EspEngine {
       this.setPhase('identify', context);
       const physical = await this.identity(), l = this.loader;
       if (command.startsWith('flash.') || command === 'partitions') {
+        if (!Number.isInteger(physical.flash_size)) throw new HardwareError('flash_capacity_unknown', { phase: 'identify' });
         if (args.chip && args.chip !== physical.chip) throw new Error('Physical chip mismatch');
         if (physical.chip !== context.device.chip || physical.flash_size !== context.device.flash_size) throw new HardwareError('physical_identity_changed');
       }

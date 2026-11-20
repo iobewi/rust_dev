@@ -392,11 +392,11 @@ function esptoolFor(world) {
       sim.syncAnswers = () => world.stubRunning ? [0] : new Array(8).fill(1);
       sim.detectChip = async mode => {
         world.detectModes.push(mode); await sim.sync();
-        sim.chip = { CHIP_NAME: 'ESP32-P4', getChipRevision: async () => 302, getChipDescription: async () => 'ESP32-P4 (revision v3.2)', readMac: async () => 'aa:bb:cc:dd:ee:ff' };
+        sim.chip = { CHIP_NAME: 'ESP32-P4', getChipRevision: async () => 302, getChipDescription: async () => 'ESP32-P4 (revision v3.2)', readMac: async () => { if (world.macError) throw world.macError; return world.mac ?? 'aa:bb:cc:dd:ee:ff'; } };
       };
       sim.runStub = async () => { world.runStubCalls++; if (!sim.syncStubDetected) world.stubRunning = true; sim.IS_STUB = true; };
       sim.main = async mode => { world.mainCalls++; await sim.detectChip(mode); await sim.runStub(); return sim.chip.getChipDescription(sim); };
-      sim.readFlashId = async () => 0x164068;
+      sim.readFlashId = async () => { if (world.jedecError) throw world.jedecError; return world.jedec ?? 0x164068; };
       const finish = sim.memFinish; sim.memFinish = async e => { await finish(e); world.stubRunning = true; };   // the diagnostic stub now runs
       return sim;
     }
@@ -565,4 +565,83 @@ test('recovery proof: an interrupted communication is a structured failure, a lo
   assert.equal(hardwareError(x.outcome, true).code, 'serial_disconnected'); assert.ok(x.kept);
   x = await recoveryWorld(sim => { sim.syncAnswers = () => [NaN]; });                      // an invalid value is a failure, not a zero
   assert.equal(x.outcome.code, 'diagnostic_recovery_sync_failed'); assert.ok(x.kept);
+});
+
+// ------------------------------------------------------------------ ROM seule: MCU identity verified, flash capacity measured or unknown
+async function romIdentity(over = {}) {
+  const world = Object.assign(chipWorld(), over), events = [];
+  const engine = new EspEngine({ getInfo: () => ({}) }, esptoolFor(world), (n, d) => events.push([n, d]), () => {});
+  Object.assign(engine, { native: true, usbSerialJtag: false, manualDownload: true, romOnly: true });
+  const outcome = await engine.identity().then(v => ({ value: v }), e => ({ error: e }));
+  return { ...outcome, world, engine, events, sim: world.loaders[0] };
+}
+const jedecEvent = events => events.filter(([n, d]) => n === 'transport' && /JEDEC ROM seule/.test(d.detail)).map(([, d]) => d.detail);
+
+test('ROM seule, valid JEDEC: the capacity is measured, the identity carries family, MAC and JEDEC', async () => {
+  const r = await romIdentity();
+  assert.deepEqual(r.value, { chip: 'esp32p4', flash_size: 2 ** 22, flash_id: 0x164068, mac: 'aa:bb:cc:dd:ee:ff', flash_size_known: true });
+  assert.match(jedecEvent(r.events)[0], /0x00164068 · lecture ok · tentative 1 · stub non/);
+});
+
+test('ROM seule, invalid JEDEC (any raw value): connection allowed, capacity declared unknown, raw id and context kept, nothing invented', async () => {
+  for (const jedec of [0, 0x00ffffff, 0x010000, 0x1b0000, 0xffffffff]) {
+    const r = await romIdentity({ jedec });
+    assert.equal(r.error, undefined, String(jedec));
+    assert.deepEqual([r.value.chip, r.value.mac, r.value.flash_size, r.value.flash_id, r.value.flash_size_known], ['esp32p4', 'aa:bb:cc:dd:ee:ff', null, null, false]);
+    assert.deepEqual(r.value.flash_capacity, { jedec_id: jedec >>> 0, read: 'invalid', identify_index: 1, loader_stub: 0, rom_only: true });
+    assert.match(jedecEvent(r.events)[0], /capacité flash inconnue/);
+  }
+});
+
+test('ROM seule, JEDEC unavailable (the read fails): unknown capacity, context "error"; a lost transport is NOT downgraded', async () => {
+  const r = await romIdentity({ jedecError: new Error('read failed') });
+  assert.deepEqual([r.value.flash_size, r.value.flash_size_known, r.value.flash_capacity.read, r.value.flash_capacity.jedec_id], [null, false, 'error', null]);
+  assert.match(jedecEvent(r.events)[0], /non lu · lecture error/);
+  for (const lost of [Object.assign(new Error('x'), { kind: 'closed' }), Object.assign(new Error('x'), { name: 'NetworkError' })]) {
+    const x = await romIdentity({ jedecError: lost });
+    assert.equal(x.error, lost);
+  }
+});
+
+test('ROM seule: an unverifiable MCU identity (unreadable, zero or malformed MAC) refuses the connection, whatever the JEDEC says', async () => {
+  for (const over of [{ macError: new Error('efuse') }, { mac: '00:00:00:00:00:00' }, { mac: 'ff:ff:ff:ff:ff:ff' }, { mac: 'aa:bb' }, { mac: 42 }, { mac: 'aa:bb:cc:dd:ee:ff', macError: new Error('x'), jedec: 0x164068 }]) {
+    const r = await romIdentity({ jedec: 0, ...over });
+    assert.ok(r.error, JSON.stringify(over));
+  }
+  const r = await romIdentity({ mac: 'aa:bb' });
+  assert.equal(r.error.code, 'physical_identity_unverified'); assert.equal(hardwareError(r.error).code, 'physical_identity_unverified');
+  assert.ok(diagnostic('physical_identity_unverified').length > 20);
+});
+
+test('normal (non ROM-only) connection: an invalid JEDEC still refuses with flash_capacity_unknown and the raw id', async () => {
+  const world = Object.assign(chipWorld(), { jedec: 0 });
+  const engine = new EspEngine({ getInfo: () => ({}) }, esptoolFor(world), () => {}, () => {});
+  Object.assign(engine, { native: true, usbSerialJtag: false, manualDownload: true, romOnly: false });
+  await assert.rejects(engine.identity(), e => e.code === 'flash_capacity_unknown' && e.detail.jedec_id === 0 && e.detail.identify_index === 1);
+});
+
+test('a ROM-only identity of another family keeps the strict capacity rule', async () => {
+  const world = Object.assign(chipWorld(), { jedec: 0 }), esptool = esptoolFor(world);
+  const engine = new EspEngine({ getInfo: () => ({}) }, esptool, () => {}, () => {});
+  Object.assign(engine, { native: true, usbSerialJtag: false, manualDownload: true, romOnly: true });
+  const original = esptool.ESPLoader; esptool.ESPLoader = class extends original { constructor(o) { super(o); this.detectChip = async () => { this.chip = { CHIP_NAME: 'ESP32-S3', getChipDescription: async () => 'ESP32-S3 (revision v0.2)', readMac: async () => 'aa:bb:cc:dd:ee:ff' }; }; } };
+  await assert.rejects(engine.identity(), e => e.code === 'flash_capacity_unknown');
+});
+
+test('flash operations that depend on the capacity are refused when it is unknown, before any hardware work', async () => {
+  const r = await romIdentity({ jedec: 0 });
+  for (const command of ['partitions', 'flash.read', 'flash.write', 'flash.erase'])
+    await assert.rejects(r.engine.execute(command, {}, { check() {}, live: () => true, device: { ...device, flash_size: null }, report() {} }), e => ['diagnostic_rom_only_session', 'flash_capacity_unknown'].includes(e.code), command);
+});
+
+test('the diagnostic itself does not depend on the capacity: it runs on an unknown-capacity ROM-only session', async () => {
+  const world = Object.assign(chipWorld(), { jedec: 0 }), events = [];
+  const engine = new EspEngine({ getInfo: () => ({}) }, esptoolFor(world), (n, d) => events.push([n, d]), () => {});
+  Object.assign(engine, { native: true, usbSerialJtag: false, manualDownload: true, romOnly: true });
+  const id = await engine.identity();
+  assert.equal(id.flash_size_known, false);
+  assert.ok(engine.capabilities().includes(P4_TRACE));
+  const context = { check() {}, live: () => true, device: { ...device, flash_size: null, flash_size_known: false }, download: async () => stubBytes, upload: async () => ({}), deferCompletion: true, complete() {}, report() {} };
+  const done = await engine.execute(P4_TRACE, clean(goodArgs()), context);
+  assert.equal(done.stub_resident, true);
 });

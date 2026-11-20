@@ -7,12 +7,13 @@ function lab() {
   const actions = [];
   const agents = [];
   const holds = new Map();
+  const state = { identity: null };   // a test may script the next identities (ROM-only, unknown capacity)
   const manager = new BoardManager({
     allowed: ['a', 'b'], ports: async () => ports,
     createEngine(ctx, port, event) {
       const engine = {
         port, loaderBaud: ctx.options.loaderBaud, manualDownload: ctx.options.manualDownload, busy: false, hold: holds.get(ctx.id) || false, mode: 'console',
-        async identity() { actions.push('identity:' + ctx.id); return { chip: 'esp32s3', flash_size: 4194304, flash_id: ctx.id }; },
+        async identity() { actions.push('identity:' + ctx.id); return state.identity ? state.identity() : { chip: 'esp32s3', flash_size: 4194304, flash_id: ctx.id }; },
         async openConsole() { actions.push('open:' + ctx.id); },
         async close() { actions.push('close:' + ctx.id); },
         capabilities() { return ['identify']; },
@@ -35,7 +36,7 @@ function lab() {
     },
     onEvent(ctx, type) { actions.push('ui:' + ctx.id + ':' + type); },
   });
-  return { manager, ports, actions, agents };
+  return { manager, ports, actions, agents, state };
 }
 
 test('two simulated serial ports and agents stay connected through A-B-A selection', async () => {
@@ -467,4 +468,43 @@ test('port not granted after sleep never switches to the other board', async () 
   assert.equal(a.status, 'recovery_required');
   assert.strictEqual(b.engine, bEngine);
   assert.equal(b.status, 'recovery_required');
+});
+
+// ---------------------------------------------------------------- ROM seule: unknown flash capacity must not look like another board
+const MEASURED = { chip: 'esp32p4', flash_size: 33554432, flash_id: 0x164068, mac: 'aa:bb:cc:dd:ee:01', flash_size_known: true };
+const UNKNOWN = { chip: 'esp32p4', flash_size: null, flash_id: null, mac: 'aa:bb:cc:dd:ee:01', flash_size_known: false, flash_capacity: { jedec_id: 0, read: 'invalid' } };
+
+test('reconnection: an unknown capacity on either side is not a physical identity change; the new identity is never completed from the old one', async () => {
+  const { manager, ports, state, agents } = lab();
+  state.identity = () => ({ ...MEASURED });
+  const ctx = await manager.add('a', ports[0], { romOnly: true });
+  for (const [expected, current] of [[MEASURED, UNKNOWN], [UNKNOWN, MEASURED], [UNKNOWN, UNKNOWN]]) {
+    state.identity = () => ({ ...current });
+    await manager.attach(ctx, ports[0], { ...expected });
+    assert.equal(ctx.status, 'connected');
+    assert.equal(ctx.localDevice.flash_size, current.flash_size, 'the declared capacity is what was observed now');
+    assert.equal(ctx.localDevice.flash_size_known, current.flash_size_known);
+  }
+  assert.ok(agents.length >= 4);
+});
+
+test('reconnection: a different MAC, family, or two measured capacities that differ still mean another board', async () => {
+  const { manager, ports, state } = lab();
+  state.identity = () => ({ ...MEASURED });
+  const ctx = await manager.add('a', ports[0], { romOnly: true });
+  for (const [current, key] of [[{ ...UNKNOWN, mac: 'aa:bb:cc:dd:ee:02' }, 'mac'], [{ ...MEASURED, mac: 'aa:bb:cc:dd:ee:02' }, 'mac'],
+      [{ ...UNKNOWN, chip: 'esp32c6' }, 'chip'], [{ ...MEASURED, flash_size: 16777216 }, 'flash_size'], [{ ...MEASURED, flash_id: 0x174068 }, 'flash_id']]) {
+    state.identity = () => ({ ...current });
+    await assert.rejects(manager.attach(ctx, ports[0], { ...MEASURED }), e => e.code === 'physical_identity_changed', key);
+  }
+});
+
+test('normal connections keep the strict comparison of capacity and JEDEC id', async () => {
+  const { manager, ports, state } = lab();
+  state.identity = () => ({ chip: 'esp32s3', flash_size: 4194304, flash_id: 1, mac: 'm' });
+  const ctx = await manager.add('a', ports[0]);
+  for (const changed of [{ flash_size: 8388608 }, { flash_id: 2 }, { mac: 'x' }, { chip: 'esp32c6' }]) {
+    state.identity = () => ({ chip: 'esp32s3', flash_size: 4194304, flash_id: 1, mac: 'm', ...changed });
+    await assert.rejects(manager.attach(ctx, ports[0], { chip: 'esp32s3', flash_size: 4194304, flash_id: 1, mac: 'm' }), e => e.code === 'physical_identity_changed');
+  }
 });

@@ -416,3 +416,89 @@ class P4TraceTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class UnknownFlashCapacityTests(unittest.TestCase):
+    """ROM-only P4 session whose flash capacity is unknown: declared explicitly, never guessed, never reused."""
+    def setUp(self):
+        self.b = Broker(clock=lambda: 100., p4_stub_allowlist=[hashlib.sha256(stub_json()).hexdigest()])
+        self.b.agent('agent', object())
+
+    def register(self, **over):
+        data = {'id': 'p4', 'chip': 'esp32p4', 'flash_size': None, 'flash_size_known': False, 'capabilities': ['identify', 'mark', CMD],
+                'provenance': {'transport': 'native_usb_other', 'transport_basis': 'inferred_from_webserial_vid_pid'}}
+        data.update(over)
+        return self.b.register('agent', data, ['p4'])
+
+    def refused(self, **over):
+        with self.assertRaises(Fault) as context:
+            self.register(**over)
+        return context.exception.code
+
+    def test_an_explicitly_unknown_capacity_registers_and_is_stored_as_unknown(self):
+        self.register()
+        d = self.b.devices['p4']
+        self.assertIsNone(d['flash_size']); self.assertIs(d['flash_size_known'], False)
+
+    def test_a_known_capacity_keeps_the_strict_integer_contract(self):
+        self.register(flash_size=32 * 1024 * 1024, flash_size_known=True)
+        self.assertEqual(self.b.devices['p4']['flash_size'], 32 * 1024 * 1024); self.assertIs(self.b.devices['p4']['flash_size_known'], True)
+
+    def test_null_without_the_explicit_declaration_and_other_bad_sizes_are_refused(self):
+        for over in ({'flash_size_known': None}, {'flash_size_known': True}, {'flash_size_known': 0}, {'flash_size': 0, 'flash_size_known': None},
+                     {'flash_size': 1, 'flash_size_known': None}, {'flash_size': 'x', 'flash_size_known': None}, {'flash_size': True, 'flash_size_known': None}):
+            with self.subTest(over=over):
+                with self.assertRaises(Fault):
+                    self.register(**over)
+        self.assertNotIn('p4', self.b.devices)
+
+    def test_an_unknown_capacity_must_be_null_and_is_limited_to_the_rom_only_p4(self):
+        self.assertEqual(self.refused(flash_size=4096), 'invalid_request')                      # declared unknown but carries a value
+        self.assertEqual(self.refused(chip='esp32c6'), 'invalid_request')
+        self.assertEqual(self.refused(capabilities=['identify', 'mark', CMD, 'flash.read']), 'invalid_request')
+        self.assertEqual(self.refused(capabilities=['identify', 'partitions']), 'invalid_request')
+
+    def test_the_remembered_capacity_is_never_reused_by_a_new_registration(self):
+        self.register(flash_size=32 * 1024 * 1024, flash_size_known=True)
+        self.b.disconnect('agent'); self.b.agent('agent', object())
+        self.register()
+        self.assertIsNone(self.b.devices['p4']['flash_size'])
+
+    def test_commands_that_depend_on_the_capacity_are_refused_while_it_is_unknown(self):
+        self.register(capabilities=['identify', 'mark', CMD])
+        d = self.b.devices['p4']; d['capabilities'] = sorted(CAPABILITIES_FOR_TEST)         # even if a stale capability list claimed them
+        lease = self.b.reserve('p4', 'alice', 600)
+        for command, args in (('flash.read', {'address': 0x8000, 'size': 4096}), ('partitions', {}), ('flash.erase', {'chip': 'esp32p4'}),
+                              ('flash.write', {'chip': 'esp32p4', 'images': []})):
+            with self.subTest(command=command), self.assertRaises(Fault) as context:
+                self.b.submit('alice', ['read', 'control', 'program'], {'lease': lease['id'], 'command': command, 'args': args, 'allow_destructive': True})
+            self.assertEqual(context.exception.code, 'flash_capacity_unknown')
+
+    def test_identify_and_mark_do_not_need_the_capacity(self):
+        self.register()
+        lease = self.b.reserve('p4', 'alice', 600)
+        for command, args in (('identify', {}), ('mark', {'label': 'x'})):
+            op = self.b.submit('alice', ['read', 'control'], {'lease': lease['id'], 'command': command, 'args': args})
+            self.assertEqual(op['state'], 'queued')
+
+    def test_the_diagnostic_is_accepted_without_a_known_capacity(self):
+        self.register()
+        stub = stub_json(); art = self.b.artifact(stub, hashlib.sha256(stub).hexdigest(), 'alice')
+        sha = art['sha256']; lease = self.b.reserve('p4', 'alice', 600); self.b.devices['p4']['grant_until'] = 10000
+        args = {'chip': 'esp32p4', 'stub_artifact': art['id'], 'stub_sha256': sha, 'address': 0x8000, 'size': 1024 * 1024, 'packet_size': 4096,
+                'cpu_hz': 200_000_000, 'consent': p4_trace_consent('p4', sha)}
+        op = self.b.submit('alice', ['read', 'control', 'program'], {'lease': lease['id'], 'command': CMD, 'args': args, 'allow_destructive': True})
+        self.assertEqual(op['state'], 'queued')
+
+    def test_the_unknown_state_survives_a_restart(self):
+        import tempfile
+        from server.journal import Journal
+        with tempfile.TemporaryDirectory() as tmp:
+            self.b.journal = Journal(tmp)
+            self.register(); self.b.journal.save(self.b); self.b.journal.close()
+            again = Broker(state_dir=tmp)
+            self.assertIsNone(again.devices['p4']['flash_size']); self.assertIs(again.devices['p4']['flash_size_known'], False)
+            again.journal.close()
+
+
+CAPABILITIES_FOR_TEST = {'identify', 'mark', CMD, 'flash.read', 'partitions', 'flash.erase', 'flash.write'}

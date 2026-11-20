@@ -3,7 +3,7 @@ export class HardwareError extends Error {
   constructor(code, detail = {}) { super(code); this.code = code; this.detail = detail; }
 }
 const codes = new Set(['loader_baud_invalid', 'capacity', 'console_required', 'external_uart_required', 'partition_table_invalid', 'physical_identity_changed',
-  'operator_recovery_required', 'signal_release_failed', 'serial_disconnected', 'serial_timeout', 'serial_partial_packet', 'serial_invalid_packet', 'short_flash_read', 'flash_capacity_unknown', 'artifact_transfer_failed', 'artifact_integrity_failed',
+  'operator_recovery_required', 'physical_identity_unverified', 'signal_release_failed', 'serial_disconnected', 'serial_timeout', 'serial_partial_packet', 'serial_invalid_packet', 'short_flash_read', 'flash_capacity_unknown', 'artifact_transfer_failed', 'artifact_integrity_failed',
   'agent_disconnected', 'reservation_expired', 'trigger_not_owned', 'grant_expired', 'execution_deadline_exceeded', 'command_start_expired']);
 const phases = new Set(['prepare', 'identify', 'flash_read', 'artifact_upload', 'artifact_download', 'flash_write', 'flash_erase', 'console', 'control',
   'diagnostic_stub_load', 'diagnostic_read']);
@@ -41,6 +41,7 @@ export function hardwareError(error, disconnected = false, details = {}) {
   return out;
 }
 export const diagnostic = code => ({
+  physical_identity_unverified: 'Identité physique non vérifiable (adresse MAC illisible ou invalide) : connexion refusée.',
   diagnostic_stub_requires_a_rom_session: 'Ancien code (runs 001-002) : un stub était signalé en marche ; l’indice n’était pas démontré. Rien n’a été chargé.',
   diagnostic_stub_reported_running: 'Tous les indices frais indiquent qu’un stub tourne (aucune preuve absolue) : rien n’a été chargé ; BOOT + reset requis.',
   diagnostic_session_state_indeterminate: 'Indices ROM/stub contradictoires ou incomplets : état de la session indéterminé, rien n’a été chargé ; la carte reste sous quarantaine.',

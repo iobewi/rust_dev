@@ -9,7 +9,7 @@ import { BenchClient } from './api-client.js';
 import { b64, unb64, manifestPlan, sha256 } from './protocol.js';
 import { P4_TRACE, P4_FIXED, expectedConsent } from './p4-diagnostic.js';
 import { ConsoleBuffer } from './console-buffer.js';
-import { address, hex, flashPlan, displayChip } from './ui-model.js';
+import { address, hex, flashPlan, displayChip, targetFor } from './ui-model.js';
 
 const $ = id => document.getElementById(id);
 document.title = 'IDLab — IOBEWI Device Lab';
@@ -360,11 +360,10 @@ async function openSession() {
   })();
   try { return await sessionPromise; } finally { sessionPromise = null; }
 }
-function selectedTarget() {
+// Identity of the connected board first; the flash capacity is demanded only by what depends on it (see ui-model.js).
+function selectedTarget(capacityNeeded = false) {
   const d = info();
-  if (!session || !d?.connected || boards.get(d.id) && boards.get(d.id).status !== 'connected')
-    throw new Error('Connectez une carte au banc');
-  return { device: d.id, chip: d.chip, flash_size: d.flash_size, generation: d.generation };
+  return targetFor(d, { session, board: d && boards.get(d.id) }, capacityNeeded);
 }
 function selectTabs(attribute, name, panelSelector, panelPrefix) {
   document.querySelectorAll(`[${attribute}]`).forEach(button => {
@@ -584,7 +583,7 @@ function renderState() {
   $('cancel').disabled = !isWorking() || !current;
   $('usb-state').textContent = portConnected ? 'connecté' : 'non connecté';
   $('card-commands').dataset.mode = local ? engine?.mode || 'off' : 'remote';
-  $('chip-info').textContent = d?.chip || '—'; $('flash-info').textContent = d?.flash_size ? `${hex(d.flash_size)} · ${d.flash_size} octets` : '—';
+  $('chip-info').textContent = d?.chip || '—'; $('flash-info').textContent = d?.flash_size ? `${hex(d.flash_size)} · ${d.flash_size} octets` : d?.flash_size_known === false ? 'capacité inconnue (JEDEC non exploitable)' : '—';
   $('rdid-info').textContent = local && localDevice.flash_id != null ? hex(localDevice.flash_id) : '—';
   $('interface-info').textContent = local ? engine?.usbSerialJtag ? 'USB Serial/JTAG' : engine?.native ? 'USB natif (OTG ou non identifié)' : engine?.provenance().transport === 'external_uart' ? 'UART externe' : 'Port série non identifié' : 'Agent du banc';
   $('loader-speed-info').textContent = local && engine ? engine.native ?
@@ -864,7 +863,7 @@ function recordOperation(op, started) {
 }
 async function submit(command, args = {}, destructive = false) {
   if (isWorking()) throw new Error('Une opération manuelle est déjà en cours sur cette carte');
-  const target = selectedTarget();
+  const target = selectedTarget(command);   // capacity required only for flash.read / partitions / flash.write / flash.erase
   if (command === 'partitions') { partitionSuggestions.delete(target.device); partitionCache.delete(target.device); renderPartitions(); }
   const ticket = { id: null };
   inFlight.set(target.device, ticket);
@@ -1002,7 +1001,7 @@ function renderImages() {
   }
 }
 function validatePlan() {
-  const target = selectedTarget(), images = flashPlan(imagePlan, target.flash_size);
+  const target = selectedTarget(true), images = flashPlan(imagePlan, target.flash_size);
   $('plan-state').textContent = `${images.length} images vérifiées · secteurs disjoints · aucune écriture effectuée.`;
   return { target, images };
 }
@@ -1027,14 +1026,14 @@ hook('write', () => {
 });
 hook('cancel-write', () => { confirmation = null; $('program-confirmation').hidden = true; });
 hook('confirm-write', async () => {
-  const target = selectedTarget();
+  const target = selectedTarget(true);
   if (!confirmation || confirmation.generation !== target.generation || confirmation.device !== selected()) throw new Error('La carte a changé : confirmez à nouveau le plan');
   const plan = confirmation; confirmation = null; $('program-confirmation').hidden = true;
   await submit('flash.write', { chip: plan.chip, images: plan.images, erase: false, return_console: true }, true);
 });
-hook('erase', async () => { const target = selectedTarget(); if (confirm(`Effacer TOUTE la flash de ${target.device} (${target.chip}, ${target.flash_size} octets) ?`)) await submit('flash.erase', { chip: target.chip, return_console: false }, true); });
+hook('erase', async () => { const target = selectedTarget(true); if (confirm(`Effacer TOUTE la flash de ${target.device} (${target.chip}, ${target.flash_size} octets) ?`)) await submit('flash.erase', { chip: target.chip, return_console: false }, true); });
 hook('install', async () => {
-  const target = selectedTarget(), manifest = $('manifest').files[0]; if (!manifest) throw new Error('Choisissez un manifeste');
+  const target = selectedTarget(true), manifest = $('manifest').files[0]; if (!manifest) throw new Error('Choisissez un manifeste');
   const parsed = JSON.parse(await manifest.text()), files = new Map();
   for (const file of [...$('manifest-files').files, ...$('manifest-directory').files]) {
     const path = file.webkitRelativePath ? file.webkitRelativePath.split('/').slice(1).join('/') : file.name;

@@ -148,6 +148,9 @@ def validate_command(name, args, device, artifacts, p4_stub_allowlist=frozenset(
         if key in args:
             require(type(args[key]) is bool)
     capacity = device['flash_size']
+    if name in {'flash.read', 'partitions', 'flash.write', 'flash.erase'}:
+        require(isinstance(capacity, int) and not isinstance(capacity, bool), 'flash_capacity_unknown',
+                'This session does not know the flash capacity')
     if name == 'flash.read':
         reader = args.get('reader', 'reference')
         require(isinstance(reader, str) and reader in {'reference', 'preallocated', 'packet-diagnostic', 'md5-only'},
