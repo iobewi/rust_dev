@@ -26,3 +26,23 @@ export function requireTarget(lease, selected) {
 export function displayChip(localIdentity, serverDevice) {
   return localIdentity?.chip || serverDevice?.chip || 'MCU inconnu';
 }
+
+// ---- target of a manual command: identity (connected board) is separate from the flash capacity ----
+// Only these commands really depend on a known flash capacity (bounds, partition table, images, erase). identify, mark and the
+// P4 diagnostic (fixed region, read-only) never do: a ROM-only session with an unknown capacity (flash_size null) can use them.
+export const CAPACITY_COMMANDS = new Set(['flash.read', 'partitions', 'flash.write', 'flash.erase']);
+// The connected board a command is aimed at, whatever its capacity (flash_size is null when unknown, never guessed).
+export function connectedTarget(device, { session, board } = {}) {
+  if (!session || !device?.connected || (board && board.status !== 'connected')) throw new Error('Connectez une carte au banc');
+  return { device: device.id, chip: device.chip, flash_size: Number.isInteger(device.flash_size) && device.flash_size > 0 ? device.flash_size : null, generation: device.generation };
+}
+export function requireKnownCapacity(target) {
+  if (!Number.isInteger(target.flash_size) || target.flash_size <= 0) throw new Error('Capacité flash inconnue : cette opération est indisponible sur cette session');
+  return target;
+}
+// capacityNeeded: true for image preparation / write / erase handlers, or a command name for submit().
+export function targetFor(device, context, capacityNeeded = false) {
+  const target = connectedTarget(device, context);
+  const needed = typeof capacityNeeded === 'string' ? CAPACITY_COMMANDS.has(capacityNeeded) : capacityNeeded === true;
+  return needed ? requireKnownCapacity(target) : target;
+}
