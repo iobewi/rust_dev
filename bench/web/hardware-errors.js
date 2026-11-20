@@ -16,7 +16,7 @@ const ramLoad = new Set(['not_started', 'started', 'unknown']);
 const counters = ['chip_revision', 'elapsed_ms', 'received_bytes', 'expected_bytes', 'block_address', 'block_size', 'serial_reads', 'serial_bytes',
   'serial_timeouts', 'silence_limit_ms', 'last_read_ms', 'last_packet_bytes', 'execution_remaining_ms', 'lease_remaining_ms',
   'grant_remaining_ms', 'start_remaining_ms', 'http_status', 'jedec_id', 'identify_index', 'loader_stub', 'sync_zero_count', 'sync_stub_detected', 'sync_count', 'sync_completed',
-  'ram_block_size', 'ram_acked_count', 'ram_failed_index', 'ram_last_acked_index'];
+  'ram_block_size', 'ram_acked_count', 'ram_failed_index', 'ram_last_acked_index', 'ram_block_default', 'usb_otg_confirmed'];
 const md5Shapes = new Set(['rom', 'stub', 'unknown']);
 // Typed per-step report of the RAM download. All-or-nothing: one malformed step drops the whole list (no partial, no free text).
 const stepNames = new Set(['mem_begin', 'mem_block', 'mem_finish']), segments = new Set(['text', 'data', 'entry']);
@@ -55,6 +55,7 @@ export function hardwareError(error, disconnected = false, details = {}) {
   if (Array.isArray(input.sync_values) && input.sync_values.length <= 8 && input.sync_values.every(v => Number.isInteger(v) && v >= -0x80000000 && v <= 0x7fffffff))
     out.sync_values = [...input.sync_values];
   if (md5Shapes.has(input.md5_shape)) out.md5_shape = input.md5_shape;
+  if (['usb_otg_cap', 'default'].includes(input.ram_block_source)) out.ram_block_source = input.ram_block_source;
   if (['rom', 'stub', 'indeterminate'].includes(input.admission_verdict)) out.admission_verdict = input.admission_verdict;
   const ramSteps = ramStepsOf(input.ram_steps); if (ramSteps) out.ram_steps = ramSteps;
   for (const key of counters) if (Number.isFinite(input[key]) && input[key] >= 0) out[key] = Math.round(input[key]);
@@ -62,6 +63,9 @@ export function hardwareError(error, disconnected = false, details = {}) {
 }
 export const diagnostic = code => ({
   physical_identity_unverified: 'Identité physique non vérifiable (adresse MAC illisible ou invalide) : connexion refusée.',
+  diagnostic_transport_unconfirmed: 'Transport USB OTG non confirmé positivement : chargement RAM refusé (aucun octet RAM envoyé) ; la carte reste sous quarantaine.',
+  diagnostic_ram_block_unexpected: 'La taille de bloc USB OTG de la bibliothèque diffère de la valeur revue (0x800) : chargement RAM refusé.',
+  diagnostic_ram_load_already_started: 'Un chargement RAM a déjà commencé sur ce chargeur : aucune nouvelle tentative.',
   diagnostic_stub_requires_a_rom_session: 'Ancien code (runs 001-002) : un stub était signalé en marche ; l’indice n’était pas démontré. Rien n’a été chargé.',
   diagnostic_stub_reported_running: 'Tous les indices frais indiquent qu’un stub tourne (aucune preuve absolue) : rien n’a été chargé ; BOOT + reset requis.',
   diagnostic_session_state_indeterminate: 'Indices ROM/stub contradictoires ou incomplets : état de la session indéterminé, rien n’a été chargé ; la carte reste sous quarantaine.',

@@ -166,3 +166,19 @@ Exemple (timeout du premier `memBegin`, produit par le vrai code) :
  "ram_failed_index": 0
 }
 ```
+
+
+### Taille de bloc RAM sur USB-OTG (0x800)
+Constat (audit du 2026-11-20, run-003 : timeout de 3 s après l'admission) : esptool-js 0.7.0 (`targets/esp32p4.js` `postConnect()` : `if (await loader.usesUsbOtg()) loader.ESP_RAM_BLOCK = this.USB_RAM_BLOCK` = 0x800) et esptool 5.6.0 (`loader.py` `_post_connect()` : `ESP_RAM_BLOCK = USB_OTG_BLOCK_SIZE` = 0x800, « the USB-OTG ROM cannot take the larger RAM block sizes used to upload the stub ») réduisent le bloc de 0x1800 à 0x800. La connexion « ROM seule » ne passe jamais par `main()`/`postConnect()` : le bloc restait à 0x1800.
+
+`loadDiagnosticStub` applique **uniquement** cette adaptation, avant le premier `memBegin`, si et seulement si : puce ESP32-P4, option `romOnly: true` explicite, aucun chargement RAM déjà commencé sur ce chargeur, et transport **positivement** identifié USB-OTG par `loader.usesUsbOtg()` (VID 0x303a + PID = `IMAGE_CHIP_ID` 18 ; repli esptool-js sur le registre `UARTDEV_BUF_NO` si les identifiants sont masqués) ; la valeur `chip.USB_RAM_BLOCK` de la bibliothèque doit être 0x800. Sinon refus structuré avant toute écriture RAM : `diagnostic_transport_unconfirmed`, `diagnostic_ram_block_unexpected`, `diagnostic_rom_only_required`, `diagnostic_ram_load_already_started`. Aucun reset, aucun `main()`/`runStub()`, aucun `postConnect()`/`powerOnFlash()`/`disableWatchdogs()`, aucune écriture de registre. Le rapport d'observabilité publie `ram_block_size` (effectif), `ram_block_default` (0x1800), `ram_block_source: usb_otg_cap`, `usb_otg_confirmed`.
+
+| Paramètre | Référence (esptool-js 0.7.0 / esptool 5.6.0) | IDLab avant | IDLab après |
+| --- | --- | --- | --- |
+| `ESP_RAM_BLOCK` en USB-OTG | 0x800 | 0x1800 | 0x800 |
+| `memBegin(taille, blocs, bloc, adresse)` | `blocs = ceil(taille / ESP_RAM_BLOCK)` | idem avec 0x1800 | idem avec 0x800 |
+| `memBlock(octets, n)`, `memFinish(entry)` | identiques | identiques | identiques |
+| Délais | 3000 ms (`memFinish` en ROM : 200 ms) | idem | idem (inchangés) |
+| Contenu, adresses, entrée du stub | — | inchangés | inchangés |
+
+Ordre d'intégration : PR d'observabilité (#74) d'abord, puis cette PR (empilée) ; le prochain rapport T indique la taille de bloc effective et la dernière commande RAM acquittée.

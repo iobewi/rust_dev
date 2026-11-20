@@ -512,7 +512,7 @@ export class EspEngine {
       this.baselineTransport = this.transport; this.serialBaseline = { ...this.transport?.stats };
       this.setHold(true); this.diagnosticResident = true; touched = true;
       this.setPhase('flash_read', context);
-      const { result } = await runP4UsbTrace({ loader, args, device: context.device, stubBytes, check: () => context.check(),
+      const { result } = await runP4UsbTrace({ loader, args, device: context.device, stubBytes, romOnly: this.romOnly === true, check: () => context.check(),
         report: detail => context.report?.(detail) });
       context.complete?.({ hold: true, returnConsole: false });
       return result;

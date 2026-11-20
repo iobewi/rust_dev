@@ -1,12 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {classifyRamLoadError, loadDiagnosticStub, retireDiagnosticStub, parseStubJson, sha256Hex, RAM_WINDOWS,
+import {P4_USB_OTG_RAM_BLOCK, classifyRamLoadError, loadDiagnosticStub, retireDiagnosticStub, parseStubJson, sha256Hex, RAM_WINDOWS,
   IdlabDiagnosticError, FORBIDDEN_FLASH_METHODS} from '../web/p4-stub-loader.js';
 import {IDLAB_GET_FLASH_TRACE} from '../web/p4-stub-trace.js';
 
 const b64 = bytes => Buffer.from(bytes).toString('base64');
 function stubJson(over = {}) {
-  const text = new Uint8Array(100).fill(0x13), data = new Uint8Array(40).fill(0x07);
+  const text = new Uint8Array(5000).fill(0x13), data = new Uint8Array(3000).fill(0x07);   // 3 + 2 blocks of 0x800
   return JSON.stringify({entry: 0x4ff50010, text: b64(text), text_start: 0x4ff50000,
     data: b64(data), data_start: 0x4ff60040, bss_start: 0x4ff60000, ...over});
 }
@@ -19,13 +19,14 @@ function report() {
 // A loader that records every call, so that a test can assert what was (not) done.
 // syncVals: the eight raw `val` of the fresh ESP_SYNC exchange; syncDetected: esptool's own flag after loader.sync().
 function makeLoader({chip = 'ESP32-P4', revision = 302, isStub = false, greeting = 'OHAI', probe = 'ok',
-    syncVals = null, syncDetected = null, syncError = null, memFault = null} = {}) {
+    syncVals = null, syncDetected = null, syncError = null, memFault = null, otg = true, chipBlock = 0x800} = {}) {
   const seen = {memBegin: 0, memBlock: 0, memFinish: 0};
   // memFault: {call, nth, error}: the nth (0-based) call of `call` throws `error` (a timeout, a closed port, ...)
   const maybeFail = call => { const n = seen[call]++; if (memFault && memFault.call === call && memFault.nth === n) throw memFault.error; };
   const calls = [];
   const loader = {
-    IS_STUB: isStub, ESP_RAM_BLOCK: 64, DEFAULT_TIMEOUT: 1000, calls,
+    IS_STUB: isStub, ESP_RAM_BLOCK: 0x1800, DEFAULT_TIMEOUT: 1000, calls,
+    async usesUsbOtg() { calls.push('usesUsbOtg'); if (otg instanceof Error) throw otg; return otg; },   // esptool-js 0.7.0: VID/PID (+ UARTDEV_BUF_NO fallback)
     // esptool-js 0.7.0 semantics: sync() throws on a stub; command(0x08) returns the first answer, readPacket the next ones (then throws)
     async sync() {
       calls.push('sync'); if (syncError === 'sync') throw new Error('no sync');
@@ -37,7 +38,7 @@ function makeLoader({chip = 'ESP32-P4', revision = 302, isStub = false, greeting
     },
     async readPacket() { if (!loader.pending.length) throw new Error('no data'); return [loader.pending.shift(), new Uint8Array(0)]; },
     pending: [],
-    chip: {CHIP_NAME: chip, async getChipRevision() { calls.push('getChipRevision'); return revision; }},
+    chip: {CHIP_NAME: chip, USB_RAM_BLOCK: chipBlock, async getChipRevision() { calls.push('getChipRevision'); return revision; }},
     async memBegin(...a) { calls.push(['memBegin', ...a]); maybeFail('memBegin'); },
     async memBlock(bytes, seq) { calls.push(['memBlock', bytes.length, seq]); maybeFail('memBlock'); },
     async memFinish(entry) { calls.push(['memFinish', entry]); maybeFail('memFinish'); },
@@ -54,7 +55,7 @@ function makeLoader({chip = 'ESP32-P4', revision = 302, isStub = false, greeting
 }
 const ROM = [1, 1, 1, 1, 1, 1, 1, 1], ZEROS = [0];
 async function options(json, over = {}) {
-  return {consent: true, expectedSha256: await sha256Hex(new TextEncoder().encode(json)), ...over};
+  return {consent: true, romOnly: true, expectedSha256: await sha256Hex(new TextEncoder().encode(json)), ...over};
 }
 const chipWrites = loader => loader.calls.filter(c => Array.isArray(c) && /^mem/.test(c[0]));
 
@@ -95,12 +96,12 @@ test('an invalid or out-of-RAM stub JSON is refused before any write', async () 
     stub_text_outside_iram: stubJson({text_start: RAM_WINDOWS.text.start + RAM_WINDOWS.text.length - 50}),
     stub_data_outside_dram: stubJson({data_start: RAM_WINDOWS.data.start + RAM_WINDOWS.data.length - 8}),
     stub_bss_outside_dram: stubJson({bss_start: 0x40000000}),
-    stub_entry_outside_text: stubJson({entry: 0x4ff50000 + 100}),
+    stub_entry_outside_text: stubJson({entry: 0x4ff50000 + 5000}),
     stub_json_bad_base64: stubJson({text: '***not base64***'}),
   };
   for (const [code, json] of Object.entries(cases)) {
     const loader = makeLoader();
-    const opts = {consent: true, expectedSha256: await sha256Hex(new TextEncoder().encode(json))};
+    const opts = {consent: true, romOnly: true, expectedSha256: await sha256Hex(new TextEncoder().encode(json))};
     await assert.rejects(loadDiagnosticStub(loader, json, opts), e => e.code === code, code);
     assert.equal(chipWrites(loader).length, 0, code);
   }
@@ -111,8 +112,8 @@ test('the normal path loads exactly two RAM segments, starts the entry, reads OH
   const json = stubJson(), loader = makeLoader();
   const result = await loadDiagnosticStub(loader, json, await options(json));
   assert.deepEqual(loader.calls.filter(c => Array.isArray(c) && c[0] === 'memBegin'),
-    [['memBegin', 100, 2, 64, 0x4ff50000], ['memBegin', 40, 1, 64, 0x4ff60040]]);
-  assert.deepEqual(loader.calls.filter(c => Array.isArray(c) && c[0] === 'memBlock').map(c => c.slice(1)), [[64, 0], [36, 1], [40, 0]]);
+    [['memBegin', 5000, 3, 2048, 0x4ff50000], ['memBegin', 3000, 2, 2048, 0x4ff60040]]);
+  assert.deepEqual(loader.calls.filter(c => Array.isArray(c) && c[0] === 'memBlock').map(c => c.slice(1)), [[2048, 0], [2048, 1], [904, 2], [2048, 0], [952, 1]]);
   assert.deepEqual(loader.calls.filter(c => Array.isArray(c) && c[0] === 'memFinish'), [['memFinish', 0x4ff50010]]);
   assert.equal(loader.calls.filter(c => Array.isArray(c) && c[0] === 'FORBIDDEN').length, 0);
   assert.deepEqual(loader.calls.filter(c => Array.isArray(c) && c[0] === 'checkCommand'), [['checkCommand', IDLAB_GET_FLASH_TRACE]]);
@@ -257,34 +258,36 @@ async function load(loaderOptions) {
   try { result = await loadDiagnosticStub(loader, json, {...await options(json), now: clock}); } catch (e) { error = e; }
   return {loader, error, result, json};
 }
-const step = (name, segment, extra) => ({step: name, segment, ram_block: 64, started: 1, ...extra});
+const step = (name, segment, extra) => ({step: name, segment, ram_block: 2048, started: 1, ...extra});
 
 test('success: the admission observations and one acknowledged entry per RAM command are returned with the load', async () => {
   const {result} = await load({});
   assert.deepEqual(result.admission, {sync_values: ROM, sync_count: 8, sync_zero_count: 0, sync_completed: 1, sync_stub_detected: 0, loader_stub: 0, admission_verdict: 'rom'});
   const r = result.ram_load;
-  assert.deepEqual([r.ram_block, r.acked_count, r.failed_index, r.last_acked_index], [64, 6, null, 5]);
+  assert.deepEqual([r.ram_block, r.ram_block_default, r.ram_block_source, r.usb_otg_confirmed], [2048, 0x1800, 'usb_otg_cap', 1]);
+  assert.deepEqual([r.acked_count, r.failed_index, r.last_acked_index], [8, null, 7]);
   assert.deepEqual(r.steps.map(e => [e.step, e.segment, e.block ?? null, e.blocks ?? null, e.address, e.size, e.acked, e.outcome, e.duration_ms]), [
-    ['mem_begin', 'text', null, 2, 0x4ff50000, 100, 1, 'ack', 7], ['mem_block', 'text', 0, 2, 0x4ff50000, 64, 1, 'ack', 7],
-    ['mem_block', 'text', 1, 2, 0x4ff50040, 36, 1, 'ack', 7], ['mem_begin', 'data', null, 1, 0x4ff60040, 40, 1, 'ack', 7],
-    ['mem_block', 'data', 0, 1, 0x4ff60040, 40, 1, 'ack', 7], ['mem_finish', 'entry', null, null, 0x4ff50010, 0, 1, 'ack', 7]]);
-  assert.ok(r.steps.every(e => e.started === 1 && e.ram_block === 64));
+    ['mem_begin', 'text', null, 3, 0x4ff50000, 5000, 1, 'ack', 7], ['mem_block', 'text', 0, 3, 0x4ff50000, 2048, 1, 'ack', 7],
+    ['mem_block', 'text', 1, 3, 0x4ff50800, 2048, 1, 'ack', 7], ['mem_block', 'text', 2, 3, 0x4ff51000, 904, 1, 'ack', 7],
+    ['mem_begin', 'data', null, 2, 0x4ff60040, 3000, 1, 'ack', 7], ['mem_block', 'data', 0, 2, 0x4ff60040, 2048, 1, 'ack', 7],
+    ['mem_block', 'data', 1, 2, 0x4ff60840, 952, 1, 'ack', 7], ['mem_finish', 'entry', null, null, 0x4ff50010, 0, 1, 'ack', 7]]);
+  assert.ok(r.steps.every(e => e.started === 1 && e.ram_block === 2048));
 });
 
 test('the instrumentation changes nothing on the chip: same commands, same arguments, same order, no retry', async () => {
   const {loader} = await load({});
   const commands = loader.calls.filter(c => Array.isArray(c) && /^mem/.test(c[0]));
-  assert.deepEqual(commands, [['memBegin', 100, 2, 64, 0x4ff50000], ['memBlock', 64, 0], ['memBlock', 36, 1],
-    ['memBegin', 40, 1, 64, 0x4ff60040], ['memBlock', 40, 0], ['memFinish', 0x4ff50010]]);
+  assert.deepEqual(commands, [['memBegin', 5000, 3, 2048, 0x4ff50000], ['memBlock', 2048, 0], ['memBlock', 2048, 1], ['memBlock', 904, 2],
+    ['memBegin', 3000, 2, 2048, 0x4ff60040], ['memBlock', 2048, 0], ['memBlock', 952, 1], ['memFinish', 0x4ff50010]]);
   const failed = await load({memFault: {call: 'memBlock', nth: 1, error: timeoutError()}});
   assert.equal(failed.loader.calls.filter(c => Array.isArray(c) && /^mem/.test(c[0])).length, 3, 'nothing is sent after the failure');
 });
 
 const failures = [
-  ['timeout on the first memBegin', {call: 'memBegin', nth: 0}, 0, null, [step('mem_begin', 'text', {blocks: 2, address: 0x4ff50000, size: 100, acked: 0, outcome: 'timeout', duration_ms: 7})]],
+  ['timeout on the first memBegin', {call: 'memBegin', nth: 0}, 0, null, [step('mem_begin', 'text', {blocks: 3, address: 0x4ff50000, size: 5000, acked: 0, outcome: 'timeout', duration_ms: 7})]],
   ['timeout on an intermediate memBlock', {call: 'memBlock', nth: 1}, 2, 1, null],
-  ['failure on the second memBegin', {call: 'memBegin', nth: 1}, 3, 2, null],
-  ['failure on memFinish', {call: 'memFinish', nth: 0}, 5, 4, null],
+  ['failure on the second memBegin', {call: 'memBegin', nth: 1}, 4, 3, null],
+  ['failure on memFinish', {call: 'memFinish', nth: 0}, 7, 6, null],
 ];
 for (const [name, fault, failedIndex, lastAcked, exactSteps] of failures) {
   test(`RAM load: ${name} — localised, last acknowledged command kept, session indeterminate, admission kept`, async () => {
@@ -321,19 +324,88 @@ test('the report holds typed numbers and fixed words only: no stub bytes, no fre
     assert.ok(Object.keys(e).every(k => allowed.has(k)), Object.keys(e).join());
     assert.ok(Object.values(e).every(v => Number.isInteger(v) || ['mem_begin', 'mem_block', 'mem_finish', 'text', 'data', 'entry', 'ack'].includes(v)));
   }
-  assert.ok(!JSON.stringify(result.ram_load).includes(Buffer.from(new Uint8Array(100).fill(0x13)).toString('base64')));
+  assert.ok(!JSON.stringify(result.ram_load).includes(Buffer.from(new Uint8Array(64).fill(0x13)).toString('base64').slice(0, 40)));
 });
 
 test('greeting / identification failures after the RAM load keep the complete (acknowledged) RAM report and the admission', async () => {
   const bad = await load({greeting: 'NOPE'});
   assert.equal(bad.error.code, 'diagnostic_stub_bad_greeting');
-  assert.deepEqual([bad.error.ramLoad.acked_count, bad.error.ramLoad.failed_index, bad.error.ramLoad.last_acked_index], [6, null, 5]);
+  assert.deepEqual([bad.error.ramLoad.acked_count, bad.error.ramLoad.failed_index, bad.error.ramLoad.last_acked_index], [8, null, 7]);
   assert.equal(bad.error.sessionState.admission_verdict, 'rom');
   const silent = await load({probe: 'reject'});
-  assert.equal(silent.error.code, 'diagnostic_stub_not_identified'); assert.equal(silent.error.ramLoad.acked_count, 6);
+  assert.equal(silent.error.code, 'diagnostic_stub_not_identified'); assert.equal(silent.error.ramLoad.acked_count, 8);
 });
 
 test('refusals before the RAM load carry no RAM report (nothing started)', async () => {
   const {error} = await load({isStub: true});
   assert.equal(error.ramLoad, undefined); assert.equal(error.sessionState.admission_verdict, 'stub');
+});
+
+// ---------------------------------------------------------------- USB-OTG RAM block (0x800): conditions, refusals, no extra effect
+test('ESP32-P4, ROM-only session, USB-OTG positively identified: ESP_RAM_BLOCK becomes 0x800 BEFORE the first memBegin, nothing else changes', async () => {
+  const {loader, result, error} = await load({});
+  assert.equal(error, null); assert.equal(loader.ESP_RAM_BLOCK, 0x800); assert.equal(P4_USB_OTG_RAM_BLOCK, 0x800);
+  const order = loader.calls.map(c => Array.isArray(c) ? c[0] : c);
+  assert.ok(order.indexOf('usesUsbOtg') > order.indexOf('sync_frame') && order.indexOf('usesUsbOtg') < order.indexOf('memBegin'));
+  assert.deepEqual([result.ram_load.ram_block, result.ram_load.ram_block_default, result.ram_load.ram_block_source], [0x800, 0x1800, 'usb_otg_cap']);
+});
+
+test('transport not positively identified as USB-OTG: refused before any RAM transfer, structured, block size untouched', async () => {
+  for (const otg of [false, null, 0, 'yes', new Error('no VID/PID and register read failed')]) {
+    const {loader, error} = await load({otg});
+    assert.equal(error.code, 'diagnostic_transport_unconfirmed', String(otg)); assert.equal(error.sessionIndeterminate, false);
+    assert.equal(chipWrites(loader).length, 0); assert.equal(loader.ESP_RAM_BLOCK, 0x1800, 'never assumed');
+    assert.equal(error.sessionState.admission_verdict, 'rom'); assert.equal(error.ramLoad, undefined);
+    assert.ok(!loader.calls.includes('FORBIDDEN'));
+  }
+  const noMethod = makeLoader({}); delete noMethod.usesUsbOtg; const json = stubJson();
+  await assert.rejects(loadDiagnosticStub(noMethod, json, await options(json)), e => e.code === 'diagnostic_transport_unconfirmed');
+  assert.equal(chipWrites(noMethod).length, 0);
+});
+
+test('a lost transport during the OTG check keeps its own error (not "unconfirmed")', async () => {
+  for (const lost of [Object.assign(new Error('x'), {kind: 'closed'}), Object.assign(new Error('x'), {name: 'NetworkError'})]) {
+    const {error, loader} = await load({otg: lost});
+    assert.equal(error, lost); assert.equal(chipWrites(loader).length, 0);
+  }
+});
+
+test('a library value that differs from the reviewed 0x800 is refused rather than guessed', async () => {
+  const {loader, error} = await load({chipBlock: 0x1000});
+  assert.equal(error.code, 'diagnostic_ram_block_unexpected'); assert.equal(chipWrites(loader).length, 0); assert.equal(loader.ESP_RAM_BLOCK, 0x1800);
+});
+
+test('the adaptation exists for the ROM-only session only: any other call is refused before any I/O', async () => {
+  for (const romOnly of [false, undefined, 'true', 1]) {
+    const json = stubJson(), loader = makeLoader();
+    await assert.rejects(loadDiagnosticStub(loader, json, {...await options(json), romOnly}), e => e.code === 'diagnostic_rom_only_required');
+    assert.deepEqual(loader.calls, [], 'no frame at all'); assert.equal(loader.ESP_RAM_BLOCK, 0x1800);
+  }
+});
+
+test('no RAM operation may already have started on this loader (no second attempt, no retry)', async () => {
+  const first = await load({memFault: {call: 'memBlock', nth: 0, error: timeoutError()}});
+  assert.equal(first.error.code, 'diagnostic_stub_ram_load_failed');
+  const json = stubJson(), again = first.loader, before = again.calls.length;
+  await assert.rejects(loadDiagnosticStub(again, json, await options(json)), e => e.code === 'diagnostic_ram_load_already_started');
+  assert.equal(again.calls.length, before, 'nothing sent');
+  assert.equal(again.ESP_RAM_BLOCK, 0x800);
+});
+
+test('the only write of ESP_RAM_BLOCK in the web code is the guarded adaptation (other MCUs and transports are untouched)', async () => {
+  const {readdirSync, readFileSync} = await import('node:fs');
+  const dir = new URL('../web/', import.meta.url), hits = [];
+  for (const f of readdirSync(dir).filter(f => f.endsWith('.js'))) {
+    readFileSync(new URL(f, dir), 'utf8').split('\n').forEach((line, i) => { if (/ESP_RAM_BLOCK\s*=[^=]/.test(line)) hits.push(`${f}:${i + 1}`); });
+  }
+  assert.equal(hits.length, 1); assert.match(hits[0], /^p4-stub-loader\.js:/);
+  for (const method of ['postConnect', 'powerOnFlash', 'disableWatchdogs', 'runStub', 'main', 'flashSpiAttach', 'hardReset', 'writeReg', 'detectChip', 'after', 'changeBaud'])
+    for (const f of ['p4-stub-loader.js', 'p4-session-state.js', 'p4-diagnostic.js'])
+      assert.ok(!new RegExp(`\\.${method}\\s*\\(`).test(readFileSync(new URL(f, dir), 'utf8').replace(/\/\/.*$/gm, '')), `${f} must not call .${method}()`);
+});
+
+test('another chip is refused before any frame, as before', async () => {
+  const json = stubJson(), loader = makeLoader({chip: 'ESP32-S3'});
+  await assert.rejects(loadDiagnosticStub(loader, json, await options(json)), e => e.code === 'diagnostic_stub_wrong_chip');
+  assert.deepEqual(loader.calls, []); assert.equal(loader.ESP_RAM_BLOCK, 0x1800);
 });
