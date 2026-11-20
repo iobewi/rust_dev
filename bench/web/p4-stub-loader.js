@@ -98,12 +98,23 @@ export function classifyRamLoadError(error) {
   if (error?.kind === 'partial-packet' || error?.kind === 'invalid-packet') return 'invalid';
   return 'error';
 }
+// The published list is bounded (hardware-errors.js accepts at most 32 entries, all or nothing). Beyond that, the first entries are kept
+// together with the LAST TWO (the last acknowledged command and the failing one, or the final two commands on success), and
+// `steps_omitted` counts the dropped middle entries. `failed_index` / `acked_count` keep the original numbering. The qualified
+// stub (text 8952 B + data 276 B) needs 9 commands with 0x800 blocks (6 with 0x1800): the bound is never reached by it.
+export const MAX_REPORTED_RAM_STEPS = 32;
+function boundedSteps(entries) {
+  const copy = entries.map(e => ({...e}));
+  if (copy.length <= MAX_REPORTED_RAM_STEPS) return {steps: copy, omitted: 0};
+  return {steps: [...copy.slice(0, MAX_REPORTED_RAM_STEPS - 2), ...copy.slice(-2)], omitted: copy.length - MAX_REPORTED_RAM_STEPS};
+}
 function ramLoadReport(ramBlock) {
   const entries = [];
   const view = () => {
     const acked = entries.filter(e => e.acked === 1).length;
     const failed = entries.findIndex(e => e.acked === 0);
-    return {ram_block: ramBlock, steps: entries.map(e => ({...e})), acked_count: acked, failed_index: failed >= 0 ? failed : null,
+    const {steps, omitted} = boundedSteps(entries);
+    return {ram_block: ramBlock, steps, steps_omitted: omitted, acked_count: acked, failed_index: failed >= 0 ? failed : null,
       last_acked_index: acked > 0 && entries.slice(0, acked).every(e => e.acked === 1) ? acked - 1 : null};
   };
   return {

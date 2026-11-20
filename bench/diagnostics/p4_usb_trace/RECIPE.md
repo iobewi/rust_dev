@@ -166,3 +166,5 @@ Exemple (timeout du premier `memBegin`, produit par le vrai code) :
  "ram_failed_index": 0
 }
 ```
+
+**Borne de la liste d'étapes.** `ram_steps` publie au plus 32 entrées (tout-ou-rien côté liste blanche). Le stub instrumenté qualifié (texte 8952 octets, données 276 octets) exige **9 commandes** avec des blocs de 0x800 (6 avec 0x1800) : la borne n'est jamais atteinte. Pour un stub plus long, le rapport garde les 30 premières entrées **plus les deux dernières** (dernière commande acquittée et commande fautive, ou les deux dernières commandes en cas de succès) et publie `ram_steps_omitted` ; `ram_failed_index`, `ram_acked_count` et `ram_last_acked_index` gardent la numérotation d'origine. Aucune donnée du stub, aucun texte libre.

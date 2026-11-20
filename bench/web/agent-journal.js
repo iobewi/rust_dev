@@ -36,6 +36,7 @@ export class AgentJournal {
         const where = `${last.step} ${last.segment}${Number.isInteger(last.block) ? ` bloc ${last.block + 1}/${last.blocks}` : ''}`;
         parts.push(`étape RAM : ${where} ${last.acked ? 'acquittée' : 'commencée, non acquittée'} (${last.outcome}, ${last.duration_ms} ms)`);
         if (Number.isInteger(detail.ram_acked_count)) parts.push(`${detail.ram_acked_count} étape(s) acquittée(s)`);
+        if (detail.ram_steps_omitted > 0) parts.push(`${detail.ram_steps_omitted} étape(s) intermédiaire(s) omise(s)`);
       }
       if (Array.isArray(detail.sync_values)) parts.push(`synchro : ${detail.sync_count ?? detail.sync_values.length} réponse(s), ${detail.sync_zero_count ?? 0} à zéro`);
       if (/^[a-z_]{1,40}$/.test(detail.category || '')) parts.push(`catégorie : ${detail.category}`);
