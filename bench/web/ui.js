@@ -364,6 +364,7 @@ function selectedTarget() {
   const d = info();
   if (!session || !d?.connected || boards.get(d.id) && boards.get(d.id).status !== 'connected')
     throw new Error('Connectez une carte au banc');
+  if (!Number.isInteger(d.flash_size)) throw new Error('Capacité flash inconnue : cette opération est indisponible sur cette session');
   return { device: d.id, chip: d.chip, flash_size: d.flash_size, generation: d.generation };
 }
 function selectTabs(attribute, name, panelSelector, panelPrefix) {
@@ -584,7 +585,7 @@ function renderState() {
   $('cancel').disabled = !isWorking() || !current;
   $('usb-state').textContent = portConnected ? 'connecté' : 'non connecté';
   $('card-commands').dataset.mode = local ? engine?.mode || 'off' : 'remote';
-  $('chip-info').textContent = d?.chip || '—'; $('flash-info').textContent = d?.flash_size ? `${hex(d.flash_size)} · ${d.flash_size} octets` : '—';
+  $('chip-info').textContent = d?.chip || '—'; $('flash-info').textContent = d?.flash_size ? `${hex(d.flash_size)} · ${d.flash_size} octets` : d?.flash_size_known === false ? 'capacité inconnue (JEDEC non exploitable)' : '—';
   $('rdid-info').textContent = local && localDevice.flash_id != null ? hex(localDevice.flash_id) : '—';
   $('interface-info').textContent = local ? engine?.usbSerialJtag ? 'USB Serial/JTAG' : engine?.native ? 'USB natif (OTG ou non identifié)' : engine?.provenance().transport === 'external_uart' ? 'UART externe' : 'Port série non identifié' : 'Agent du banc';
   $('loader-speed-info').textContent = local && engine ? engine.native ?

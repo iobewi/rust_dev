@@ -6,7 +6,7 @@ import time
 import uuid
 from functools import wraps
 from collections import deque
-from protocol import (CAPABILITIES, MAX_ARTIFACT, P4_TRACE, PROGRAM, Fault,
+from protocol import (CAPABILITIES, MAX_ARTIFACT, P4_TRACE, P4_TRACE_CHIP, PROGRAM, Fault,
                       binary, integer, number, require, validate_command, local_origin,
                       trigger_disarm, requires_grant)
 
@@ -90,7 +90,15 @@ class Broker:
         require(not old or not old['connected'], 'device_connected', 'Device already connected', 409)
         caps = data.get('capabilities')
         require(isinstance(caps, list) and set(caps) <= CAPABILITIES)
-        integer(data.get('flash_size'), 4096, 64 * 1024 * 1024)
+        # A ROM-only P4 session may not know its flash capacity: declared explicitly (flash_size null + flash_size_known false),
+        # never guessed. Everything else keeps the strict integer contract.
+        unknown = data.get('flash_size_known') is False
+        if unknown:
+            require(data.get('flash_size') is None, 'invalid_request', 'An unknown flash capacity is declared with flash_size null')
+            require(data.get('chip') == P4_TRACE_CHIP and set(caps) <= {'identify', 'mark', P4_TRACE}, 'invalid_request',
+                    'An unknown flash capacity is only accepted for the ROM-only ESP32-P4 session')
+        else:
+            integer(data.get('flash_size'), 4096, 64 * 1024 * 1024)
         require(isinstance(data.get('chip'), str) and 1 <= len(data['chip']) <= 32)
         origins = data.get('http_origins', [])
         require(isinstance(origins, list) and len(origins) <= 8)
@@ -110,7 +118,7 @@ class Broker:
         self.devices[device_id] = {
             'id': device_id, 'agent': agent_id, 'generation': generation, 'connected': True,
             'provenance': copy.deepcopy(provenance), 'provenance_source': 'agent_reported',
-            'http_origins': origins, 'chip': data['chip'], 'flash_size': data['flash_size'], 'capabilities': caps,
+            'http_origins': origins, 'chip': data['chip'], 'flash_size': data['flash_size'], 'flash_size_known': not unknown, 'capabilities': caps,
             'grant_until': 0, 'recovered_at': None, 'quarantined': bool(old and old['quarantined']) or data.get('hold') is True,
             'diagnostic_resident': bool(old and old.get('diagnostic_resident')),
             'events': old['events'] if old else deque(maxlen=self.max_events),

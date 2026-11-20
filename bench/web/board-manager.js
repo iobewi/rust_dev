@@ -96,7 +96,10 @@ export class BoardManager {
     try {
       const identity = await hardware.identity();
       checkCurrent();
-      if (expectedIdentity && ['chip', 'flash_size', 'flash_id', 'mac'].some(k => identity[k] !== expectedIdentity[k])) {
+      // chip and MAC are always compared. Capacity and JEDEC id only when BOTH sides were measured: an unknown capacity
+      // (ROM seule) is neither a change of board nor a value to inherit from the remembered identity.
+      const comparable = k => k === 'chip' || k === 'mac' || (identity[k] != null && expectedIdentity[k] != null);
+      if (expectedIdentity && ['chip', 'flash_size', 'flash_id', 'mac'].filter(comparable).some(k => identity[k] !== expectedIdentity[k])) {
         const error = new Error('physical_identity_changed');
         error.code = 'physical_identity_changed';
         throw error;
