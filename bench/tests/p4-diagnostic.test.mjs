@@ -513,3 +513,56 @@ test('the published report accepts only well-formed raw observations', () => {
     assert.ok(!('sync_values' in o) && !('md5_shape' in o), JSON.stringify(bad));
   }
 });
+
+// ------------------------------------------------------------------ recovery proof = the same fresh ROM/stub detection
+async function recoveryWorld(arrange) {
+  const { Agent } = await import('../web/agent.js'), world = chipWorld(), r = await connect(world, { romOnly: true });
+  r.engine.setHold(true); r.engine.diagnosticResident = true;
+  const sim = world.loaders[0]; sim.calls.length = 0; world.detectModes.length = 0; arrange(sim, world);
+  const sent = [], agent = Object.create(Agent.prototype);
+  Object.assign(agent, { engine: r.engine, active: null, awaitingResult: null, generation: 'g', event: (n, d) => sent.push([n, d]) });
+  const outcome = await agent.recover().then(() => null, e => e);
+  const kept = r.engine.hold === true && r.engine.diagnosticResident === true && r.closes() === 0;
+  return { sim, sent, outcome, kept, world };
+}
+const onlySyncTraffic = sim => sim.calls.every(c => ['sync', 'sync_frame', 'ack'].includes(Array.isArray(c) ? c[0] : c)) && writes(sim).length === 0;
+
+test('recovery proof: ROM confirmed by every index is the only accepted verdict, with no reset, RAM load or NOR write', async () => {
+  const x = await recoveryWorld(() => {});
+  assert.equal(x.outcome, null); assert.deepEqual(x.sent, [['recover', { rom_verified: true }]]);
+  assert.ok(onlySyncTraffic(x.sim)); assert.deepEqual(x.world.detectModes, [], 'no new chip detection / reset'); assert.equal(x.world.runStubCalls, 0);
+});
+
+test('recovery proof: an active stub (one zero answer, sync incomplete) is refused explicitly, quarantine kept, nothing sent', async () => {
+  const x = await recoveryWorld((sim, world) => { world.stubRunning = true; sim.sync = async () => { sim.syncStubDetected = false; throw new Error('invalid response'); }; });
+  assert.equal(x.outcome.code, 'diagnostic_stub_still_running');
+  const out = hardwareError(x.outcome);
+  assert.deepEqual([out.sync_values, out.sync_count, out.sync_completed, out.phase], [[0], 1, 0, 'control']);
+  assert.deepEqual(x.sent, []); assert.ok(x.kept); assert.ok(onlySyncTraffic(x.sim));
+});
+
+test('recovery proof: contradictory answers are refused as indeterminate, never as a proof', async () => {
+  for (const [name, arrange] of [
+    ['mixed values', sim => { sim.syncAnswers = () => [1, 0, 1, 1, 1, 1, 1, 1]; }],
+    ['partial ROM answers', sim => { sim.syncAnswers = () => [1, 1, 1]; }],
+    ['heuristic says stub, exchange says ROM', sim => { const s = sim.sync; sim.sync = async () => { await s(); sim.syncStubDetected = true; }; }],
+    ['heuristic says ROM, exchange says stub', (sim, world) => { sim.syncAnswers = () => [0]; }],
+  ]) {
+    const x = await recoveryWorld(arrange);
+    assert.equal(x.outcome.code, 'diagnostic_recovery_state_indeterminate', name);
+    assert.equal(hardwareError(x.outcome).phase, 'control'); assert.ok(diagnostic(x.outcome.code).length > 20);
+    assert.deepEqual(x.sent, [], name); assert.ok(x.kept, name); assert.ok(onlySyncTraffic(x.sim), name);
+  }
+});
+
+test('recovery proof: an interrupted communication is a structured failure, a lost transport keeps its own code', async () => {
+  let x = await recoveryWorld(sim => { sim.command = async () => { throw new Error('serial lost TOKEN=hunter2'); }; });
+  assert.equal(x.outcome.code, 'diagnostic_recovery_sync_failed'); assert.ok(!JSON.stringify(hardwareError(x.outcome)).includes('hunter2'));
+  assert.deepEqual(x.sent, []); assert.ok(x.kept);
+  x = await recoveryWorld(sim => { sim.command = async () => { throw Object.assign(new Error('closed'), { kind: 'closed' }); }; });
+  assert.equal(hardwareError(x.outcome).code, 'serial_disconnected'); assert.deepEqual(x.sent, []); assert.ok(x.kept);
+  x = await recoveryWorld(sim => { sim.command = async () => { throw Object.assign(new Error('x'), { name: 'NetworkError' }); }; });
+  assert.equal(hardwareError(x.outcome, true).code, 'serial_disconnected'); assert.ok(x.kept);
+  x = await recoveryWorld(sim => { sim.syncAnswers = () => [NaN]; });                      // an invalid value is a failure, not a zero
+  assert.equal(x.outcome.code, 'diagnostic_recovery_sync_failed'); assert.ok(x.kept);
+});

@@ -69,3 +69,10 @@ export async function observeSessionState(loader, { md5Probe } = {}) {
   const md5 = md5Probe ? classifyMd5Answer(await md5Probe(loader)) : undefined;
   return { isStub: loader.IS_STUB === true, syncCompleted, syncStubDetected: loader.syncStubDetected === true, syncValues, md5 };
 }
+
+// Allowlisted raw observations published with a refusal (see hardware-errors.js); shared by the admission and the recovery proof.
+export function sessionStateReport(evidence, judged) {
+  return { sync_values: evidence.syncValues, sync_count: evidence.syncValues.length, sync_zero_count: judged.zero_count,
+    sync_completed: evidence.syncCompleted ? 1 : 0, sync_stub_detected: evidence.syncStubDetected ? 1 : 0, loader_stub: evidence.isStub ? 1 : 0,
+    ...(evidence.md5 ? { md5_shape: evidence.md5 } : {}) };
+}

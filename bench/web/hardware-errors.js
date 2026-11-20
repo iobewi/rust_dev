@@ -53,6 +53,8 @@ export const diagnostic = code => ({
   diagnostic_stub_not_identified: 'Le stub diagnostique n’a pas été identifié : état de la session indéterminé.',
   diagnostic_consent_invalid: 'Consentement du diagnostic absent ou ne correspondant pas à la carte et au stub.',
   diagnostic_parameter_not_allowed: 'Paramètre du diagnostic différent de la valeur figée.',
+  diagnostic_recovery_state_indeterminate: 'Indices ROM/stub contradictoires ou incomplets : le retour en ROM n’est pas démontré ; la carte reste sous quarantaine.',
+  diagnostic_recovery_sync_failed: 'Synchronisation de preuve impossible : le retour en ROM n’est pas démontré ; la carte reste sous quarantaine.',
   diagnostic_stub_still_running: 'Un stub tourne encore : le retour en ROM n’est pas démontré.',
   diagnostic_rom_only_required: 'Le diagnostic exige une connexion « ROM seule » (option avancée de connexion).',
   diagnostic_rom_only_session: 'Session « ROM seule » : seules l’identification, les repères et le diagnostic P4 sont disponibles.',

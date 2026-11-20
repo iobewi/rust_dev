@@ -6,7 +6,7 @@
 // it never writes, erases or configures the NOR flash, never resets the chip, never retries.
 //
 // Every refusal below happens BEFORE the first byte is sent to the chip (the admission only exchanges sync frames).
-import {observeSessionState, judgeSessionState} from './p4-session-state.js';
+import {observeSessionState, judgeSessionState, sessionStateReport} from './p4-session-state.js';
 import {decodeTraceReport, IDLAB_GET_FLASH_TRACE} from './p4-stub-trace.js';
 
 export const DIAGNOSTIC_STUB_CHIP = 'ESP32-P4';
@@ -81,8 +81,7 @@ async function admitRomSession(loader, options) {
       sessionState: {is_stub: loader.IS_STUB === true ? 1 : 0}});
   }
   const judged = judgeSessionState(evidence);
-  const sessionState = {sync_values: evidence.syncValues, sync_count: evidence.syncValues.length, sync_zero_count: judged.zero_count,
-    sync_completed: evidence.syncCompleted ? 1 : 0, sync_stub_detected: evidence.syncStubDetected ? 1 : 0, loader_stub: evidence.isStub ? 1 : 0, ...(evidence.md5 ? {md5_shape: evidence.md5} : {})};
+  const sessionState = sessionStateReport(evidence, judged);
   if (judged.verdict === 'rom') return judged;
   throw new IdlabDiagnosticError(judged.verdict === 'stub' ? 'diagnostic_stub_reported_running' : 'diagnostic_session_state_indeterminate',
     {sessionState});
