@@ -87,7 +87,7 @@ test('greeting failure does not send PING or retry RAM loading', async () => {
 test('wrong second PONG blocks completion without a third PING', async () => {
   const loader = fake({fault: 'bad_pong'});
   await assert.rejects(runP4UsbBringup({loader, args: args(), device, stubBytes: bytes, romOnly: true}),
-    e => e.indeterminate === true && e.code === 'bringup_unexpected_pong');
+    e => e.indeterminate === true && e.code === 'diagnostic_bringup_unexpected_pong');
   assert.equal(loader.calls.filter(x => Array.isArray(x) && x[0] === 'write').length, 2);
   assert.equal(loader.calls.filter(x => x === 'memFinish').length, 1);
 });
