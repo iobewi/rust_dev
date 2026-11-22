@@ -14,6 +14,7 @@ MAX_UART = 16384
 # with it. It is NOT a flash read: it needs the programming scope, the programming consent AND its own
 # consent bound to the board, the stub SHA-256 and the region. First version, fixed parameters.
 P4_TRACE = 'diagnostic.p4_usb_trace'
+P4_BRINGUP = 'diagnostic.p4_usb_bringup'
 P4_TRACE_CHIP = 'esp32p4'
 P4_TRACE_ADDRESS, P4_TRACE_SIZE, P4_TRACE_PACKET = 0x8000, 1024 * 1024, 4096
 P4_TRACE_CPU_HZ = 200_000_000   # assumed from the stub code, NOT measured: recorded with the operation
@@ -22,8 +23,8 @@ P4_STUB_IRAM, P4_STUB_DRAM = (0x4FF50000, 0x4500), (0x4FF60000, 0x18000)
 P4_STUB_KEYS = {'entry', 'text', 'text_start', 'data', 'data_start', 'bss_start'}
 CAPABILITIES = {'identify', 'reset', 'partitions', 'flash.read', 'flash.write', 'flash.erase',
                 'uart.write', 'uart.configure', 'console', 'io0', 'boot.download', 'mark', 'trigger', 'http.request',
-                P4_TRACE}
-PROGRAM = {'flash.write', 'flash.erase', P4_TRACE}
+                P4_TRACE, P4_BRINGUP}
+PROGRAM = {'flash.write', 'flash.erase', P4_TRACE, P4_BRINGUP}
 PRIVILEGED = PROGRAM | {'uart.write', 'io0', 'boot.download', 'trigger', 'http.request'}
 
 
@@ -131,7 +132,30 @@ def region(address, size, capacity):
     require(address + size <= capacity, 'flash_bounds', 'Region exceeds flash capacity')
 
 
-def validate_command(name, args, device, artifacts, p4_stub_allowlist=frozenset()):
+def validate_p4_usb_bringup(args, device, artifacts, allowlist=frozenset()):
+    """Fixed RAM-only protocol: two PING/PONG exchanges, never flash commands."""
+    require(device['chip'] == P4_TRACE_CHIP, 'diagnostic_chip_unsupported', 'ESP32-P4 only')
+    require((device.get('provenance') or {}).get('transport') == 'native_usb_other',
+            'diagnostic_transport_unsupported', 'Native USB OTG required')
+    require(args.get('chip') == P4_TRACE_CHIP and args.get('scenario') == 'ohai_ping2',
+            'diagnostic_parameter_not_allowed', 'Fixed scenario required')
+    sha = args.get('stub_sha256')
+    require(isinstance(sha, str) and re.fullmatch(r'[0-9a-f]{64}', sha),
+            'diagnostic_stub_sha256_invalid', 'SHA-256 required')
+    key = args.get('stub_artifact')
+    artifact = artifacts.get(key) if isinstance(key, str) else None
+    require(artifact is not None, 'artifact_missing', 'Upload candidate JSON first')
+    require(artifact['sha256'] == sha, 'digest_mismatch', 'SHA mismatch')
+    require(sha in allowlist, 'diagnostic_stub_not_qualified', 'Candidate not allowlisted', 403)
+    require(1 <= artifact['size'] <= P4_STUB_MAX, 'diagnostic_stub_invalid', 'Unexpected candidate size')
+    validate_p4_stub_json(artifact['data'])
+    expected = {'scenario': P4_BRINGUP, 'device': device['id'], 'stub_sha256': sha,
+                'ram_code_execution': True, 'rom_reset_may_be_required': True}
+    require(strict_equal(args.get('consent'), expected), 'diagnostic_consent_invalid',
+            'Consent must name the board, candidate and RAM execution', 403)
+
+
+def validate_command(name, args, device, artifacts, p4_stub_allowlist=frozenset(), p4_bringup_allowlist=frozenset()):
     require(name in CAPABILITIES and name in device['capabilities'], 'unsupported', 'Unsupported command')
     require(isinstance(args, dict))
     schemas = {
@@ -142,6 +166,7 @@ def validate_command(name, args, device, artifacts, p4_stub_allowlist=frozenset(
         'http.request': {'url', 'method', 'body', 'timeout_ms'},
         'mark': {'label'}, 'trigger': {'data', 'action', 'delay_ms', 'expires_ms'},
         P4_TRACE: {'chip', 'stub_artifact', 'stub_sha256', 'address', 'size', 'packet_size', 'cpu_hz', 'consent'},
+        P4_BRINGUP: {'chip', 'stub_artifact', 'stub_sha256', 'scenario', 'consent'},
     }
     require(not (args.keys() - schemas[name]), message='Unknown command fields')
     for key in ('erase', 'return_console'):
@@ -172,6 +197,8 @@ def validate_command(name, args, device, artifacts, p4_stub_allowlist=frozenset(
                 'chip_mismatch', 'Expected chip family must match the device')
     if name == P4_TRACE:
         validate_p4_usb_trace(args, device, artifacts, p4_stub_allowlist)
+    if name == P4_BRINGUP:
+        validate_p4_usb_bringup(args, device, artifacts, p4_bringup_allowlist)
     if name == 'flash.write':
         images = args.get('images')
         require(isinstance(images, list) and 1 <= len(images) <= 16)
