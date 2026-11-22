@@ -168,7 +168,8 @@ export async function loadDiagnosticStub(loader, stubJsonText, options = {}) {
   if (loader?.chip?.CHIP_NAME !== DIAGNOSTIC_STUB_CHIP) throw new IdlabDiagnosticError('diagnostic_stub_wrong_chip');
   const admission = await admitRomSession(loader, options);
   const revision = await loader.chip.getChipRevision(loader);  // read-only eFuse reads
-  if (!Number.isInteger(revision) || revision < MIN_CHIP_REVISION)
+  const minRevision = options.protocol === 'bringup' ? 302 : MIN_CHIP_REVISION;
+  if (!Number.isInteger(revision) || revision < minRevision)
     throw new IdlabDiagnosticError('diagnostic_stub_unsupported_chip_revision', {detail: revision});
   const {json, decodedText, decodedData} = parseStubJson(stubJsonText);
 
@@ -179,19 +180,23 @@ export async function loadDiagnosticStub(loader, stubJsonText, options = {}) {
   const now = options.now ?? (() => performance.now());
   const steps = ramLoadReport(loader.ESP_RAM_BLOCK, adaptation);
   const touched = (code, detail) => new IdlabDiagnosticError(code, {chipTouched: true, detail, sessionState: admission, ramLoad: steps.snapshot()});
+  // The caller-provided guard is evaluated immediately before EACH ROM command.
+  // An expired reservation must never authorize subsequent MEM_DATA or MEM_END.
+  const guard = options.check ?? (() => {});
   try {
     for (const [segment, bytes, start] of [['text', decodedText, json.text_start], ['data', decodedData, json.data_start]]) {
       const block = loader.ESP_RAM_BLOCK;
       const blocks = Math.floor((bytes.length + block - 1) / block);
       await steps.run({step: 'mem_begin', segment, blocks, address: start, size: bytes.length}, now,
-        () => loader.memBegin(bytes.length, blocks, block, start));
+        () => { guard(); return loader.memBegin(bytes.length, blocks, block, start); });
       for (let seq = 0; seq < blocks; seq++) {
         const chunk = bytes.slice(seq * block, (seq + 1) * block);
         await steps.run({step: 'mem_block', segment, block: seq, blocks, address: start + seq * block, size: chunk.length}, now,
-          () => loader.memBlock(chunk, seq));
+          () => { guard(); return loader.memBlock(chunk, seq); });
       }
     }
-    await steps.run({step: 'mem_finish', segment: 'entry', address: json.entry, size: 0}, now, () => loader.memFinish(json.entry));
+    await steps.run({step: 'mem_finish', segment: 'entry', address: json.entry, size: 0}, now,
+      () => { guard(); return loader.memFinish(json.entry); });
   } catch (error) {
     throw touched('diagnostic_stub_ram_load_failed', String(error?.message ?? error));
   }
