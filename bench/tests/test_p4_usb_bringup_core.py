@@ -49,15 +49,15 @@ class P4BringupBrokerTests(unittest.TestCase):
         self.assertEqual(err.exception.code, code)
 
     def test_consent_sha_allowlist_and_schema(self):
-        op = self.submit()
-        self.assertEqual(op['state'], 'queued')
-        self.assertIn(self.artifact['id'], self.b.operations[op['id']]['artifact_ids'])
         a = self.args(); a['consent'] = {**a['consent'], 'device': 'other'}
         self.refused('diagnostic_consent_invalid', args=a)
         a = self.args(); a['scenario'] = 'read_flash'
         self.refused('diagnostic_parameter_not_allowed', args=a)
         a = self.args(); a['offset'] = 0x8000
         self.refused('invalid_request', args=a)
+        op = self.submit()
+        self.assertEqual(op['state'], 'queued')
+        self.assertIn(self.artifact['id'], self.b.operations[op['id']]['artifact_ids'])
 
     def test_qualified_hash_and_program_consent_required(self):
         self.b.p4_bringup_allowlist = frozenset()
