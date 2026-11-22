@@ -45,6 +45,7 @@ export async function runP4UsbBringup({
   } catch (error) {
     // Local refusal: no RAM write.
     error.indeterminate = false;
+    error.diagnostic = {category: 'local_validation', ram_load: 'not_started', phase: 'diagnostic_stub_load'};
     throw error;
   }
 
@@ -62,7 +63,7 @@ export async function runP4UsbBringup({
       // BenchTransport adds/removes SLIP. Do not add delimiters here.
       await loader.transport.write(REQUEST);
       const reply = await loader.transport.read(3000);
-      if (!equals(reply, RESPONSE)) throw new HardwareError('bringup_unexpected_pong');
+      if (!equals(reply, RESPONSE)) throw new HardwareError('diagnostic_bringup_unexpected_pong');
       exchanges.push({index, request: 'PING', response: 'PONG', passed: true});
       check();
     }
@@ -74,6 +75,11 @@ export async function runP4UsbBringup({
     // Loader differentiates safe preflight refusals from an uncertain
     // partial RAM upload. Never retry or automatically release the session.
     error.indeterminate = started && error.sessionIndeterminate !== false;
+    error.diagnostic = {
+      phase: loaded ? 'diagnostic_read' : 'diagnostic_stub_load',
+      category: !error.indeterminate ? 'refused_before_load' : loaded ? 'stream_failed' : 'ram_load_failed',
+      ram_load: loaded || error.indeterminate ? 'started' : 'not_started',
+    };
     throw error;
   }
 }
