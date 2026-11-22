@@ -8,6 +8,7 @@ import { effectiveLoaderBaud } from './loader-settings.js';
 import { BenchClient } from './api-client.js';
 import { b64, unb64, manifestPlan, sha256 } from './protocol.js';
 import { P4_TRACE, P4_FIXED, expectedConsent } from './p4-diagnostic.js';
+import { P4_BRINGUP, expectedBringupConsent } from './p4-bringup.js';
 import { ConsoleBuffer } from './console-buffer.js';
 import { address, hex, flashPlan, displayChip, targetFor } from './ui-model.js';
 
@@ -16,7 +17,7 @@ document.title = 'IDLab — IOBEWI Device Lab';
 const terminal = new Set(['completed', 'failed', 'expired', 'cancelled', 'indeterminate']);
 const safeCommands = new Set(['identify', 'partitions', 'flash.read', 'mark']);
 const actions = { 'try-partition-address': 'partitions', read: 'flash.read', write: 'flash.write', erase: 'flash.erase', send: 'uart.write',
-  configure: 'uart.configure', 'p4-run': P4_TRACE, io0: 'io0', mark: 'mark', trigger: 'trigger', disarm: 'trigger', http: 'http.request' };
+  configure: 'uart.configure', 'p4-run': P4_TRACE, 'p4-bringup-run': P4_BRINGUP, io0: 'io0', mark: 'mark', trigger: 'trigger', disarm: 'trigger', http: 'http.request' };
 let usbBusy = false, usbDisconnecting = false;
 let agent, engine, localDevice, portConnected = false, current;
 const inFlight = new Map();
@@ -576,6 +577,7 @@ function renderState() {
       command === 'reset' && local && engine?.mode !== 'console';
   });
   renderP4Diagnostic(d, capability.has(P4_TRACE));
+  renderP4Bringup(capability.has(P4_BRINGUP));
   $('partition-suggestion').hidden = partitionSuggestions.get(selected()) !== d?.generation || !d?.generation || Number($('partition-address').value) !== 0x8000;
   $('devices').disabled = false;
   // A logical ID cannot change while its port is connected or automatic reconnection owns it.
@@ -955,6 +957,14 @@ $('flash-reader').addEventListener('change', updateFlashReadControls);
 updateFlashReadControls();
 // ---- Diagnostic USB OTG P4 (expérimental). Visible only for a compatible board; the consent is an explicit, separate action.
 let p4Stub = null;
+let p4Bringup = null;
+function renderP4Bringup(offered) {
+  $('p4-bringup').hidden = !offered;
+  if (!offered) return;
+  const stub = p4Bringup?.device === selected() ? p4Bringup : null;
+  $('p4-bringup-file-state').textContent = stub ? `${stub.name} · ${stub.sha256.slice(0, 12)}…` : 'Aucun candidat';
+  $('p4-bringup-run').disabled = $('p4-bringup-run').disabled || !stub || !$('p4-bringup-consent').checked;
+}
 function renderP4Diagnostic(d, offered) {
   $('p4-diagnostic').hidden = !offered;
   if (!offered) return;
@@ -985,6 +995,29 @@ hook('p4-run', async () => {
   $('p4-state').textContent = 'Diagnostic lancé — ne débranchez pas la carte';
   const op = await submit(P4_TRACE, args, true);
   $('p4-state').textContent = `Terminé : ${op.state}. La carte reste sous contrôle ; récupération locale requise.`;
+});
+$('p4-bringup-consent').addEventListener('change', () => renderState());
+$('p4-bringup-file').addEventListener('change', safely(async () => {
+  const file = $('p4-bringup-file').files[0];
+  p4Bringup = null;
+  if (file) {
+    if (!file.size || file.size > 64 * 1024) throw new Error('Candidat RAM invalide ou trop volumineux');
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    const digest = await sha256(bytes), artifact = await api().upload(bytes);
+    p4Bringup = {device: selected(), name: file.name, sha256: digest, artifact: artifact.id};
+  }
+  $('p4-bringup-consent').checked = false;
+  renderState();
+}));
+hook('p4-bringup-run', async () => {
+  const stub = p4Bringup?.device === selected() ? p4Bringup : null;
+  if (!stub || !$('p4-bringup-consent').checked) throw new Error('Candidat et consentement dédiés requis');
+  const args = {chip: 'esp32p4', stub_artifact: stub.artifact, stub_sha256: stub.sha256,
+    scenario: 'ohai_ping2', consent: expectedBringupConsent(selected(), stub.sha256)};
+  $('p4-bringup-consent').checked = false;
+  $('p4-bringup-state').textContent = 'Bring-up en cours — ne débranchez pas la carte';
+  const op = await submit(P4_BRINGUP, args, true);
+  $('p4-bringup-state').textContent = `Résultat : ${op.state}. Reset externe et récupération locale requis.`;
 });
 hook('read', () => submit('flash.read',
   flashReadArgs(address($('address').value), address($('size').value))));
