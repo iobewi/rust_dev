@@ -54,7 +54,7 @@ export async function runP4UsbBringup({
     check(); report({phase: 'ram_load'});
     started = true;
     loaded = await loadDiagnosticStub(loader, stubText, {
-      consent: true, expectedSha256: args.stub_sha256, romOnly, protocol: 'bringup',
+      consent: true, expectedSha256: args.stub_sha256, romOnly, protocol: 'bringup', check,
     });
     check();
     const exchanges = [];
