@@ -958,12 +958,27 @@ updateFlashReadControls();
 // ---- Diagnostic USB OTG P4 (expérimental). Visible only for a compatible board; the consent is an explicit, separate action.
 let p4Stub = null;
 let p4Bringup = null;
+let p4BringupConsent = null;
+function bringupSelection() {
+  const target = selectedTarget(false);
+  return {device: target.device, generation: target.generation};
+}
+function bringupMatches(stub, target) {
+  return Boolean(stub && target && stub.device === target.device &&
+    stub.generation === target.generation && stub.sha256);
+}
 function renderP4Bringup(offered) {
   $('p4-bringup').hidden = !offered;
   if (!offered) return;
-  const stub = p4Bringup?.device === selected() ? p4Bringup : null;
-  $('p4-bringup-file-state').textContent = stub ? `${stub.name} · ${stub.sha256.slice(0, 12)}…` : 'Aucun candidat';
-  $('p4-bringup-run').disabled = $('p4-bringup-run').disabled || !stub || !$('p4-bringup-consent').checked;
+  const target = {device: selected(), generation: info()?.generation};
+  const stub = bringupMatches(p4Bringup, target) ? p4Bringup : null;
+  const consent = p4BringupConsent && stub &&
+    p4BringupConsent.device === target.device && p4BringupConsent.generation === target.generation &&
+    p4BringupConsent.sha256 === stub.sha256;
+  $('p4-bringup-file-state').textContent = stub ? `${stub.name} · ${stub.sha256.slice(0, 12)}…` : 'Aucun candidat pour cette session';
+  // A checked box belonging to a previous generation is never valid consent.
+  if (!consent) $('p4-bringup-consent').checked = false;
+  $('p4-bringup-run').disabled = $('p4-bringup-run').disabled || !stub || !consent;
 }
 function renderP4Diagnostic(d, offered) {
   $('p4-diagnostic').hidden = !offered;
@@ -996,25 +1011,43 @@ hook('p4-run', async () => {
   const op = await submit(P4_TRACE, args, true);
   $('p4-state').textContent = `Terminé : ${op.state}. La carte reste sous contrôle ; récupération locale requise.`;
 });
-$('p4-bringup-consent').addEventListener('change', () => renderState());
+$('p4-bringup-consent').addEventListener('change', () => {
+  p4BringupConsent = null;
+  if ($('p4-bringup-consent').checked) {
+    const target = bringupSelection();
+    if (bringupMatches(p4Bringup, target)) p4BringupConsent = {...target, sha256: p4Bringup.sha256};
+    else $('p4-bringup-consent').checked = false;
+  }
+  renderState();
+});
 $('p4-bringup-file').addEventListener('change', safely(async () => {
   const file = $('p4-bringup-file').files[0];
+  const target = bringupSelection();
   p4Bringup = null;
+  p4BringupConsent = null;
+  $('p4-bringup-consent').checked = false;
   if (file) {
     if (!file.size || file.size > 64 * 1024) throw new Error('Candidat RAM invalide ou trop volumineux');
     const bytes = new Uint8Array(await file.arrayBuffer());
     const digest = await sha256(bytes), artifact = await api().upload(bytes);
-    p4Bringup = {device: selected(), name: file.name, sha256: digest, artifact: artifact.id};
+    const currentTarget = bringupSelection();
+    if (target.device !== currentTarget.device || target.generation !== currentTarget.generation)
+      throw new Error('La session a changé pendant le téléversement : sélectionnez de nouveau le candidat');
+    p4Bringup = {...target, name: file.name, sha256: digest, artifact: artifact.id};
   }
-  $('p4-bringup-consent').checked = false;
   renderState();
 }));
 hook('p4-bringup-run', async () => {
-  const stub = p4Bringup?.device === selected() ? p4Bringup : null;
-  if (!stub || !$('p4-bringup-consent').checked) throw new Error('Candidat et consentement dédiés requis');
+  const target = bringupSelection();
+  const stub = bringupMatches(p4Bringup, target) ? p4Bringup : null;
+  if (!stub || !p4BringupConsent || !$('p4-bringup-consent').checked ||
+      p4BringupConsent.device !== target.device || p4BringupConsent.generation !== target.generation ||
+      p4BringupConsent.sha256 !== stub.sha256)
+    throw new Error('Candidat et consentement de la session courante requis');
   const args = {chip: 'esp32p4', stub_artifact: stub.artifact, stub_sha256: stub.sha256,
-    scenario: 'ohai_ping2', consent: expectedBringupConsent(selected(), stub.sha256)};
+    scenario: 'ohai_ping2', consent: expectedBringupConsent(target.device, stub.sha256)};
   $('p4-bringup-consent').checked = false;
+  p4BringupConsent = null;
   $('p4-bringup-state').textContent = 'Bring-up en cours — ne débranchez pas la carte';
   const op = await submit(P4_BRINGUP, args, true);
   $('p4-bringup-state').textContent = `Résultat : ${op.state}. Reset externe et récupération locale requis.`;
