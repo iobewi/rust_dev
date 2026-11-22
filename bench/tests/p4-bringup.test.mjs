@@ -13,12 +13,12 @@ const device = {id: 'p4', chip: 'esp32p4'};
 const args = () => ({chip: 'esp32p4', stub_artifact: 'artifact',
   stub_sha256: sha, scenario: 'ohai_ping2', consent: expectedBringupConsent('p4', sha)});
 
-function fake({fault} = {}) {
+function fake({fault, revision = 302} = {}) {
   const calls = [];
   let count = 0;
   const loader = {
     IS_STUB: false, ESP_RAM_BLOCK: 0x1800, DEFAULT_TIMEOUT: 1000, calls,
-    chip: {CHIP_NAME: 'ESP32-P4', USB_RAM_BLOCK: 0x800, getChipRevision: async () => 302},
+    chip: {CHIP_NAME: 'ESP32-P4', USB_RAM_BLOCK: 0x800, getChipRevision: async () => revision},
     usesUsbOtg: async () => true,
     sync: async () => {loader.syncStubDetected = false; calls.push('sync');},
     pending: [],
@@ -98,4 +98,38 @@ test('lost ROM RAM transfer remains indeterminate, never retried', async () => {
     e => e.indeterminate === true);
   assert.equal(loader.calls.filter(x => x === 'memFinish').length, 0);
   assert.equal(loader.calls.filter(x => x === 'memBlock').length, 1);
+});
+
+test('bring-up rejects P4 revision 3.1 before the first MEM_BEGIN', async () => {
+  const loader = fake({revision: 301});
+  await assert.rejects(runP4UsbBringup({
+    loader, args: args(), device, stubBytes: bytes, romOnly: true,
+  }), e => e.code === 'diagnostic_stub_unsupported_chip_revision' && e.indeterminate === false);
+  assert.equal(loader.calls.filter(x => /^mem/.test(String(x))).length, 0);
+});
+
+test('expiration after first MEM_BEGIN prevents MEM_DATA and MEM_END', async () => {
+  const loader = fake();
+  let live = true;
+  loader.memBegin = async () => { loader.calls.push('memBegin'); live = false; };
+  await assert.rejects(runP4UsbBringup({
+    loader, args: args(), device, stubBytes: bytes, romOnly: true,
+    check: () => { if (!live) throw Object.assign(new Error('lease expired'), {code: 'reservation_expired'}); },
+  }), e => e.indeterminate === true);
+  assert.equal(loader.calls.filter(x => x === 'memBegin').length, 1);
+  assert.equal(loader.calls.filter(x => x === 'memBlock').length, 0);
+  assert.equal(loader.calls.filter(x => x === 'memFinish').length, 0);
+});
+
+test('expiration directly before MEM_END refuses candidate execution', async () => {
+  const loader = fake();
+  let live = true;
+  loader.memBlock = async () => { loader.calls.push('memBlock'); live = false; };
+  await assert.rejects(runP4UsbBringup({
+    loader, args: args(), device, stubBytes: bytes, romOnly: true,
+    check: () => { if (!live) throw Object.assign(new Error('lease expired'), {code: 'reservation_expired'}); },
+  }), e => e.indeterminate === true);
+  assert.equal(loader.calls.filter(x => x === 'memBegin').length, 1);
+  assert.equal(loader.calls.filter(x => x === 'memBlock').length, 1);
+  assert.equal(loader.calls.filter(x => x === 'memFinish').length, 0);
 });
