@@ -158,6 +158,7 @@ async function adaptRamBlock(loader, admission) {
 //   options.consent         must be exactly true (operator's explicit consent for THIS binary)
 //   options.expectedSha256  SHA-256 (hex) of the stub JSON text that was reviewed and qualified
 export async function loadDiagnosticStub(loader, stubJsonText, options = {}) {
+  if (options.protocol !== undefined && !['trace', 'bringup'].includes(options.protocol)) throw new IdlabDiagnosticError('diagnostic_parameter_not_allowed');
   if (options.consent !== true) throw new IdlabDiagnosticError('diagnostic_stub_consent_missing');
   if (!/^[0-9a-f]{64}$/.test(options.expectedSha256 ?? '')) throw new IdlabDiagnosticError('diagnostic_stub_sha256_missing');
   if (options.romOnly !== true) throw new IdlabDiagnosticError('diagnostic_rom_only_required');   // the adaptation below exists for the ROM-only session only
@@ -199,16 +200,22 @@ export async function loadDiagnosticStub(loader, stubJsonText, options = {}) {
   catch (error) { throw touched('diagnostic_stub_no_greeting', String(error?.message ?? error)); }
   if (greeting !== 'OHAI') throw touched('diagnostic_stub_bad_greeting', greeting);
   loader.IS_STUB = true;
-  loader.__idlabTraceStub = false;  // not yet identified
-  try {
-    // A stock stub rejects the diagnostic opcode: the flag is only set after a valid IDT1 answer.
-    decodeTraceReport(await loader.checkCommand('IDLab trace probe', IDLAB_GET_FLASH_TRACE,
-      new Uint8Array(0), undefined, 64, 3000));
-  } catch (error) {
-    throw touched('diagnostic_stub_not_identified', String(error?.message ?? error));
+  if (options.protocol === 'bringup') {
+    // The new candidate supports only OHAI + PING/PONG, never legacy IDT1.
+    loader.__idlabBringupStub = true;
+    loader.__idlabBringupStubSha256 = actual;
+  } else {
+    loader.__idlabTraceStub = false;  // not yet identified
+    try {
+      // A stock stub rejects the diagnostic opcode: the flag is only set after a valid IDT1 answer.
+      decodeTraceReport(await loader.checkCommand('IDLab trace probe', IDLAB_GET_FLASH_TRACE,
+        new Uint8Array(0), undefined, 64, 3000));
+    } catch (error) {
+      throw touched('diagnostic_stub_not_identified', String(error?.message ?? error));
+    }
+    loader.__idlabTraceStub = true;
+    loader.__idlabTraceStubSha256 = actual;
   }
-  loader.__idlabTraceStub = true;
-  loader.__idlabTraceStubSha256 = actual;
   return {sha256: actual, entry: json.entry, chip_revision: revision, text_bytes: decodedText.length,
     data_bytes: decodedData.length, ram_only: true, admission, ram_load: steps.snapshot()};
 }
