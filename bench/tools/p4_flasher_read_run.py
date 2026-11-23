@@ -80,11 +80,14 @@ def run(client, expected, stub_path, out, reference=None, log=lambda **k: None):
     out.mkdir(mode=0o700)                                    # a NEW evidence directory per run; an existing one is refused
     pre = prechecks(client.health(), client.device(expected['device']), expected)
     dump(out / 'prechecks.json', pre); log(step='prechecks', **pre)
-    if client.artifacts()['artifacts']:
-        raise Refusal('artifact store not empty: inspect before submitting')
+    # Artifacts left by earlier (possibly uncertain) work are retained and NEVER touched: they are only recorded.
+    preexisting = [{'id': a.get('id'), 'sha256': a.get('sha256')} for a in client.artifacts()['artifacts']]
+    dump(out / 'preexisting-artifacts.json', preexisting)
     art = client.upload(stub_path)
     if art['sha256'] != stub_sha:
         raise Refusal('uploaded artifact digest mismatch')
+    if art['id'] in {a['id'] for a in preexisting}:
+        raise Refusal('the upload returned a pre-existing artifact id: inspect before submitting')
     log(step='artifact', id=art['id'], size=art['size'])
     board = client.reserve(expected['device'], ttl=LEASE_TTL, allow_destructive=True, output_dir=out)
     log(step='reserved', epoch=board.epoch, generation=board.generation)

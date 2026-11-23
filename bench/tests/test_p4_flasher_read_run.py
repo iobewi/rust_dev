@@ -182,8 +182,15 @@ class RunnerTests(unittest.TestCase):
             runner.run(FakeClient(), {**self.expected, 'plan_sha256': '0' * 64}, self.stub, Path(self.tmp.name) / 'p', None)
         with self.assertRaises(runner.Refusal):
             runner.run(FakeClient(), {**self.expected, 'epoch': 'OLD'}, self.stub, Path(self.tmp.name) / 'e', None)
-        with self.assertRaises(runner.Refusal):
-            runner.run(FakeClient(artifacts=[{'id': 'old'}]), self.expected, self.stub, Path(self.tmp.name) / 'a', None)
+        with self.assertRaises(runner.Refusal):          # an upload that returns a pre-existing id is refused
+            runner.run(FakeClient(artifacts=[{'id': 'art1', 'sha256': SHA}]), self.expected, self.stub, Path(self.tmp.name) / 'a', None)
+
+    def test_pre_existing_artifacts_are_recorded_and_left_alone(self):
+        client = FakeClient(artifacts=[{'id': 'old', 'sha256': 'f' * 64}])
+        self.assertEqual(self.go(client), 'completed')
+        self.assertEqual(len(client.board.calls), 1)
+        self.assertEqual(json.loads((self.out / 'preexisting-artifacts.json').read_text()), [{'id': 'old', 'sha256': 'f' * 64}])
+        self.assertEqual(client.stored, [{'id': 'old', 'sha256': 'f' * 64}])      # nothing deleted
 
     def test_an_existing_evidence_directory_is_refused(self):
         self.out.mkdir()
