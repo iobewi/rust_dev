@@ -81,7 +81,6 @@ class AdmissionEvidencePersistenceTests(unittest.TestCase):
             again = self.reopened(state_dir, sha)
             try:
                 kept = again.operations[op_id]
-                # What the SQLite journal keeps today (server/journal.py allowlists code/phase/... of an error).
                 self.assertEqual(kept['state'], 'failed')
                 self.assertEqual(kept['error']['code'], 'diagnostic_stub_reported_running')
                 self.assertEqual(kept['error']['phase'], 'diagnostic_stub_load')
@@ -90,11 +89,8 @@ class AdmissionEvidencePersistenceTests(unittest.TestCase):
             finally:
                 again.journal.close()
 
-    @unittest.expectedFailure
     def test_observations_survive_a_server_restart(self):
-        """KNOWN GAP (not fixed here): Journal.save() keeps only code/phase/http_status/received_bytes/expected_bytes of an
-        error, so sync_values / admission_verdict / ram_load are lost when the server restarts. They stay available from the
-        live operation API. Remove expectedFailure once the journal allowlist is extended (a production decision)."""
+        """The journal (PR #81) keeps sync_values / admission_verdict / ram_load of a P4 diagnostic error across a restart."""
         with tempfile.TemporaryDirectory() as state_dir:
             op_id, sha = self.run_scenario(state_dir)
             again = self.reopened(state_dir, sha)
