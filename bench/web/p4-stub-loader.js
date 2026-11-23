@@ -158,7 +158,7 @@ async function adaptRamBlock(loader, admission) {
 //   options.consent         must be exactly true (operator's explicit consent for THIS binary)
 //   options.expectedSha256  SHA-256 (hex) of the stub JSON text that was reviewed and qualified
 export async function loadDiagnosticStub(loader, stubJsonText, options = {}) {
-  if (options.protocol !== undefined && !['trace', 'bringup'].includes(options.protocol)) throw new IdlabDiagnosticError('diagnostic_parameter_not_allowed');
+  if (options.protocol !== undefined && !['trace', 'bringup', 'flasher'].includes(options.protocol)) throw new IdlabDiagnosticError('diagnostic_parameter_not_allowed');
   if (options.consent !== true) throw new IdlabDiagnosticError('diagnostic_stub_consent_missing');
   if (!/^[0-9a-f]{64}$/.test(options.expectedSha256 ?? '')) throw new IdlabDiagnosticError('diagnostic_stub_sha256_missing');
   if (options.romOnly !== true) throw new IdlabDiagnosticError('diagnostic_rom_only_required');   // the adaptation below exists for the ROM-only session only
@@ -171,7 +171,7 @@ export async function loadDiagnosticStub(loader, stubJsonText, options = {}) {
   // The ROM bring-up binary targets exactly ECO7 v3.2; future revisions
   // require their own qualification. Keep the legacy trace rule >= v3.0.
   if (!Number.isInteger(revision) ||
-      (options.protocol === 'bringup' ? revision !== 302 : revision < MIN_CHIP_REVISION))
+      (options.protocol === 'bringup' || options.protocol === 'flasher' ? revision !== 302 : revision < MIN_CHIP_REVISION))
     throw new IdlabDiagnosticError('diagnostic_stub_unsupported_chip_revision', {detail: revision});
   const {json, decodedText, decodedData} = parseStubJson(stubJsonText);
 
@@ -207,8 +207,8 @@ export async function loadDiagnosticStub(loader, stubJsonText, options = {}) {
   catch (error) { throw touched('diagnostic_stub_no_greeting', String(error?.message ?? error)); }
   if (greeting !== 'OHAI') throw touched('diagnostic_stub_bad_greeting', greeting);
   loader.IS_STUB = true;
-  if (options.protocol === 'bringup') {
-    // The new candidate supports only OHAI + PING/PONG, never legacy IDT1.
+  if (options.protocol === 'bringup' || options.protocol === 'flasher') {
+    // These candidates speak no legacy IDT1: the flasher answers only the read-only commands of p4-flasher-read.js.
     loader.__idlabBringupStub = true;
     loader.__idlabBringupStubSha256 = actual;
   } else {

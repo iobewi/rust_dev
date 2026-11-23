@@ -6,7 +6,7 @@ import time
 import uuid
 from functools import wraps
 from collections import deque
-from protocol import (CAPABILITIES, MAX_ARTIFACT, P4_TRACE, P4_BRINGUP, P4_TRACE_CHIP, PROGRAM, Fault,
+from protocol import (CAPABILITIES, MAX_ARTIFACT, P4_TRACE, P4_BRINGUP, P4_FLASHER_READ, P4_DIAGNOSTICS, P4_TRACE_CHIP, PROGRAM, Fault,
                       binary, integer, number, require, validate_command, local_origin,
                       trigger_disarm, requires_grant)
 
@@ -44,10 +44,11 @@ def checkpoint(method):
 
 
 class Broker:
-    def __init__(self, clock=time.monotonic, max_events=2048, state_dir=None, lock_timeout=0, p4_stub_allowlist=(), p4_bringup_allowlist=()):
+    def __init__(self, clock=time.monotonic, max_events=2048, state_dir=None, lock_timeout=0, p4_stub_allowlist=(), p4_bringup_allowlist=(), p4_flasher_allowlist=()):
         self.clock, self.max_events = clock, max_events
         self.p4_stub_allowlist = frozenset(p4_stub_allowlist)
         self.p4_bringup_allowlist = frozenset(p4_bringup_allowlist)
+        self.p4_flasher_allowlist = frozenset(p4_flasher_allowlist)
         self.agents, self.devices, self.leases, self.operations, self.artifacts = {}, {}, {}, {}, {}
         self.artifact_bytes = 0
         self.upload_reserved = 0
@@ -96,7 +97,7 @@ class Broker:
         unknown = data.get('flash_size_known') is False
         if unknown:
             require(data.get('flash_size') is None, 'invalid_request', 'An unknown flash capacity is declared with flash_size null')
-            require(data.get('chip') == P4_TRACE_CHIP and set(caps) <= {'identify', 'mark', P4_TRACE, P4_BRINGUP}, 'invalid_request',
+            require(data.get('chip') == P4_TRACE_CHIP and set(caps) <= {'identify', 'mark', P4_TRACE, P4_BRINGUP, P4_FLASHER_READ}, 'invalid_request',
                     'An unknown flash capacity is only accepted for the ROM-only ESP32-P4 session')
         else:
             integer(data.get('flash_size'), 4096, 64 * 1024 * 1024)
@@ -139,7 +140,7 @@ class Broker:
         return command in QUARANTINE_ALLOWED
 
     def diagnostic_active(self, device):
-        return any(o['device'] == device and o['command'] in {P4_TRACE, P4_BRINGUP} and (o['state'] in {'queued', 'offered', 'running'} or o['unsettled'])
+        return any(o['device'] == device and o['command'] in P4_DIAGNOSTICS and (o['state'] in {'queued', 'offered', 'running'} or o['unsettled'])
                    for o in self.operations.values())
 
     def view(self, d):
@@ -326,11 +327,11 @@ class Broker:
         name, args = body.get('command'), body.get('args', {})
         # The diagnostic runs alone on its board: nothing may be queued behind it or ahead of it.
         require(not self.diagnostic_active(d['id']), 'diagnostic_in_progress', 'A diagnostic is running on this board', 409)
-        if name in {P4_TRACE, P4_BRINGUP}:
+        if name in P4_DIAGNOSTICS:
             require(not any(o['device'] == d['id'] and (o['state'] in {'queued', 'offered', 'running'} or o['unsettled'])
                             for o in self.operations.values()), 'device_busy', 'Another operation is pending on this board', 409)
         require('control' in scopes, 'forbidden', 'Control permission required', 403)
-        validate_command(name, args, d, self.artifacts, self.p4_stub_allowlist, self.p4_bringup_allowlist)
+        validate_command(name, args, d, self.artifacts, self.p4_stub_allowlist, self.p4_bringup_allowlist, self.p4_flasher_allowlist)
         local_control = local_agent is not None and local_agent == d['agent']
         if trigger_disarm(name, args) and not local_control:
             require(d.get('trigger_lease') == lease['id'], 'trigger_not_owned',
@@ -348,7 +349,7 @@ class Broker:
               'epoch': self.epoch, 'agent': d['agent'], 'command': name, 'args': copy.deepcopy(args), 'state': 'queued', 'created': self.clock(),
               'deadline': self.clock() + ttl, 'timeout': timeout, 'error': None, 'result': None,
               'cancel_requested': False, 'unsettled': False, 'local_control': local_control, 'requires_settle': False, 'settled': False,
-              'artifact_ids': [i['artifact'] for i in args.get('images', [])] + ([args['stub_artifact']] if name in {P4_TRACE, P4_BRINGUP} else [])}
+              'artifact_ids': [i['artifact'] for i in args.get('images', [])] + ([args['stub_artifact']] if name in P4_DIAGNOSTICS else [])}
         self.operations[key] = op
         return self.operation(key, owner)
 
@@ -397,7 +398,7 @@ class Broker:
             require(d['grant_until'] > self.clock(), 'grant_required', 'Grant expired', 403)
         op['start_remaining_ms'] = max(0, (op['deadline'] - self.clock()) * 1000)
         op['state'], op['unsettled'], op['requires_settle'] = 'running', True, True
-        if op['command'] in {P4_TRACE, P4_BRINGUP}:
+        if op['command'] in P4_DIAGNOSTICS:
             # From the moment the agent starts, the chip may run the diagnostic stub: recorded durably,
             # cleared only by the operator's local recovery.
             op['diag_prior'] = {'quarantined': d['quarantined'], 'resident': d.get('diagnostic_resident') is True}
@@ -412,7 +413,7 @@ class Broker:
     def refused_before_any_chip_write(op, state, error, message):
         """Strict: a plain failure while the operation was running, with the agent's structured report agreeing on
         category and ram_load AND an allowlisted code, no hold flag and a recorded prior state. Anything else is uncertain."""
-        return (op['command'] in {P4_TRACE, P4_BRINGUP} and state == 'failed' and message.get('hold') is not True
+        return (op['command'] in P4_DIAGNOSTICS and state == 'failed' and message.get('hold') is not True
                 and isinstance(op.get('diag_prior'), dict) and isinstance(error, dict)
                 and error.get('code') in P4_REFUSALS_BEFORE_ANY_CHIP_WRITE
                 and error.get('ram_load') == 'not_started'
@@ -443,7 +444,7 @@ class Broker:
                 d['trigger_lease'] = None if trigger_disarm(op['command'], op['args']) else op['lease']
         else:
             op['late_result'] = {'state': state, 'result': message.get('result'), 'error': message.get('error')}
-        if state == 'indeterminate' or message.get('hold') is True or op['command'] in {P4_TRACE, P4_BRINGUP}:
+        if state == 'indeterminate' or message.get('hold') is True or op['command'] in P4_DIAGNOSTICS:
             d['quarantined'] = True
         if was_running and self.refused_before_any_chip_write(op, state, error, message):
             # No RAM/flash write reached the chip: back to the flags held before the command (an earlier quarantine stays).

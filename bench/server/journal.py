@@ -14,7 +14,8 @@ import sqlite3
 SAFE_FIELDS = set('artifact id size sha256 address chip flash_size flash_id erased written '
     'ok state flash verification transfer md5 sha256_readback items addr region regions '
     'begin requires_check hold failed_at mode reset method boot_verified baudrate sent '
-    'duration_ms armed simulated verified http_status response'.split())
+    'duration_ms armed simulated verified http_status response steps bytes packets throughput_kib_s md5_stub md5_host '
+    'md5_match data_sha256 opcodes_sent nor_written'.split())
 
 
 def safe_result(value):
@@ -29,7 +30,7 @@ def safe_result(value):
 
 # P4 admission observations are constrained once more at the durable boundary.
 # Never persist arbitrary loader text, UART bytes or candidate payloads.
-P4_DIAGNOSTICS = frozenset({'diagnostic.p4_usb_trace', 'diagnostic.p4_usb_bringup'})
+P4_DIAGNOSTICS = frozenset({'diagnostic.p4_usb_trace', 'diagnostic.p4_usb_bringup', 'diagnostic.p4_flasher_read'})
 ADMISSION_VERDICTS = frozenset({'rom', 'stub', 'indeterminate'})
 RAM_LOAD_STATES = frozenset({'not_started', 'started', 'unknown'})
 
