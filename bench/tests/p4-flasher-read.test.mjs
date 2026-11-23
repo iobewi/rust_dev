@@ -2,7 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
-import {P4_FLASHER_READ, OPCODES, ReadOnlyFlasher, expectedFlasherConsent, runP4FlasherRead, validateFlasherArgs, validatePlan} from '../web/p4-flasher-read.js';
+import {P4_FLASHER_READ, OPCODES, md5Timeout, ReadOnlyFlasher, expectedFlasherConsent, runP4FlasherRead, validateFlasherArgs, validatePlan} from '../web/p4-flasher-read.js';
 import {sha256} from '../web/protocol.js';
 
 const stubText = JSON.stringify({entry: 0x4ff50010, text: Buffer.alloc(100, 0x13).toString('base64'), text_start: 0x4ff50000,
@@ -22,7 +22,7 @@ async function argsFor(plan) {
 function fake({badDigest = false, shortPacket = false, failStatus = false} = {}) {
   const calls = [], writes = [], queue = [];
   const loader = {
-    IS_STUB: false, ESP_RAM_BLOCK: 0x1800, DEFAULT_TIMEOUT: 1000, calls, writes,
+    IS_STUB: false, ESP_RAM_BLOCK: 0x1800, DEFAULT_TIMEOUT: 1000, calls, writes, queue, timeouts: [],
     chip: {CHIP_NAME: 'ESP32-P4', USB_RAM_BLOCK: 0x800, getChipRevision: async () => 302},
     usesUsbOtg: async () => true, sync: async () => {}, pending: [],
     command: async () => { loader.pending = Array(7).fill(1); return [1, new Uint8Array(0)]; },
@@ -32,7 +32,8 @@ function fake({badDigest = false, shortPacket = false, failStatus = false} = {})
     flashBegin: async () => { calls.push('FORBIDDEN_FLASH'); throw new Error('forbidden'); },
     transport: {
       flushInput() {},
-      async read() {
+      async read(timeout) {
+        loader.timeouts.push(timeout);
         if (!loader.IS_STUB) return Uint8Array.from('OHAI', c => c.charCodeAt(0));
         if (!queue.length) throw new Error('timeout');
         return queue.shift();
@@ -128,3 +129,32 @@ test('local refusal: nothing is sent to the chip', async () => {
 });
 
 test('command name is exported', () => assert.equal(P4_FLASHER_READ, 'diagnostic.p4_flasher_read'));
+
+test('SPI_FLASH_MD5 silence budget scales with the region; reads keep a per-packet budget; final digest is consumed', async () => {
+  const loader = fake();
+  const plan = [{op: 'read', address: 0, size: 8192, packet_size: 4096}, {op: 'md5', address: 0, size: 1 << 16}];
+  await runP4FlasherRead({loader, args: await argsFor(plan), device, stubBytes: bytes, romOnly: true});
+  assert.equal(loader.queue.length, 0, 'every stub frame, including the final 16-byte digest, was consumed');
+  assert.ok(loader.timeouts.includes(md5Timeout(1 << 16)));
+  assert.equal(md5Timeout(1 << 20), 5000 + 256 * 100);
+  assert.ok(md5Timeout(1 << 20) > md5Timeout(4096));
+});
+
+test('a digest frame of the wrong size stops the session before any further command', async () => {
+  const loader = fake();
+  const plan = [{op: 'read', address: 0, size: 4096, packet_size: 4096}, {op: 'md5', address: 0, size: 4096}];
+  const write = loader.transport.write;
+  loader.transport.write = async payload => { await write(payload); if (payload[1] === 0xd2) loader.queue[loader.queue.length - 1] = new Uint8Array(15); };
+  await assert.rejects(runP4FlasherRead({loader, args: await argsFor(plan), device, stubBytes: bytes, romOnly: true}), {code: 'diagnostic_flasher_bad_digest'});
+  assert.equal(loader.writes.filter(w => w[1] === 0x13).length, 0);
+});
+
+test('static guard: the only writers to the port are send() (allowlisted opcodes) and the cumulative ack', async () => {
+  const {readFileSync} = await import('node:fs');
+  const source = readFileSync(new URL('../web/p4-flasher-read.js', import.meta.url), 'utf8');
+  const writes = source.split('\n').filter(line => /transport\.write\(|checkCommand|flashBegin|flashData|flashFinish|eraseFlash|writeReg|writeRegister|memBegin|memBlock|memFinish|command\(/.test(line));
+  assert.equal(writes.length, 2, writes.join('\n'));
+  assert.match(writes[0], /await this\.transport\.write\(frame\)/);
+  assert.match(writes[1], /await this\.transport\.write\(word\(received\)\)/);
+  assert.match(source, /if \(!ALLOWED\.has\(opcode\)\) throw/);
+});

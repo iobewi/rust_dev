@@ -14,7 +14,10 @@ export const MAX_STEPS = 32, MAX_READ = 4 * 1024 * 1024, MAX_TOTAL = 16 * 1024 *
 // The complete opcode allowlist. Everything else is refused BEFORE a byte is written.
 export const OPCODES = Object.freeze({SPI_ATTACH: 0x0d, SPI_FLASH_MD5: 0x13, READ_FLASH: 0xd2});
 const ALLOWED = new Set(Object.values(OPCODES));
+// BenchTransport.read(timeout) bounds SILENCE, restarted at every received chunk. A response timeout therefore has to cover the
+// stub's computation: SPI_FLASH_MD5 stays silent while it reads the NOR (budget: at least 40 KiB/s of NOR reading).
 const TIMEOUT_MS = 5000, PACKET_TIMEOUT_MS = 10000;
+export const md5Timeout = size => TIMEOUT_MS + Math.ceil(size / 4096) * 100;
 
 const refuse = (code = 'diagnostic_parameter_not_allowed') => new HardwareError(code);
 const isInt = value => Number.isInteger(value) && value >= 0;
@@ -77,8 +80,8 @@ export class ReadOnlyFlasher {
     this.sent.add(opcode); this.commands++;
     await this.transport.write(frame);
   }
-  async response(opcode, dataLength) {
-    const frame = await this.transport.read(TIMEOUT_MS);
+  async response(opcode, dataLength, timeout = TIMEOUT_MS) {
+    const frame = await this.transport.read(timeout);
     if (!(frame instanceof Uint8Array) || frame.length < 10 || frame[0] !== 1 || frame[1] !== opcode)
       throw new HardwareError('diagnostic_flasher_bad_response');
     const length = frame[2] | frame[3] << 8;
@@ -89,7 +92,7 @@ export class ReadOnlyFlasher {
   async attach() { await this.send(OPCODES.SPI_ATTACH, word(0)); await this.response(OPCODES.SPI_ATTACH, 0); }
   async md5(address, size) {
     await this.send(OPCODES.SPI_FLASH_MD5, concat(word(address), word(size), word(0), word(0)));
-    return hex(await this.response(OPCODES.SPI_FLASH_MD5, 16));
+    return hex(await this.response(OPCODES.SPI_FLASH_MD5, 16, md5Timeout(size)));
   }
   async read(address, size, packetSize, check = () => {}) {
     await this.send(OPCODES.READ_FLASH, concat(word(address), word(size), word(packetSize), word(1)));
