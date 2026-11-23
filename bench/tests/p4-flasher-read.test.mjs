@@ -158,3 +158,14 @@ test('static guard: the only writers to the port are send() (allowlisted opcodes
   assert.match(writes[1], /await this\.transport\.write\(word\(received\)\)/);
   assert.match(source, /if \(!ALLOWED\.has\(opcode\)\) throw/);
 });
+
+test('the authorization guard runs immediately before every cumulative ACK', async () => {
+  const loader = fake();
+  const plan = [{op: 'read', address: 0, size: 12288, packet_size: 4096}];
+  // After READ_FLASH is written the guard is evaluated twice per packet: before waiting for it, then before its ACK.
+  // Expiring on the 4th evaluation = right before the SECOND ACK: only the first ACK may ever reach the port.
+  let evaluations = 0;
+  const check = () => { if (loader.writes.some(w => w[1] === 0xd2) && ++evaluations === 4) throw new Error('reservation expired'); };
+  await assert.rejects(runP4FlasherRead({loader, args: await argsFor(plan), device, stubBytes: bytes, romOnly: true, check}), /expired/);
+  assert.equal(loader.writes.filter(w => w.length === 4).length, 1);
+});

@@ -107,6 +107,9 @@ export class ReadOnlyFlasher {
       if (!(packet instanceof Uint8Array) || packet.length === 0 || packet.length > packetSize ||
           packet.length !== Math.min(packetSize, size - received)) throw new HardwareError('diagnostic_flasher_bad_packet');
       data.set(packet, received); received += packet.length; packets++;
+      // The acknowledgement authorizes the stub to read and send the NEXT packet: the reservation/grant guard is evaluated
+      // immediately before it, not only before the wait for the packet.
+      check();
       this.commands++;   // the cumulative acknowledgement
       await this.transport.write(word(received));
     }

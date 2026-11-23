@@ -82,6 +82,18 @@ class PlanTests(unittest.TestCase):
     def test_incomplete_result_is_indeterminate(self):
         self.assertEqual(set(t15.evaluate({'steps': []})['tests'].values()), {'INDETERMINATE'})
 
+    def test_incomplete_reference_cannot_confirm_the_boundary(self):
+        for missing in (11, 12, 13, 14, 15):
+            rows = [row for row in reference() if row['i'] != missing]
+            self.assertEqual(t15.evaluate(make_result(), rows)['tests']['T3'], 'INDETERMINATE', missing)
+        only_t1 = [row for row in reference() if row['i'] == 0]
+        self.assertEqual(t15.evaluate(make_result(), only_t1)['tests']['T3'], 'INDETERMINATE')
+
+    def test_throughput_is_a_landmark_not_a_baseline(self):
+        basis = t15.evaluate(make_result(), reference())['throughput']['basis']
+        self.assertIn('NOT a baseline', basis)
+        self.assertIn('final MD5 frame excluded', basis)
+
     def test_changed_card_is_reported_not_failed(self):
         changed = copy.deepcopy(reference())
         changed[11]['ref_sha256'] = '1' * 64

@@ -83,15 +83,23 @@ def evaluate(result, reference=None):
 
     # Boundary: an address that wrapped at 2**24 would return the start of the NOR. The reference (private backup, 2026-11-13) says
     # the region around 16 MiB is blank, so the after-boundary capture must NOT equal the capture of the aliased start of the NOR.
+    T3_ROWS = (11, 12, 13, 14, 15)
     if reference and verdict['T3'] == 'PASS':
-        ref = {row['i']: row for row in reference}
-        mismatched = [i for i in (11, 12, 13, 14, 15) if ref.get(i) and steps[i]['data_sha256'] != ref[i]['ref_sha256']]
-        if mismatched:
+        ref = {row.get('i'): row for row in reference if isinstance(row, dict)}
+        missing = [i for i in T3_ROWS if not (isinstance(ref.get(i), dict) and isinstance(ref[i].get('ref_sha256'), str))]
+        if missing:
+            # An incomplete table can never confirm the boundary: all five T3 captures need their reference.
             verdict['T3'] = 'INDETERMINATE'
-            notes.append(f'T3: internally consistent but different from the 2026-11-13 reference at steps {mismatched}; '
-                         'the card content may have changed since: inspect before concluding (a wrap would show non-blank data)')
+            notes.append(f'T3: reference table lacks the T3 rows {missing}: cannot conclude')
         else:
-            notes.append('T3: all boundary captures equal the reference (blank around 16 MiB, wrap alias is non-blank): no wrap, no shift detectable on blank data')
+            mismatched = [i for i in T3_ROWS if steps[i]['data_sha256'] != ref[i]['ref_sha256']]
+            if mismatched:
+                verdict['T3'] = 'INDETERMINATE'
+                notes.append(f'T3: internally consistent but different from the 2026-11-13 reference at steps {mismatched}; '
+                             'the card content may have changed since: inspect before concluding (a wrap would show non-blank data)')
+            else:
+                notes.append('T3: the five boundary captures equal the reference. The area is blank (0xFF): this covers a 24-bit wrap under '
+                             'the observed conditions; address precision (shift) inside the blank area stays INDETERMINATE')
     if verdict['T3'] == 'PASS' and not reference:
         # Every path of the stub shares one NOR read routine: on blank data only an external reference can show a wrap or a shift.
         verdict['T3'] = 'INDETERMINATE'
@@ -104,7 +112,10 @@ def evaluate(result, reference=None):
     rates = {t: steps[i].get('throughput_kib_s') for t, i in (('T4', 19), ('T5', 21)) if isinstance(steps[i].get('throughput_kib_s'), (int, float))}
     mean = sum(rates.values()) / len(rates) if rates else None
     throughput = {'T4_kib_s': rates.get('T4'), 'T5_kib_s': rates.get('T5'), 'mean_kib_s': mean, 'historical_kib_s': HISTORICAL_KIB_S,
-                  'ratio_to_historical': mean / HISTORICAL_KIB_S if mean else None, 'volume_bytes': 1 << 20}
+                  'ratio_to_historical': mean / HISTORICAL_KIB_S if mean else None, 'volume_bytes': 1 << 20,
+                  'basis': 'useful payload bytes / 1024 / seconds, timed from the READ_FLASH response to the last cumulative ACK (final MD5 frame excluded); '
+                           'content-dependent (SLIP escapes 0xC0/0xDB). The 45.4 KiB/s is a historical landmark, NOT a baseline: no gain is claimed '
+                           'without the old stub on the same range with the same clock'}
     return {'tests': verdict, 'notes': notes, 'throughput': throughput}
 
 
