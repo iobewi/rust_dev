@@ -158,6 +158,7 @@ async function adaptRamBlock(loader, admission) {
 //   options.consent         must be exactly true (operator's explicit consent for THIS binary)
 //   options.expectedSha256  SHA-256 (hex) of the stub JSON text that was reviewed and qualified
 export async function loadDiagnosticStub(loader, stubJsonText, options = {}) {
+  if (options.protocol !== undefined && !['trace', 'bringup'].includes(options.protocol)) throw new IdlabDiagnosticError('diagnostic_parameter_not_allowed');
   if (options.consent !== true) throw new IdlabDiagnosticError('diagnostic_stub_consent_missing');
   if (!/^[0-9a-f]{64}$/.test(options.expectedSha256 ?? '')) throw new IdlabDiagnosticError('diagnostic_stub_sha256_missing');
   if (options.romOnly !== true) throw new IdlabDiagnosticError('diagnostic_rom_only_required');   // the adaptation below exists for the ROM-only session only
@@ -167,7 +168,10 @@ export async function loadDiagnosticStub(loader, stubJsonText, options = {}) {
   if (loader?.chip?.CHIP_NAME !== DIAGNOSTIC_STUB_CHIP) throw new IdlabDiagnosticError('diagnostic_stub_wrong_chip');
   const admission = await admitRomSession(loader, options);
   const revision = await loader.chip.getChipRevision(loader);  // read-only eFuse reads
-  if (!Number.isInteger(revision) || revision < MIN_CHIP_REVISION)
+  // The ROM bring-up binary targets exactly ECO7 v3.2; future revisions
+  // require their own qualification. Keep the legacy trace rule >= v3.0.
+  if (!Number.isInteger(revision) ||
+      (options.protocol === 'bringup' ? revision !== 302 : revision < MIN_CHIP_REVISION))
     throw new IdlabDiagnosticError('diagnostic_stub_unsupported_chip_revision', {detail: revision});
   const {json, decodedText, decodedData} = parseStubJson(stubJsonText);
 
@@ -178,19 +182,23 @@ export async function loadDiagnosticStub(loader, stubJsonText, options = {}) {
   const now = options.now ?? (() => performance.now());
   const steps = ramLoadReport(loader.ESP_RAM_BLOCK, adaptation);
   const touched = (code, detail) => new IdlabDiagnosticError(code, {chipTouched: true, detail, sessionState: admission, ramLoad: steps.snapshot()});
+  // The caller-provided guard is evaluated immediately before EACH ROM command.
+  // An expired reservation must never authorize subsequent MEM_DATA or MEM_END.
+  const guard = options.check ?? (() => {});
   try {
     for (const [segment, bytes, start] of [['text', decodedText, json.text_start], ['data', decodedData, json.data_start]]) {
       const block = loader.ESP_RAM_BLOCK;
       const blocks = Math.floor((bytes.length + block - 1) / block);
       await steps.run({step: 'mem_begin', segment, blocks, address: start, size: bytes.length}, now,
-        () => loader.memBegin(bytes.length, blocks, block, start));
+        () => { guard(); return loader.memBegin(bytes.length, blocks, block, start); });
       for (let seq = 0; seq < blocks; seq++) {
         const chunk = bytes.slice(seq * block, (seq + 1) * block);
         await steps.run({step: 'mem_block', segment, block: seq, blocks, address: start + seq * block, size: chunk.length}, now,
-          () => loader.memBlock(chunk, seq));
+          () => { guard(); return loader.memBlock(chunk, seq); });
       }
     }
-    await steps.run({step: 'mem_finish', segment: 'entry', address: json.entry, size: 0}, now, () => loader.memFinish(json.entry));
+    await steps.run({step: 'mem_finish', segment: 'entry', address: json.entry, size: 0}, now,
+      () => { guard(); return loader.memFinish(json.entry); });
   } catch (error) {
     throw touched('diagnostic_stub_ram_load_failed', String(error?.message ?? error));
   }
@@ -199,16 +207,22 @@ export async function loadDiagnosticStub(loader, stubJsonText, options = {}) {
   catch (error) { throw touched('diagnostic_stub_no_greeting', String(error?.message ?? error)); }
   if (greeting !== 'OHAI') throw touched('diagnostic_stub_bad_greeting', greeting);
   loader.IS_STUB = true;
-  loader.__idlabTraceStub = false;  // not yet identified
-  try {
-    // A stock stub rejects the diagnostic opcode: the flag is only set after a valid IDT1 answer.
-    decodeTraceReport(await loader.checkCommand('IDLab trace probe', IDLAB_GET_FLASH_TRACE,
-      new Uint8Array(0), undefined, 64, 3000));
-  } catch (error) {
-    throw touched('diagnostic_stub_not_identified', String(error?.message ?? error));
+  if (options.protocol === 'bringup') {
+    // The new candidate supports only OHAI + PING/PONG, never legacy IDT1.
+    loader.__idlabBringupStub = true;
+    loader.__idlabBringupStubSha256 = actual;
+  } else {
+    loader.__idlabTraceStub = false;  // not yet identified
+    try {
+      // A stock stub rejects the diagnostic opcode: the flag is only set after a valid IDT1 answer.
+      decodeTraceReport(await loader.checkCommand('IDLab trace probe', IDLAB_GET_FLASH_TRACE,
+        new Uint8Array(0), undefined, 64, 3000));
+    } catch (error) {
+      throw touched('diagnostic_stub_not_identified', String(error?.message ?? error));
+    }
+    loader.__idlabTraceStub = true;
+    loader.__idlabTraceStubSha256 = actual;
   }
-  loader.__idlabTraceStub = true;
-  loader.__idlabTraceStubSha256 = actual;
   return {sha256: actual, entry: json.entry, chip_revision: revision, text_bytes: decodedText.length,
     data_bytes: decodedData.length, ram_only: true, admission, ram_load: steps.snapshot()};
 }

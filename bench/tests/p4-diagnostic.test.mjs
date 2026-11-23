@@ -424,7 +424,7 @@ test('REGRESSION of the field failure: a normal connection leaves the standard s
 test('ROM-only connection: detectChip only, no main(), no runStub(), no stub uploaded; only identify/mark/diagnostic are offered', async () => {
   const world = chipWorld(), x = await connect(world, { romOnly: true });
   assert.deepEqual([world.mainCalls, world.runStubCalls, world.stubRunning, world.detectModes], [0, 0, false, ['no_reset']]);
-  assert.deepEqual(x.engine.capabilities(), ['identify', 'mark', P4_TRACE]);
+  assert.deepEqual(x.engine.capabilities(), ['identify', 'mark', P4_TRACE, 'diagnostic.p4_usb_bringup']);
   const loader = world.loaders[0]; assert.equal(loader.IS_STUB, false);
   const result = await x.engine.execute(P4_TRACE, clean(goodArgs()), x.context);       // T runs on THE connection, no second sync, no reset
   assert.equal(result.md5, MD5_ALL); assert.equal(world.detectModes.length, 1); assert.equal(x.closes(), 0);
