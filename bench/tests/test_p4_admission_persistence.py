@@ -1,5 +1,6 @@
 """A stub-reported-running refusal keeps its admission observations from the agent down to the broker's operation.
 
+Durable: the stored operation is also re-read from SQLite by a second Broker on the same state directory.
 Software only: the real Agent + EspEngine + runP4UsbBringup run in Node against a simulated P4 (see
 p4-admission-agent-message.mjs); the message the agent sends is then fed to the real Broker. No board, browser or network."""
 import base64
@@ -8,6 +9,7 @@ import json
 import shutil
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -20,12 +22,12 @@ HELPER = Path(__file__).with_name('p4-admission-agent-message.mjs')
 
 @unittest.skipUnless(shutil.which('node'), 'Node.js is required for the agent side')
 class AdmissionEvidencePersistenceTests(unittest.TestCase):
-    def test_stub_refusal_keeps_observations_flags_and_quarantine(self):
+    def run_scenario(self, state_dir):
         data = json.dumps({'entry': 0x4ff50010, 'text': base64.b64encode(bytes(100)).decode(), 'text_start': 0x4ff50000,
                            'data': base64.b64encode(bytes(40)).decode(), 'data_start': 0x4ff60040,
                            'bss_start': 0x4ff60000}).encode()
         sha = hashlib.sha256(data).hexdigest()
-        b = Broker(clock=lambda: 100, p4_bringup_allowlist=[sha])
+        b = Broker(clock=lambda: 100, state_dir=state_dir, p4_bringup_allowlist=[sha])
         b.agent('agent', object())
         b.register('agent', {'id': 'p4', 'chip': 'esp32p4', 'flash_size': 32 * 1024 * 1024,
                              'capabilities': ['identify', 'mark', P4_BRINGUP],
@@ -64,6 +66,45 @@ class AdmissionEvidencePersistenceTests(unittest.TestCase):
         # The current conservative policy is untouched: no automatic lift of the quarantine for this verdict.
         self.assertTrue(b.devices['p4']['quarantined'])
         self.assertTrue(b.devices['p4']['diagnostic_resident'])
+
+        # Settle and close the journal: the caller reopens a NEW broker on the same state directory (SQLite, not memory).
+        b.agent_event('agent', {'type': 'settled', 'device': 'p4', 'generation': b.devices['p4']['generation'], 'id': op['id']})
+        b.journal.close()
+        return op['id'], sha
+
+    def reopened(self, state_dir, sha):
+        return Broker(clock=lambda: 100, state_dir=state_dir, p4_bringup_allowlist=[sha])
+
+    def test_stub_refusal_keeps_observations_flags_and_quarantine(self):
+        with tempfile.TemporaryDirectory() as state_dir:
+            op_id, sha = self.run_scenario(state_dir)
+            again = self.reopened(state_dir, sha)
+            try:
+                kept = again.operations[op_id]
+                # What the SQLite journal keeps today (server/journal.py allowlists code/phase/... of an error).
+                self.assertEqual(kept['state'], 'failed')
+                self.assertEqual(kept['error']['code'], 'diagnostic_stub_reported_running')
+                self.assertEqual(kept['error']['phase'], 'diagnostic_stub_load')
+                self.assertTrue(again.devices['p4']['quarantined'])
+                self.assertTrue(again.devices['p4']['diagnostic_resident'])
+            finally:
+                again.journal.close()
+
+    @unittest.expectedFailure
+    def test_observations_survive_a_server_restart(self):
+        """KNOWN GAP (not fixed here): Journal.save() keeps only code/phase/http_status/received_bytes/expected_bytes of an
+        error, so sync_values / admission_verdict / ram_load are lost when the server restarts. They stay available from the
+        live operation API. Remove expectedFailure once the journal allowlist is extended (a production decision)."""
+        with tempfile.TemporaryDirectory() as state_dir:
+            op_id, sha = self.run_scenario(state_dir)
+            again = self.reopened(state_dir, sha)
+            try:
+                error = again.operations[op_id]['error']
+                self.assertEqual(error['sync_values'], [0])
+                self.assertEqual(error['admission_verdict'], 'stub')
+                self.assertEqual(error['ram_load'], 'not_started')
+            finally:
+                again.journal.close()
 
 
 if __name__ == '__main__':
