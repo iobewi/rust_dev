@@ -959,6 +959,7 @@ updateFlashReadControls();
 let p4Stub = null;
 let p4Bringup = null;
 let p4BringupConsent = null;
+let p4BringupUploadSeq = 0;  // Only the most recently initiated upload may publish a candidate.
 function bringupSelection() {
   const target = selectedTarget(false);
   return {device: target.device, generation: target.generation};
@@ -1021,6 +1022,7 @@ $('p4-bringup-consent').addEventListener('change', () => {
   renderState();
 });
 $('p4-bringup-file').addEventListener('change', safely(async () => {
+  const seq = ++p4BringupUploadSeq;
   const file = $('p4-bringup-file').files[0];
   const target = bringupSelection();
   p4Bringup = null;
@@ -1030,6 +1032,9 @@ $('p4-bringup-file').addEventListener('change', safely(async () => {
     if (!file.size || file.size > 64 * 1024) throw new Error('Candidat RAM invalide ou trop volumineux');
     const bytes = new Uint8Array(await file.arrayBuffer());
     const digest = await sha256(bytes), artifact = await api().upload(bytes);
+    // A previous upload may complete after a later selection (A -> B -> A finishes).
+    // Never replace the last selected candidate or its explicit consent.
+    if (seq !== p4BringupUploadSeq) return;
     const currentTarget = bringupSelection();
     if (target.device !== currentTarget.device || target.generation !== currentTarget.generation)
       throw new Error('La session a changé pendant le téléversement : sélectionnez de nouveau le candidat');

@@ -168,8 +168,10 @@ export async function loadDiagnosticStub(loader, stubJsonText, options = {}) {
   if (loader?.chip?.CHIP_NAME !== DIAGNOSTIC_STUB_CHIP) throw new IdlabDiagnosticError('diagnostic_stub_wrong_chip');
   const admission = await admitRomSession(loader, options);
   const revision = await loader.chip.getChipRevision(loader);  // read-only eFuse reads
-  const minRevision = options.protocol === 'bringup' ? 302 : MIN_CHIP_REVISION;
-  if (!Number.isInteger(revision) || revision < minRevision)
+  // The ROM bring-up binary targets exactly ECO7 v3.2; future revisions
+  // require their own qualification. Keep the legacy trace rule >= v3.0.
+  if (!Number.isInteger(revision) ||
+      (options.protocol === 'bringup' ? revision !== 302 : revision < MIN_CHIP_REVISION))
     throw new IdlabDiagnosticError('diagnostic_stub_unsupported_chip_revision', {detail: revision});
   const {json, decodedText, decodedData} = parseStubJson(stubJsonText);
 

@@ -100,12 +100,21 @@ test('lost ROM RAM transfer remains indeterminate, never retried', async () => {
   assert.equal(loader.calls.filter(x => x === 'memBlock').length, 1);
 });
 
-test('bring-up rejects P4 revision 3.1 before the first MEM_BEGIN', async () => {
-  const loader = fake({revision: 301});
-  await assert.rejects(runP4UsbBringup({
-    loader, args: args(), device, stubBytes: bytes, romOnly: true,
-  }), e => e.code === 'diagnostic_stub_unsupported_chip_revision' && e.indeterminate === false);
-  assert.equal(loader.calls.filter(x => /^mem/.test(String(x))).length, 0);
+test('bring-up accepts exactly P4 revision 3.2, rejects older and newer ECOs before RAM writes', async () => {
+  for (const revision of [300, 301, 303, 400]) {
+    const loader = fake({revision});
+    await assert.rejects(runP4UsbBringup({
+      loader, args: args(), device, stubBytes: bytes, romOnly: true,
+    }), e => e.code === 'diagnostic_stub_unsupported_chip_revision' && e.indeterminate === false,
+    `revision ${revision}`);
+    assert.equal(loader.calls.filter(x => /^mem/.test(String(x))).length, 0,
+      `revision ${revision} must not enter MEM_BEGIN`);
+  }
+  const accepted = fake({revision: 302});
+  const result = await runP4UsbBringup({loader: accepted, args: args(), device,
+    stubBytes: bytes, romOnly: true});
+  assert.equal(result.chip_revision, 302);
+  assert.equal(accepted.calls.filter(x => x === 'memFinish').length, 1);
 });
 
 test('expiration after first MEM_BEGIN prevents MEM_DATA and MEM_END', async () => {

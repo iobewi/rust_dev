@@ -37,3 +37,32 @@ test('submit consumes consent before dispatch and rejects a changed generation',
   assert.match(code, /p4BringupConsent\.sha256 !== stub\.sha256/);
   assert.ok(code.indexOf('p4BringupConsent = null') < code.indexOf('submit(P4_BRINGUP'));
 });
+
+test('only the most recently started upload can publish a candidate', async () => {
+  // Deferred upload A finishes after B; the current choice must remain B.
+  let seq = 0, candidate = null;
+  let finishA, finishB;
+  const uploadA = new Promise(resolve => { finishA = resolve; });
+  const uploadB = new Promise(resolve => { finishB = resolve; });
+  const select = async (name, pending) => {
+    const mySeq = ++seq;
+    candidate = null;
+    const artifact = await pending;
+    if (mySeq !== seq) return;
+    candidate = {name, artifact};
+  };
+  const a = select('A.json', uploadA);
+  const b = select('B.json', uploadB);
+  finishB('b-id');
+  await b;
+  assert.deepEqual(candidate, {name: 'B.json', artifact: 'b-id'});
+  finishA('a-id');
+  await a;
+  assert.deepEqual(candidate, {name: 'B.json', artifact: 'b-id'});
+  // The production UI must apply the same guard immediately before assigning.
+  assert.match(ui, /const seq = \+\+p4BringupUploadSeq/);
+  assert.match(ui, /if \(seq !== p4BringupUploadSeq\) return;/);
+  const handler = ui.slice(ui.indexOf("$('p4-bringup-file').addEventListener"), ui.indexOf("hook('p4-bringup-run'"));
+  assert.ok(handler.indexOf('if (seq !== p4BringupUploadSeq) return;') <
+    handler.indexOf('p4Bringup = {...target, name: file.name'));
+});
