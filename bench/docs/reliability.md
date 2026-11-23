@@ -92,6 +92,17 @@ preserved; the binary artifact table remains private and bounded. The journal
 is operational recovery state, not an immutable archive of campaign evidence.
 Copy qualification evidence separately; do not publish the database.
 
+Operation errors keep only `code`, `phase`, `http_status`, `received_bytes` and
+`expected_bytes`. The one exception is a failed operation of a P4 diagnostic
+command (`diagnostic.p4_usb_trace`, `diagnostic.p4_usb_bringup`): its error also
+keeps `sync_values` (at most 8 signed 32-bit integers), `admission_verdict`
+(`rom`, `stub`, `indeterminate`) and `ram_load` (`not_started`, `started`,
+`unknown`), each strictly validated. The rule is per command type, not per
+phase: these fields are retained for any error of such a command, including one
+that did not come from the ROM/stub admission. Raw frames, free text and unknown
+fields are never persisted. Observations lost before this rule existed (for
+example operation `fea9cf72…` of qualification run A-4) are not reconstructed.
+
 | Last durable state | State after restart | Recovery |
 | --- | --- | --- |
 | queued/offered | cancelled, never executed | fresh reservation; no replay |
