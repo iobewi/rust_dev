@@ -142,3 +142,23 @@ test('expiration directly before MEM_END refuses candidate execution', async () 
   assert.equal(loader.calls.filter(x => x === 'memBlock').length, 1);
   assert.equal(loader.calls.filter(x => x === 'memFinish').length, 0);
 });
+
+test('admission observations survive a refusal and reach the published error (allowlisted fields only)', async () => {
+  const {hardwareError} = await import('../web/hardware-errors.js');
+  const loader = fake();
+  loader.sync = async () => {loader.syncStubDetected = true; throw new Error('no full exchange');};   // a stub answers once, with 0
+  loader.command = async () => {loader.pending = []; return [0, new Uint8Array(0)];};
+  loader.readPacket = async () => {throw new Error('no further answer');};
+  await assert.rejects(runP4UsbBringup({loader, args: args(), device, stubBytes: bytes, romOnly: true}), error => {
+    assert.equal(error.code, 'diagnostic_stub_reported_running');
+    assert.equal(error.diagnostic.ram_load, 'not_started');
+    const published = hardwareError(error, false, {});
+    assert.equal(published.code, 'diagnostic_stub_reported_running');
+    assert.deepEqual(published.sync_values, [0]);
+    assert.equal(published.admission_verdict, 'stub');
+    assert.equal(published.ram_load, 'not_started');
+    assert.ok(Object.keys(published).every(k => !/stub_bytes|text|data/.test(k)));
+    return true;
+  });
+  assert.equal(loader.calls.filter(x => x === 'memBegin' || x === 'FORBIDDEN_FLASH').length, 0);
+});
