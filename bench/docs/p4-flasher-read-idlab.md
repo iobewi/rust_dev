@@ -40,3 +40,6 @@ Par étape `read` : `bytes`, `packets`, `duration_ms`, `throughput_kib_s` (octet
 - Le client Python (`BenchClient`) exige désormais l'opt-in destructif pour `bringup` et `flasher_read`, ce qui corrige l'écart constaté en A-3.
 - La comparaison à une référence indépendante de la NOR n'est pas fournie par la commande.
 - La persistance durable des erreurs P4 (#81) s'applique aussi à cette commande ; les champs de résultat ajoutés à `SAFE_FIELDS` ne contiennent que des empreintes et des nombres.
+
+## Plan T1–T5 et règles de verdict
+`bench/tools/p4_flasher_read_t1_t5.py` fixe le plan (22 étapes, 2,18 Mio lus) et les règles de verdict hors ligne (`evaluate`), écrites avant le run et non modifiables pendant. Trois niveaux de preuve sont distingués : `md5_host` et `data_sha256` viennent des mêmes octets reçus (non indépendants entre eux) ; le MD5 final de `READ_FLASH` est calculé par le stub sur les octets qu'il envoie (détecte la corruption de transport) ; `SPI_FLASH_MD5` relit la NOR (détecte une lecture instable, mais partage la routine de lecture du stub). Seule une référence externe (sauvegarde privée) peut révéler un décalage ou un repli d'adresse à 16 Mio ; sans elle, T3 reste `INDETERMINATE`.
