@@ -1,3 +1,4 @@
+import {ramLoadFields} from './p4-diagnostic.js';
 // Read-only use of the Rust ESP32-P4 flasher stub, loaded in RAM through IDLab's ROM-only session.
 // Only three esptool commands can ever be built here: SPI_ATTACH, READ_FLASH and SPI_FLASH_MD5.
 // There is no generic "send opcode" entry point: write, erase, register and parameter commands do not exist in this module.
@@ -85,8 +86,11 @@ export class ReadOnlyFlasher {
     if (!(frame instanceof Uint8Array) || frame.length < 10 || frame[0] !== 1 || frame[1] !== opcode)
       throw new HardwareError('diagnostic_flasher_bad_response');
     const length = frame[2] | frame[3] << 8;
-    if (frame.length !== 8 + length || length !== dataLength + 2) throw new HardwareError('diagnostic_flasher_bad_response');
-    if (frame[frame.length - 2] !== 0) throw new HardwareError('diagnostic_flasher_status_error');
+    if (frame.length !== 8 + length || length < 2) throw new HardwareError('diagnostic_flasher_bad_response');
+    const status = frame[frame.length - 2];
+    if (status === 0xc4) throw new HardwareError('diagnostic_flasher_spi_failed');
+    if (status !== 0) throw new HardwareError('diagnostic_flasher_status_error');
+    if (length !== dataLength + 2) throw new HardwareError('diagnostic_flasher_bad_response');
     return frame.subarray(8, 8 + dataLength);
   }
   async attach() { await this.send(OPCODES.SPI_ATTACH, word(0)); await this.response(OPCODES.SPI_ATTACH, 0); }
@@ -170,8 +174,10 @@ export async function runP4FlasherRead({loader, args, device, stubBytes, romOnly
   } catch (error) {
     error.indeterminate = started && error.sessionIndeterminate !== false;
     const admission = error?.sessionState && typeof error.sessionState === 'object' ? error.sessionState : {};
+    const ramLoad = error.ramLoad ?? loaded?.ram_load;
     error.diagnostic = {
       ...admission,
+      ...(ramLoad ? ramLoadFields(ramLoad) : {}),
       phase: loaded ? 'diagnostic_read' : 'diagnostic_stub_load',
       category: !error.indeterminate ? 'refused_before_load' : loaded ? 'stream_failed' : 'ram_load_failed',
       ram_load: loaded || error.indeterminate ? 'started' : 'not_started',

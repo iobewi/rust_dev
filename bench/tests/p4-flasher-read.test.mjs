@@ -133,3 +133,24 @@ test('runner: the start deadline guards admission only; the read continues while
   await assert.rejects(runP4FlasherRead({loader: fake(), args: await argsFor(plan), device, stubBytes: bytes, romOnly: true,
     check: () => {}, checkLive: () => { if (++live > 12) throw new Error('execution_deadline_exceeded'); }}), /execution_deadline_exceeded/);
 });
+
+test('missing OHAI preserves the acknowledged MEM_END in the error evidence', async () => {
+  const loader = fake();
+  loader.transport.read = async () => { throw new Error('timeout'); };
+  const plan = [{op: 'read', address: 0, size: 4096, packet_size: 4096}];
+  const {hardwareError} = await import('../web/hardware-errors.js');
+  await assert.rejects(runP4FlasherRead({loader, args: await argsFor(plan), device, stubBytes: bytes, romOnly: true}), error => {
+    const evidence = hardwareError(error);
+    return evidence.code === 'diagnostic_stub_no_greeting' &&
+      evidence.ram_steps.at(-1).step === 'mem_finish' && evidence.ram_steps.at(-1).acked === 1;
+  });
+  assert.equal(loader.writes.length, 0);
+});
+
+test('a status-only SPI error from the stub is reported even for an MD5 request', async () => {
+  const flasher = new ReadOnlyFlasher({
+    write: async () => {},
+    read: async () => Uint8Array.of(1, 0x13, 2, 0, 0, 0, 0, 0, 0xc4, 0),
+  });
+  await assert.rejects(flasher.md5(0, 4096), {code: 'diagnostic_flasher_spi_failed'});
+});
