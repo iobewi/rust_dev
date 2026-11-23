@@ -9,6 +9,7 @@ import { runWrite, Tracer } from './flash-op.js';
 import { b64, unb64, family, region, validateImages, partitions, sha256 } from './protocol.js';
 import { P4_TRACE, runP4UsbTrace } from './p4-diagnostic.js';
 import { P4_BRINGUP, runP4UsbBringup } from './p4-bringup.js';
+import { P4_FLASHER_READ, runP4FlasherRead } from './p4-flasher-read.js';
 import { observeSessionState, judgeSessionState, sessionStateReport } from './p4-session-state.js';
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const latencyFields = ['packet_interval', 'ack_to_first_byte', 'read_to_first_byte', 'frame_receive',
@@ -117,7 +118,7 @@ export class EspEngine {
     const caps = ['identify', 'partitions', 'flash.read', 'flash.write', 'flash.erase', 'uart.write', 'uart.configure', 'console', 'mark', 'trigger', 'http.request'];
     // ROM-only connection (explicit operator choice, native USB OTG P4 only): the standard stub is never loaded, so only the
     // ROM-level identification, markers and the P4 diagnostic exist in this session. Nothing that needs the stub is offered.
-    if (this.romOnly === true) return this.native && !this.usbSerialJtag && /ESP32-P4/i.test(this.chipDescription || '') ? ['identify', 'mark', P4_TRACE, P4_BRINGUP] : ['identify', 'mark'];
+    if (this.romOnly === true) return this.native && !this.usbSerialJtag && /ESP32-P4/i.test(this.chipDescription || '') ? ['identify', 'mark', P4_TRACE, P4_BRINGUP, P4_FLASHER_READ] : ['identify', 'mark'];
     if (!this.native) return [...caps, 'reset', 'io0', 'boot.download'];
     return this.usbSerialJtag ? [...caps, 'reset'] : caps;
   }
@@ -361,11 +362,12 @@ export class EspEngine {
   }
   async execute(command, args, context) {
     if (this.busy) throw new Error('Device is busy');
-    if (this.romOnly && !['identify', 'mark', P4_TRACE, P4_BRINGUP].includes(command)) throw new HardwareError('diagnostic_rom_only_session');
+    if (this.romOnly && !['identify', 'mark', P4_TRACE, P4_BRINGUP, P4_FLASHER_READ].includes(command)) throw new HardwareError('diagnostic_rom_only_session');
     if (this.diagnosticResident && command !== 'mark') throw new HardwareError('operator_recovery_required');
     if (this.hold && !['identify', 'partitions', 'flash.read', 'flash.write', 'flash.erase', 'mark'].includes(command)) throw new Error('Operator recovery required');
     if (command === P4_TRACE) return this.diagnosticP4(args, context);
     if (command === P4_BRINGUP) return this.diagnosticBringup(args, context);
+    if (command === P4_FLASHER_READ) return this.diagnosticBringup(args, context, P4_FLASHER_READ, runP4FlasherRead);
     this.busy = true; this.phase = 'prepare'; this.readProgress = {}; this.lastRead = {}; this.flashReadProfile = null;
     this.baselineTransport = this.transport; this.serialBaseline = { ...this.transport?.stats };
     let destructive = false;
@@ -500,10 +502,10 @@ export class EspEngine {
 
   // RAM-only P4 USB bring-up. Reuses the existing ROM-only session and
   // conservative hold/recovery lifecycle of the legacy diagnostic.
-  async diagnosticBringup(args, context) {
+  async diagnosticBringup(args, context, command = P4_BRINGUP, run = runP4UsbBringup) {
     if (this.busy) throw new Error('Device is busy');
     if (this.hold) throw new HardwareError('operator_recovery_required');
-    if (!this.capabilities().includes(P4_BRINGUP)) throw new HardwareError('diagnostic_unavailable');
+    if (!this.capabilities().includes(command)) throw new HardwareError('diagnostic_unavailable');
     this.busy = true; this.phase = 'prepare'; this.readProgress = {}; this.lastRead = {};
     let touched = false;
     try {
@@ -513,9 +515,9 @@ export class EspEngine {
       const loader = await this.openLoader();
       this.baselineTransport = this.transport; this.serialBaseline = {...this.transport?.stats};
       this.setHold(true); this.diagnosticResident = true; touched = true;
-      const result = await runP4UsbBringup({
+      const result = await run({
         loader, args, device: context.device, stubBytes, romOnly: this.romOnly === true,
-        check: () => context.check(), report: detail => context.report?.(detail),
+        check: () => context.check(), checkLive: () => (context.checkLive ?? context.check)(), report: detail => context.report?.(detail),
       });
       context.complete?.({hold: true, returnConsole: false});
       return result;

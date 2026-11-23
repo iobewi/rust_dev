@@ -431,8 +431,9 @@ if __name__ == '__main__':
     try:
         allow = [x.strip().lower() for x in os.environ.get('BENCH_P4_STUB_SHA256S', '').split(',') if x.strip()]   # empty = diagnostic disabled
         bringup_allow = [x.strip().lower() for x in os.environ.get('BENCH_P4_BRINGUP_SHA256S', '').split(',') if x.strip()]
+        flasher_allow = [x.strip().lower() for x in os.environ.get('BENCH_P4_FLASHER_SHA256S', '').split(',') if x.strip()]
         broker = Broker(state_dir=state_dir, lock_timeout=float(os.environ.get('BENCH_LOCK_TIMEOUT', '0')),
-                        p4_stub_allowlist=allow, p4_bringup_allowlist=bringup_allow)
+                        p4_stub_allowlist=allow, p4_bringup_allowlist=bringup_allow, p4_flasher_allowlist=flasher_allow)
     except (BlockingIOError, ValueError) as error:
         sys.exit(str(error))
     try:

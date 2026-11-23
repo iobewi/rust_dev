@@ -1,6 +1,7 @@
 """Versioned, transport-independent hardware command validation."""
 import base64
 import binascii
+import hashlib
 import json
 import math
 import re
@@ -15,6 +16,13 @@ MAX_UART = 16384
 # consent bound to the board, the stub SHA-256 and the region. First version, fixed parameters.
 P4_TRACE = 'diagnostic.p4_usb_trace'
 P4_BRINGUP = 'diagnostic.p4_usb_bringup'
+# Read-only use of the Rust flasher stub (RAM): only SPI_ATTACH, READ_FLASH and SPI_FLASH_MD5, from a bounded plan.
+P4_FLASHER_READ = 'diagnostic.p4_flasher_read'
+P4_DIAGNOSTICS = frozenset({P4_TRACE, P4_BRINGUP, P4_FLASHER_READ})
+P4_FLASHER_SCENARIO = 'read_only_v1'
+P4_FLASHER_CAPACITY = 1 << 25            # the qualified 32 MiB NOR; the stub itself refuses anything else
+P4_FLASHER_PACKETS = (1024, 2048, 4096)
+P4_FLASHER_MAX_STEPS, P4_FLASHER_MAX_READ, P4_FLASHER_MAX_TOTAL = 32, 4 * 1024 * 1024, 16 * 1024 * 1024
 P4_TRACE_CHIP = 'esp32p4'
 P4_TRACE_ADDRESS, P4_TRACE_SIZE, P4_TRACE_PACKET = 0x8000, 1024 * 1024, 4096
 P4_TRACE_CPU_HZ = 200_000_000   # assumed from the stub code, NOT measured: recorded with the operation
@@ -23,8 +31,8 @@ P4_STUB_IRAM, P4_STUB_DRAM = (0x4FF50000, 0x4500), (0x4FF60000, 0x18000)
 P4_STUB_KEYS = {'entry', 'text', 'text_start', 'data', 'data_start', 'bss_start'}
 CAPABILITIES = {'identify', 'reset', 'partitions', 'flash.read', 'flash.write', 'flash.erase',
                 'uart.write', 'uart.configure', 'console', 'io0', 'boot.download', 'mark', 'trigger', 'http.request',
-                P4_TRACE, P4_BRINGUP}
-PROGRAM = {'flash.write', 'flash.erase', P4_TRACE, P4_BRINGUP}
+                P4_TRACE, P4_BRINGUP, P4_FLASHER_READ}
+PROGRAM = {'flash.write', 'flash.erase', P4_TRACE, P4_BRINGUP, P4_FLASHER_READ}
 PRIVILEGED = PROGRAM | {'uart.write', 'io0', 'boot.download', 'trigger', 'http.request'}
 
 
@@ -155,7 +163,64 @@ def validate_p4_usb_bringup(args, device, artifacts, allowlist=frozenset()):
             'Consent must name the board, candidate and RAM execution', 403)
 
 
-def validate_command(name, args, device, artifacts, p4_stub_allowlist=frozenset(), p4_bringup_allowlist=frozenset()):
+def p4_flasher_plan_canonical(plan):
+    """Canonical text of a validated plan; its SHA-256 is bound into the operator's consent (same function in JS)."""
+    return ';'.join(f"{s['op']},{s.get('address', 0)},{s.get('size', 0)},{s.get('packet_size', 0)}" for s in plan)
+
+
+def validate_p4_flasher_plan(plan):
+    """Allowlisted steps only: attach (at most once, first), read, md5. No write, erase, register or parameter command exists."""
+    require(isinstance(plan, list) and 1 <= len(plan) <= P4_FLASHER_MAX_STEPS,
+            'diagnostic_parameter_not_allowed', 'Plan must hold 1 to 32 steps')
+    total = 0
+    for index, step in enumerate(plan):
+        require(isinstance(step, dict) and type(step.get('op')) is str, 'diagnostic_parameter_not_allowed', 'Bad plan step')
+        op = step['op']
+        if op == 'attach':
+            require(step.keys() == {'op'} and index == 0, 'diagnostic_parameter_not_allowed', 'attach is a single first step')
+            continue
+        require(op in {'read', 'md5'}, 'diagnostic_parameter_not_allowed', 'Step not allowed')
+        wanted = {'op', 'address', 'size'} | ({'packet_size'} if op == 'read' else set())
+        require(step.keys() == wanted, 'diagnostic_parameter_not_allowed', 'Unexpected step fields')
+        address, size = step['address'], step['size']
+        require(type(address) is int and type(size) is int and 0 <= address < P4_FLASHER_CAPACITY
+                and 1 <= size <= (P4_FLASHER_MAX_READ if op == 'read' else P4_FLASHER_CAPACITY)
+                and address + size <= P4_FLASHER_CAPACITY, 'diagnostic_parameter_not_allowed', 'Region outside the NOR or too large')
+        if op == 'read':
+            require(type(step['packet_size']) is int and step['packet_size'] in P4_FLASHER_PACKETS,
+                    'diagnostic_parameter_not_allowed', 'Packet size must be 1024, 2048 or 4096')
+            total += size
+    require(total <= P4_FLASHER_MAX_TOTAL, 'diagnostic_parameter_not_allowed', 'Total read volume too large')
+
+
+def p4_flasher_consent(device_id, sha, plan):
+    return {'scenario': P4_FLASHER_READ, 'device': device_id, 'stub_sha256': sha,
+            'plan_sha256': hashlib.sha256(p4_flasher_plan_canonical(plan).encode()).hexdigest(),
+            'ram_code_execution': True, 'flash_write_forbidden': True, 'rom_reset_may_be_required': True}
+
+
+def validate_p4_flasher_read(args, device, artifacts, allowlist=frozenset()):
+    require(device['chip'] == P4_TRACE_CHIP, 'diagnostic_chip_unsupported', 'ESP32-P4 only')
+    require((device.get('provenance') or {}).get('transport') == 'native_usb_other',
+            'diagnostic_transport_unsupported', 'Native USB OTG required')
+    require(args.get('chip') == P4_TRACE_CHIP and args.get('scenario') == P4_FLASHER_SCENARIO,
+            'diagnostic_parameter_not_allowed', 'Fixed scenario required')
+    validate_p4_flasher_plan(args.get('plan'))
+    sha = args.get('stub_sha256')
+    require(isinstance(sha, str) and re.fullmatch(r'[0-9a-f]{64}', sha), 'diagnostic_stub_sha256_invalid', 'SHA-256 required')
+    key = args.get('stub_artifact')
+    artifact = artifacts.get(key) if isinstance(key, str) else None
+    require(artifact is not None, 'artifact_missing', 'Upload the flasher stub JSON first')
+    require(artifact['sha256'] == sha, 'digest_mismatch', 'SHA mismatch')
+    require(sha in allowlist, 'diagnostic_stub_not_qualified', 'Candidate not allowlisted', 403)
+    require(1 <= artifact['size'] <= P4_STUB_MAX, 'diagnostic_stub_invalid', 'Unexpected candidate size')
+    validate_p4_stub_json(artifact['data'])
+    require(strict_equal(args.get('consent'), p4_flasher_consent(device['id'], sha, args['plan'])), 'diagnostic_consent_invalid',
+            'Consent must name the board, candidate, exact plan and RAM execution', 403)
+
+
+def validate_command(name, args, device, artifacts, p4_stub_allowlist=frozenset(), p4_bringup_allowlist=frozenset(),
+                     p4_flasher_allowlist=frozenset()):
     require(name in CAPABILITIES and name in device['capabilities'], 'unsupported', 'Unsupported command')
     require(isinstance(args, dict))
     schemas = {
@@ -167,6 +232,7 @@ def validate_command(name, args, device, artifacts, p4_stub_allowlist=frozenset(
         'mark': {'label'}, 'trigger': {'data', 'action', 'delay_ms', 'expires_ms'},
         P4_TRACE: {'chip', 'stub_artifact', 'stub_sha256', 'address', 'size', 'packet_size', 'cpu_hz', 'consent'},
         P4_BRINGUP: {'chip', 'stub_artifact', 'stub_sha256', 'scenario', 'consent'},
+        P4_FLASHER_READ: {'chip', 'stub_artifact', 'stub_sha256', 'scenario', 'plan', 'consent'},
     }
     require(not (args.keys() - schemas[name]), message='Unknown command fields')
     for key in ('erase', 'return_console'):
@@ -199,6 +265,8 @@ def validate_command(name, args, device, artifacts, p4_stub_allowlist=frozenset(
         validate_p4_usb_trace(args, device, artifacts, p4_stub_allowlist)
     if name == P4_BRINGUP:
         validate_p4_usb_bringup(args, device, artifacts, p4_bringup_allowlist)
+    if name == P4_FLASHER_READ:
+        validate_p4_flasher_read(args, device, artifacts, p4_flasher_allowlist)
     if name == 'flash.write':
         images = args.get('images')
         require(isinstance(images, list) and 1 <= len(images) <= 16)
