@@ -75,7 +75,10 @@ export async function runP4UsbBringup({
     // Loader differentiates safe preflight refusals from an uncertain
     // partial RAM upload. Never retry or automatically release the session.
     error.indeterminate = started && error.sessionIndeterminate !== false;
+    // Keep the admission observations (sync values, verdict...): hardwareError() allowlists them, so nothing raw leaks.
+    const admission = error?.sessionState && typeof error.sessionState === 'object' ? error.sessionState : {};
     error.diagnostic = {
+      ...admission,
       phase: loaded ? 'diagnostic_read' : 'diagnostic_stub_load',
       category: !error.indeterminate ? 'refused_before_load' : loaded ? 'stream_failed' : 'ram_load_failed',
       ram_load: loaded || error.indeterminate ? 'started' : 'not_started',
