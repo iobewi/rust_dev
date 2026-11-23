@@ -27,6 +27,31 @@ def safe_result(value):
     return str(value)[:256]
 
 
+# P4 admission observations are constrained once more at the durable boundary.
+# Never persist arbitrary loader text, UART bytes or candidate payloads.
+P4_DIAGNOSTICS = frozenset({'diagnostic.p4_usb_trace', 'diagnostic.p4_usb_bringup'})
+ADMISSION_VERDICTS = frozenset({'rom', 'stub', 'indeterminate'})
+RAM_LOAD_STATES = frozenset({'not_started', 'started', 'unknown'})
+
+
+def safe_operation_error(value, command):
+    if not isinstance(value, dict):
+        return None
+    saved = {k: v for k, v in value.items()
+             if k in {'code', 'phase', 'http_status', 'received_bytes', 'expected_bytes'}}
+    if command not in P4_DIAGNOSTICS:
+        return saved or None
+    sync = value.get('sync_values')
+    if (isinstance(sync, list) and len(sync) <= 8
+            and all(type(v) is int and -(2 ** 31) <= v <= 2 ** 31 - 1 for v in sync)):
+        saved['sync_values'] = list(sync)
+    if type(value.get('admission_verdict')) is str and value['admission_verdict'] in ADMISSION_VERDICTS:
+        saved['admission_verdict'] = value['admission_verdict']
+    if type(value.get('ram_load')) is str and value['ram_load'] in RAM_LOAD_STATES:
+        saved['ram_load'] = value['ram_load']
+    return saved or None
+
+
 class Journal:
     def __init__(self, directory, *, lock_timeout=0):
         if type(lock_timeout) not in (int, float) or not math.isfinite(lock_timeout) or not 0 <= lock_timeout <= 600:
@@ -94,8 +119,7 @@ class Journal:
             for field in ['error', 'late_result']:
                 value = op.get(field)
                 if field == 'error':
-                    record[field] = {k: v for k, v in (value or {}).items()
-                                     if k in {'code', 'phase', 'http_status', 'received_bytes', 'expected_bytes'}} or None
+                    record[field] = safe_operation_error(value, op.get('command'))
                 elif value is not None:
                     record[field] = {'state': value['state'], 'result': safe_result(value.get('result'))}
             operations[key] = record
