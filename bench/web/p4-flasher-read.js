@@ -120,7 +120,10 @@ export class ReadOnlyFlasher {
   }
 }
 
-export async function runP4FlasherRead({loader, args, device, stubBytes, romOnly = false, check = () => {}, report = () => {}, now = () => performance.now()}) {
+// `check` is the ADMISSION guard (it includes the command start deadline); `checkLive` is the guard that must hold while the
+// command runs (reservation, grant, execution deadline; NOT the start deadline). Once the first RAM command is about to be sent
+// the start deadline no longer applies: a recipe longer than the start TTL must not stop on `command_start_expired`.
+export async function runP4FlasherRead({loader, args, device, stubBytes, romOnly = false, check = () => {}, checkLive = check, report = () => {}, now = () => performance.now()}) {
   let stubText;
   try {
     await validateFlasherArgs(args, device);
@@ -137,19 +140,19 @@ export async function runP4FlasherRead({loader, args, device, stubBytes, romOnly
     check(); report({phase: 'ram_load'});
     started = true;
     loaded = await loadDiagnosticStub(loader, stubText, {
-      consent: true, expectedSha256: args.stub_sha256, romOnly, protocol: 'flasher', check,
+      consent: true, expectedSha256: args.stub_sha256, romOnly, protocol: 'flasher', check: checkLive,
     });
     const flasher = new ReadOnlyFlasher(loader.transport, now);
     const steps = [];
     let index = 0;
     for (const step of args.plan) {
-      check(); report({phase: 'diagnostic_read', step: index});
+      checkLive(); report({phase: 'diagnostic_read', step: index});
       if (step.op === 'attach') {
         await flasher.attach(); steps.push({op: 'attach', ok: true});
       } else if (step.op === 'md5') {
         steps.push({op: 'md5', address: step.address, size: step.size, md5_stub: await flasher.md5(step.address, step.size)});
       } else {
-        const read = await flasher.read(step.address, step.size, step.packet_size, check);
+        const read = await flasher.read(step.address, step.size, step.packet_size, checkLive);
         const md5Host = md5hex(read.data);
         steps.push({op: 'read', address: step.address, size: step.size, packet_size: step.packet_size,
           bytes: read.data.length, packets: read.packets, duration_ms: Math.round(read.elapsed_ms),

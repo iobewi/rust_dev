@@ -517,7 +517,7 @@ export class EspEngine {
       this.setHold(true); this.diagnosticResident = true; touched = true;
       const result = await run({
         loader, args, device: context.device, stubBytes, romOnly: this.romOnly === true,
-        check: () => context.check(), report: detail => context.report?.(detail),
+        check: () => context.check(), checkLive: () => (context.checkLive ?? context.check)(), report: detail => context.report?.(detail),
       });
       context.complete?.({hold: true, returnConsole: false});
       return result;
