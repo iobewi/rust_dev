@@ -36,10 +36,9 @@ class Failure(Exception):
 
 
 class FakeBoard:
-    epoch, generation = 'EPOCH', 'GEN'
-
-    def __init__(self, owner, outcome):
+    def __init__(self, owner, outcome, generation='GEN', epoch='EPOCH'):
         self.owner, self.outcome, self.calls, self.closed = owner, outcome, [], False
+        self.generation, self.epoch, self.uncertain, self.pending = generation, epoch, False, None
 
     def command(self, name, args, timeout, allow_destructive):
         self.calls.append((name, args, timeout, allow_destructive))
@@ -48,15 +47,24 @@ class FakeBoard:
             return {'result': make_result()}
         if self.outcome == 'pending':
             raise PendingOperation('unresolved')
+        if self.outcome == 'lost_response':      # the POST response was lost: BenchClient marks the board uncertain and raises a network error
+            self.uncertain = True
+            raise ConnectionError('Transport or response failure; request not retried')
+        if self.outcome == 'still_pending':
+            self.pending = 'op1'
+            raise TimeoutError('poll interrupted')
         raise Failure({'id': 'op1', 'state': 'failed', 'error': {'code': 'diagnostic_flasher_md5_mismatch'}})
 
     def close(self):
+        if self.uncertain:
+            raise PendingOperation('Submission outcome unknown; reservation retained until expiry')
         self.closed = True
 
 
 class FakeClient:
-    def __init__(self, outcome='ok', device=None, artifacts=()):
+    def __init__(self, outcome='ok', device=None, artifacts=(), reserved_generation='GEN', reserved_epoch='EPOCH'):
         self.outcome, self.board, self.out = outcome, None, None
+        self.reserved_generation, self.reserved_epoch = reserved_generation, reserved_epoch
         self.dev = {'id': 'esp32-local', 'generation': 'GEN', 'connected': True, 'capabilities': CAPS, 'quarantined': False,
                     'diagnostic_resident': False, 'reservation': None, 'privileged_seconds': 900,
                     'provenance': {'transport': 'native_usb_other'}, **(device or {})}
@@ -74,7 +82,7 @@ class FakeClient:
     def reserve(self, device, ttl, allow_destructive, output_dir):
         assert allow_destructive is True and ttl >= 600
         self.out = Path(output_dir)
-        self.board = FakeBoard(self, self.outcome)
+        self.board = FakeBoard(self, self.outcome, self.reserved_generation, self.reserved_epoch)
         return self.board
 
     def operation(self, _): return {'id': 'op1', 'state': 'completed' if self.outcome == 'ok' else 'failed'}
@@ -129,6 +137,26 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(len(client.board.calls), 1)
         self.assertTrue((self.out / 'operation.json').exists())
         self.assertFalse((self.out / 'evaluation.json').exists())
+
+    def test_a_lost_submission_response_stays_indeterminate_and_keeps_the_reservation(self):
+        for outcome in ('lost_response', 'still_pending'):
+            out = Path(self.tmp.name) / outcome
+            client = FakeClient(outcome)
+            self.assertEqual(runner.run(client, self.expected, self.stub, out, None), 'indeterminate', outcome)
+            self.assertFalse(client.board.closed)
+            self.assertEqual(len(client.board.calls), 1)
+            self.assertFalse((out / 'evaluation.json').exists())
+
+    def test_a_target_that_changed_between_prechecks_and_reservation_is_never_commanded(self):
+        for kwargs in ({'reserved_generation': 'NEW'}, {'reserved_epoch': 'NEWEPOCH'}):
+            out = Path(self.tmp.name) / ('chg' + next(iter(kwargs)))
+            client = FakeClient(**kwargs)
+            with self.assertRaises(runner.Refusal) as caught:
+                runner.run(client, self.expected, self.stub, out, None)
+            self.assertIn('nothing submitted', str(caught.exception))
+            self.assertEqual(client.board.calls, [])          # board.command() was never reached
+            self.assertTrue(client.board.closed)              # the reservation was released
+            self.assertTrue((out / 'refused-after-reservation.json').exists())
 
     def test_pending_outcome_keeps_the_reservation(self):
         client = FakeClient('pending')

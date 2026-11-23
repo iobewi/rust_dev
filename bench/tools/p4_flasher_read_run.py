@@ -88,6 +88,18 @@ def run(client, expected, stub_path, out, reference=None, log=lambda **k: None):
     log(step='artifact', id=art['id'], size=art['size'])
     board = client.reserve(expected['device'], ttl=LEASE_TTL, allow_destructive=True, output_dir=out)
     log(step='reserved', epoch=board.epoch, generation=board.generation)
+    # BenchClient.reserve() re-reads the epoch and generation and builds the Board with the CURRENT values: a board that reconnected
+    # between the prechecks and the reservation would silently become the target. Compare again, release and stop BEFORE any command.
+    if board.epoch != expected['epoch'] or board.generation != expected['generation']:
+        try:
+            board.close()
+            released = True
+        except Exception as error:
+            released = False
+            log(step='release_error', error=str(error)[:200])
+        dump(out / 'refused-after-reservation.json', {'epoch': board.epoch, 'generation': board.generation, 'released': released})
+        seal(out)
+        raise Refusal(f'target changed after the reservation (epoch {board.epoch!r}, generation {board.generation!r}): nothing submitted')
     args = build_args(expected['device'], stub_sha, art['id'])
     dump(out / 'submitted-args.json', args)
     verdict, result = 'indeterminate', None
@@ -98,7 +110,10 @@ def run(client, expected, stub_path, out, reference=None, log=lambda **k: None):
         name = type(error).__name__
         operation = getattr(error, 'operation', None)
         log(step='ERROR', type=name, error=str(error)[:800])
-        verdict = 'indeterminate' if name == 'PendingOperation' else 'failed'
+        # A lost POST response is NOT a failure: the client marks the board `uncertain` (or keeps an operation `pending`) and any
+        # network error may have started the hardware. Only a definitive, settled refusal or failure is classed `failed`.
+        unresolved = name == 'PendingOperation' or getattr(board, 'uncertain', False) is True or bool(getattr(board, 'pending', None))
+        verdict = 'indeterminate' if unresolved else 'failed'
         if operation:
             dump(out / 'operation.json', operation)
     try:
