@@ -1,4 +1,4 @@
-name: Devcontainer validation
+name: Devcontainer validation and publication
 on:
   pull_request:
   push:
@@ -9,17 +9,33 @@ permissions:
 concurrency:
   group: devcontainer-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
+env:
+  IMAGE: ghcr.io/iobewi/rust-dev
 jobs:
   container:
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-      - run: npm install -g @devcontainers/cli@0.90.0
-      - name: Build and start devcontainer
-        run: devcontainer up --workspace-folder .
+      - name: Build image
+        run: |
+          docker build -f docker/Dockerfile \
+            --label "org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}" \
+            --label "org.opencontainers.image.revision=$GITHUB_SHA" \
+            -t "$IMAGE:sha-$GITHUB_SHA" .
       - name: Verify installed tools
-        run: devcontainer exec --workspace-folder . rust-dev-smoke
+        run: docker run --rm "$IMAGE:sha-$GITHUB_SHA" rust-dev-smoke
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+      - name: Publish validated image
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        run: |
+          docker push "$IMAGE:sha-$GITHUB_SHA"
+          docker tag "$IMAGE:sha-$GITHUB_SHA" "$IMAGE:latest"
+          docker push "$IMAGE:latest"

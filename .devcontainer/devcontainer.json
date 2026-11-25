@@ -1,9 +1,5 @@
 {
     "name": "IOBEWI Rust Embedded Development",
-    "build": {
-        "dockerfile": "../docker/Dockerfile",
-        "context": ".."
-    },
     "workspaceFolder": "/workspace",
     "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind",
     "mounts": [
@@ -26,5 +22,6 @@
             }
         }
     },
-    "remoteUser": "root"
+    "remoteUser": "root",
+    "image": "ghcr.io/iobewi/rust-dev:latest"
 }
