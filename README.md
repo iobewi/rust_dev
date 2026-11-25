@@ -15,7 +15,7 @@ docker pull ghcr.io/iobewi/rust-dev:latest
 docker run --rm -it --mount type=bind,source="$PWD",target=/workspace ghcr.io/iobewi/rust-dev:latest
 ```
 
-Run `rust-dev-smoke` to verify installed tools. No USB access or privileged container is required. Install the separate IDLab client in projects that need hardware qualification.
+Run `rust-dev-smoke` to verify installed tools. No USB access or privileged container is required. The latest stable IDLab Python client is preinstalled from its GitHub release wheel (SHA-256 verified); the IDLab server and hardware connections remain independent. Use `from idlab_client import IDLabClient` in project scripts. Configure the server endpoint and credentials at runtime; no tokens or server are embedded in the image. The build resolves the latest release when the installation layer runs. For a fixed client version use `--build-arg IDLAB_CLIENT_VERSION=0.1.0`; for a fresh latest lookup use `docker build --no-cache`. Building requires a published client release.
 
 ## Build and distribution
 
@@ -27,4 +27,4 @@ To refresh an existing VS Code environment, pull the new image and use **Dev Con
 
 ## Line endings
 
-The image defaults to `core.autocrlf=false` and `core.whitespace=cr-at-eol` in Git's system configuration. Automatic line-ending conversion is disabled and CR at the end of a line is not treated as a whitespace error. VS Code does not enforce a line-ending format. Project `.gitattributes` and explicit Git user or repository settings may override these defaults. Existing checkouts are not rewritten automatically. Line-ending-only changes can still appear in `git status`; use `git diff --ignore-cr-at-eol` to ignore CR differences in a diff.
+The image defaults to `core.autocrlf=input` and `core.whitespace=cr-at-eol` in Git's system configuration. Git normalizes CRLF text to LF when adding files to the index without converting LF to CRLF on checkout. CR at the end of a line is not treated as a whitespace error. This avoids spurious modifications in LF-indexed projects with CRLF working trees. VS Code does not enforce a line-ending format. Project `.gitattributes` and explicit Git user or repository settings may override these defaults. Existing checkouts are not rewritten automatically. Project-specific attributes and configuration can still affect line-ending comparisons.

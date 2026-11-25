@@ -4,6 +4,7 @@ FROM python:3.12.16-slim-bookworm
 ARG RUST_VERSION=1.99.1
 ARG ESP_RUST_VERSION=1.97.0.0
 ARG CLAUDE_CODE_VERSION=2.1.318
+ARG IDLAB_CLIENT_VERSION=latest
 
 COPY --from=node-runtime /usr/local/bin/node /usr/local/bin/node
 COPY --from=node-runtime /usr/local/lib/node_modules /usr/local/lib/node_modules
@@ -31,12 +32,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     make \
     && rm -rf /var/lib/apt/lists/*
 
-# Preserve project line endings; tolerate CR at end of line in whitespace checks.
-RUN git config --system core.autocrlf false \
+# Normalize CRLF on input without forcing CRLF on checkout.
+RUN git config --system core.autocrlf input \
     && git config --system core.whitespace cr-at-eol
 
 RUN python -m pip install --no-cache-dir pytest==9.2.0 setuptools==80.9.0 wheel==0.45.1 \
     && python --version && node --version
+
+# Install the released IDLab client only; the server runs independently.
+COPY docker/install-idlab-client.py /opt/idlab/install-client.py
+RUN python /opt/idlab/install-client.py "${IDLAB_CLIENT_VERSION}"
 
 # ---------------------------------------------------------------------------
 # Rust
