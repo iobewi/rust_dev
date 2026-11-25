@@ -13,5 +13,5 @@ claude --version
 python --version
 node --version
 python -m pytest --version
-test "$(git config --system --get core.autocrlf)" = input
-test "$(git config --system --get core.eol)" = lf
+test "$(git config --system --get core.autocrlf)" = false
+test "$(git config --system --get core.whitespace)" = cr-at-eol

@@ -27,4 +27,4 @@ To refresh an existing VS Code environment, pull the new image and use **Dev Con
 
 ## Line endings
 
-The image defaults to `core.autocrlf=input` and `core.eol=lf` in Git's system configuration. VS Code uses LF for new files. Project `.gitattributes` and explicit Git user or repository settings may override these defaults. Existing checkouts are not rewritten automatically.
+The image defaults to `core.autocrlf=false` and `core.whitespace=cr-at-eol` in Git's system configuration. Automatic line-ending conversion is disabled and CR at the end of a line is not treated as a whitespace error. VS Code does not enforce a line-ending format. Project `.gitattributes` and explicit Git user or repository settings may override these defaults. Existing checkouts are not rewritten automatically. Line-ending-only changes can still appear in `git status`; use `git diff --ignore-cr-at-eol` to ignore CR differences in a diff.
