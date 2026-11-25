@@ -31,8 +31,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     make \
     && rm -rf /var/lib/apt/lists/*
 
-# Preserve project line endings; tolerate CR at end of line in whitespace checks.
-RUN git config --system core.autocrlf false \
+# Normalize CRLF on input without forcing CRLF on checkout.
+RUN git config --system core.autocrlf input \
     && git config --system core.whitespace cr-at-eol
 
 RUN python -m pip install --no-cache-dir pytest==9.2.0 setuptools==80.9.0 wheel==0.45.1 \
