@@ -18,7 +18,8 @@
                 "rust-analyzer.check.command": "check",
                 "git.autoRepositoryDetection": "subFolders",
                 "git.repositoryScanMaxDepth": 2,
-                "git.detectSubmodules": true
+                "git.detectSubmodules": true,
+                "files.eol": "\n"
             }
         }
     },

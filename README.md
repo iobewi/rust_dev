@@ -24,3 +24,7 @@ To build locally, run `docker build -f docker/Dockerfile -t rust-dev .`. To use 
 CI builds the Docker image and checks installed tool versions. Application compilation and tests belong to application repositories. No hardware service is started. Pull requests never publish images. Successful builds on main publish both `latest` and `sha-<full commit SHA>`. Use the SHA tag or the image digest to select a specific build; use a digest for immutable reproducibility. The initial distribution targets linux/amd64.
 
 To refresh an existing VS Code environment, pull the new image and use **Dev Containers: Rebuild Container**.
+
+## Line endings
+
+The image defaults to `core.autocrlf=input` and `core.eol=lf` in Git's system configuration. VS Code uses LF for new files. Project `.gitattributes` and explicit Git user or repository settings may override these defaults. Existing checkouts are not rewritten automatically.
