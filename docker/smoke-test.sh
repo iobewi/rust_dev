@@ -13,5 +13,6 @@ claude --version
 python --version
 node --version
 python -m pytest --version
+python -c 'from importlib.metadata import version; from idlab_client import IDLabClient; print("idlab-client", version("idlab-client"))'
 test "$(git config --system --get core.autocrlf)" = input
 test "$(git config --system --get core.whitespace)" = cr-at-eol

@@ -4,6 +4,7 @@ FROM python:3.12.16-slim-bookworm
 ARG RUST_VERSION=1.99.1
 ARG ESP_RUST_VERSION=1.97.0.0
 ARG CLAUDE_CODE_VERSION=2.1.318
+ARG IDLAB_CLIENT_VERSION=0.1.0
 
 COPY --from=node-runtime /usr/local/bin/node /usr/local/bin/node
 COPY --from=node-runtime /usr/local/lib/node_modules /usr/local/lib/node_modules
@@ -37,6 +38,10 @@ RUN git config --system core.autocrlf input \
 
 RUN python -m pip install --no-cache-dir pytest==9.2.0 setuptools==80.9.0 wheel==0.45.1 \
     && python --version && node --version
+
+# Install the released IDLab client only; the server runs independently.
+RUN python -m pip install --no-cache-dir \
+    "https://github.com/iobewi/idlab/releases/download/python-client-v${IDLAB_CLIENT_VERSION}/idlab_client-${IDLAB_CLIENT_VERSION}-py3-none-any.whl"
 
 # ---------------------------------------------------------------------------
 # Rust
