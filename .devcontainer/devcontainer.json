@@ -26,8 +26,5 @@
             }
         }
     },
-    "postCreateCommand": [
-        "rust-dev-smoke"
-    ],
     "remoteUser": "root"
 }
