@@ -1,5 +1,5 @@
 {
-    "name": "IOBEWI Rust ESP and hardware bench",
+    "name": "IOBEWI Rust Embedded Development",
     "build": {
         "dockerfile": "../docker/Dockerfile",
         "context": ".."
@@ -7,21 +7,10 @@
     "workspaceFolder": "/workspace",
     "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind",
     "mounts": [
-        "source=iobewi-claude-state,target=/root/.claude,type=volume",
-        "source=iobewi-bench-state,target=/root/.local/state/iobewi-bench,type=volume"
+        "source=iobewi-claude-state,target=/root/.claude,type=volume"
     ],
-    "forwardPorts": [
-        8080
-    ],
-    "portsAttributes": {
-        "8080": {
-            "label": "IOBEWI hardware bench",
-            "onAutoForward": "notify"
-        }
-    },
     "containerEnv": {
-        "RUST_BACKTRACE": "1",
-        "BENCH_STATE_DIR": "/root/.local/state/iobewi-bench"
+        "RUST_BACKTRACE": "1"
     },
     "customizations": {
         "vscode": {
@@ -37,7 +26,8 @@
             }
         }
     },
-    "postCreateCommand": ["bash", "/workspace/.devcontainer/post-create.sh"],
-    "postStartCommand": ["bash", "-lc", ". /opt/esp/export-esp.sh && python --version && node --version && rustc --version && rustc +esp --version"],
+    "postCreateCommand": [
+        "rust-dev-smoke"
+    ],
     "remoteUser": "root"
 }

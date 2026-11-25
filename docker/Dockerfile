@@ -4,7 +4,6 @@ FROM python:3.12.16-slim-bookworm
 ARG RUST_VERSION=1.99.1
 ARG ESP_RUST_VERSION=1.97.0.0
 ARG CLAUDE_CODE_VERSION=2.1.318
-ARG HTTP_SERVER_VERSION=14.1.1
 
 COPY --from=node-runtime /usr/local/bin/node /usr/local/bin/node
 COPY --from=node-runtime /usr/local/lib/node_modules /usr/local/lib/node_modules
@@ -32,9 +31,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     make \
     && rm -rf /var/lib/apt/lists/*
 
-COPY bench/requirements.txt /tmp/bench-requirements.txt
-RUN python -m pip install --no-cache-dir -r /tmp/bench-requirements.txt \
-        pytest==9.2.0 setuptools==80.9.0 wheel==0.45.1 \
+RUN python -m pip install --no-cache-dir pytest==9.2.0 setuptools==80.9.0 wheel==0.45.1 \
     && python --version && node --version
 
 # ---------------------------------------------------------------------------
@@ -47,6 +44,8 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
         --profile minimal \
         --default-toolchain "${RUST_VERSION}" \
         --no-modify-path
+
+RUN rustup component add rustfmt clippy rust-src && rustup target add riscv32imc-unknown-none-elf riscv32imac-unknown-none-elf
 
 # ---------------------------------------------------------------------------
 # Espressif Rust toolchain
@@ -74,23 +73,12 @@ RUN echo '. /opt/esp/export-esp.sh' >> /root/.bashrc \
 
 # espflash and esp-generate were installed from verified release binaries above.
 
-# ---------------------------------------------------------------------------
-# Web tooling
-#
-# The browser will access the ESP32 through Web Serial.
-# The container only builds and serves firmware/web assets.
-# ---------------------------------------------------------------------------
-
-RUN npm install -g "http-server@${HTTP_SERVER_VERSION}"
-
 # Installer Claude Code via npm
 RUN npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"
 
-COPY docker/smoke-test.sh /usr/local/bin/bench-container-smoke
-RUN chmod +x /usr/local/bin/bench-container-smoke
+COPY docker/smoke-test.sh /usr/local/bin/rust-dev-smoke
+RUN chmod +x /usr/local/bin/rust-dev-smoke
 
 WORKDIR /workspace
-
-EXPOSE 8080
 
 CMD ["bash"]
