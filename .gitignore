@@ -1,26 +1,15 @@
-# Ignore everything
 /*
-
-# Keep these directories and all their contents
 !/.devcontainer/
 !/.devcontainer/**
 !/docker/
 !/docker/**
-!/bench/
-!/bench/**
-
-# Keep these root files
+!/.github/
+!/.github/workflows/
+!/.github/workflows/devcontainer.yml
 !/.gitignore
 !/.dockerignore
 !/LICENSE
-
-# Bench software validation
-!/.github/
-!/.github/workflows/
-!/.github/workflows/bench.yml
-!/.github/workflows/devcontainer.yml
-
+!/README.md
 !/AGENTS.md
 !/CLAUDE.md
-
 **/__pycache__/

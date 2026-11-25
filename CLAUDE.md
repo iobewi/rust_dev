@@ -1,3 +1,3 @@
-# IOBEWI bench — shared project instructions
+# Rust development environment
 
 @AGENTS.md
