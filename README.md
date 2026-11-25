@@ -15,7 +15,7 @@ docker pull ghcr.io/iobewi/rust-dev:latest
 docker run --rm -it --mount type=bind,source="$PWD",target=/workspace ghcr.io/iobewi/rust-dev:latest
 ```
 
-Run `rust-dev-smoke` to verify installed tools. No USB access or privileged container is required. The versioned IDLab Python client is preinstalled from its GitHub release wheel; the IDLab server and hardware connections remain independent. Use `from idlab_client import IDLabClient` in project scripts. Configure the server endpoint and credentials at runtime; no tokens or server are embedded in the image. Building the image requires the corresponding IDLab client release to be published.
+Run `rust-dev-smoke` to verify installed tools. No USB access or privileged container is required. The latest stable IDLab Python client is preinstalled from its GitHub release wheel (SHA-256 verified); the IDLab server and hardware connections remain independent. Use `from idlab_client import IDLabClient` in project scripts. Configure the server endpoint and credentials at runtime; no tokens or server are embedded in the image. The build resolves the latest release when the installation layer runs. For a fixed client version use `--build-arg IDLAB_CLIENT_VERSION=0.1.0`; for a fresh latest lookup use `docker build --no-cache`. Building requires a published client release.
 
 ## Build and distribution
 
