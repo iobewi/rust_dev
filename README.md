@@ -24,3 +24,7 @@ To build locally, run `docker build -f docker/Dockerfile -t rust-dev .`. To use 
 CI builds the Docker image and checks installed tool versions. Application compilation and tests belong to application repositories. No hardware service is started. Pull requests never publish images. Successful builds on main publish both `latest` and `sha-<full commit SHA>`. Use the SHA tag or the image digest to select a specific build; use a digest for immutable reproducibility. The initial distribution targets linux/amd64.
 
 To refresh an existing VS Code environment, pull the new image and use **Dev Containers: Rebuild Container**.
+
+## Line endings
+
+The image defaults to `core.autocrlf=false` and `core.whitespace=cr-at-eol` in Git's system configuration. Automatic line-ending conversion is disabled and CR at the end of a line is not treated as a whitespace error. VS Code does not enforce a line-ending format. Project `.gitattributes` and explicit Git user or repository settings may override these defaults. Existing checkouts are not rewritten automatically. Line-ending-only changes can still appear in `git status`; use `git diff --ignore-cr-at-eol` to ignore CR differences in a diff.
