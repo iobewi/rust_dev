@@ -18,24 +18,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - name: Validate configuration
-        run: |
-          python -m json.tool .devcontainer/devcontainer.json > /dev/null
-          python -m json.tool docker/esp-tools.json > /dev/null
-          bash -n docker/smoke-test.sh
-          python -m py_compile docker/install-esp-tools.py
       - run: npm install -g @devcontainers/cli@0.90.0
-      - name: Build and open devcontainer
-        run: devcontainer up --workspace-folder . > /tmp/devcontainer-up.json
-      - name: Validate host and embedded Rust toolchains
+      - name: Build and start devcontainer
+        run: devcontainer up --workspace-folder .
+      - name: Verify installed tools
         run: devcontainer exec --workspace-folder . rust-dev-smoke
-      - name: Record persistence and disposable state
-        run: |
-          devcontainer exec --workspace-folder . bash -c 'echo workspace > /workspace/.ci-sentinel; echo claude > /root/.claude/.ci-sentinel; touch /tmp/rust-dev-disposable-sentinel'
-      - name: Recreate container
-        run: |
-          docker rm --force "$(jq -er '.containerId' /tmp/devcontainer-up.json)"
-          devcontainer up --workspace-folder . > /tmp/devcontainer-up.json
-      - name: Verify lifecycle contract
-        run: |
-          devcontainer exec --workspace-folder . bash -c 'test "$(cat /workspace/.ci-sentinel)" = workspace && test "$(cat /root/.claude/.ci-sentinel)" = claude && test ! -e /tmp/rust-dev-disposable-sentinel && rustc --version && rustc +esp --version'

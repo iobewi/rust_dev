@@ -8,4 +8,4 @@ Clone this repository into WSL2, open it in VS Code and run **Dev Containers: Re
 
 For CLI use, build with `docker build -f docker/Dockerfile -t rust-dev .` and run `docker run --rm -it --mount type=bind,source="$PWD",target=/workspace rust-dev`. Run `rust-dev-smoke` to verify toolchains. No USB access or privileged container is required. Install the separate IDLab client in projects that need hardware qualification.
 
-The CI validates the devcontainer, including host, RISC-V and Xtensa compilation. No hardware service is started.
+The CI builds and starts the devcontainer and checks installed tool versions. Application compilation and tests belong to application repositories. No hardware service is started.
